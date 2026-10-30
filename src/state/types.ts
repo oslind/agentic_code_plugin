@@ -18,6 +18,10 @@ export interface Task {
   status: TaskStatus;
   attempts: number;
   branch?: string;
+  /** Commit on `branch` with the task's verified work. */
+  commit?: string;
+  changedFiles?: string[];
+  summary?: string;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -46,7 +50,7 @@ export interface RunEvent {
 export const TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   pending: ["running", "cancelled"],
   running: ["verifying", "failed", "cancelled", "pending"],
-  verifying: ["awaiting_approval", "failed", "cancelled", "pending"],
+  verifying: ["running", "awaiting_approval", "done", "failed", "cancelled", "pending"],
   awaiting_approval: ["done", "failed", "cancelled", "pending"],
   done: [],
   failed: ["pending"],

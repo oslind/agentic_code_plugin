@@ -4,7 +4,7 @@ A Cline-like VS Code extension that coordinates a main agent and multiple specia
 
 ## Status
 
-Steps 1 and 2 of 4: extension skeleton and coordinator. Parallel workers and recovery come in later steps.
+Steps 1 to 3 of 4: skeleton, coordinator and parallel workers. Recovery (resume, retry and conflict resolution) comes in step 4.
 
 What works now:
 
@@ -14,6 +14,10 @@ What works now:
 - Context budgeting that fits prompts into the configured context window, dropping or cutting low-priority context first.
 - A one-tool-per-turn worker protocol with a policy check: writes must stay in the task's file scope, secrets and `.git` are off limits, `package.json`, lockfiles and CI files need approval, and only configured checks can run.
 - A workspace sandbox: agents can only reach the folder open in VS Code. Every path is resolved to its real location on disk, so symlinks that point outside are refused for reads, writes and listings. Writes open files with `O_NOFOLLOW`. The extension only runs in trusted workspaces.
+- Parallel workers. Each task runs in its own git worktree and branch under `.agentic/` in the project, with a sandbox rooted at that worktree. A worker makes one tool call per turn and keeps its history inside the context window.
+- Verification by your own checks, not the worker's word. The commands in `agentic.checks` run in the worktree, and failures go back to the worker to fix (`agentic.worker.maxFixRounds`). Only files in the task's scope are committed.
+- Approval before integration. Each verified task waits for you to approve the merge, with the diff available. Merges into a per-run integration branch happen one at a time, and the checks run again after each one. A merge that conflicts or breaks the checks is undone, and its branch is kept.
+- Your branch is only changed when you choose **Apply run to my branch**, and only if it has no uncommitted changes.
 - An **Agentic** sidebar showing saved runs and their task tree.
 - Task state saved on disk with atomic writes, an append-only event log, a dependency graph with cycle checks, and recovery of tasks interrupted by a restart.
 
@@ -22,7 +26,17 @@ What works now:
 1. Start a local model, for example `ollama run qwen3.8:27b`.
 2. Run `npm install` and `npm run compile`, then press F5 in VS Code to open an Extension Development Host.
 3. Run **Agentic: Test model connection** from the command palette.
-4. Open the **Agentic** sidebar and click **+** to plan a request. The tasks appear in the tree; running them comes in step 3.
+4. Add your checks to settings, for example:
+   ```json
+   "agentic.checks": [
+     { "name": "test", "command": "npm test" },
+     { "name": "lint", "command": "npm run lint" },
+     { "name": "typecheck", "command": "npx tsc --noEmit" }
+   ]
+   ```
+5. Open the **Agentic** sidebar and click **+** to plan a request. Review the tasks, then press **Run** on the plan.
+
+The workspace folder must be the root of a git repository. Checks are commands you configure, and they run with your permissions like any VS Code task. Workers can only start them by name.
 
 Settings live under `agentic.model.*`. If your server rejects `json_schema` response formats, set `agentic.model.structuredOutput` to `json_object` or `none`.
 

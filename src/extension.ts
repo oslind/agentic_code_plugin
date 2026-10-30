@@ -8,6 +8,7 @@ import { callStructured } from "./llm/structured";
 import { OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { TaskStore } from "./state/taskStore";
 import { WorkspaceSandbox } from "./tools/sandbox";
+import { registerRunCommands } from "./ui/runCommands";
 import { TaskTreeProvider } from "./ui/taskTree";
 
 const FILE_LIMIT = 2000;
@@ -31,6 +32,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new TaskStore(context.globalStorageUri.fsPath);
   const tree = new TaskTreeProvider(store);
 
+  registerRunCommands(context, store, tree, output);
   context.subscriptions.push(
     output,
     vscode.window.registerTreeDataProvider("agentic.tasks", tree),
@@ -94,7 +96,8 @@ export function activate(context: vscode.ExtensionContext): void {
         output.info(`Planned ${result.plan.tasks.length} task(s) in ${waves.length} wave(s): ${waves.map((w) => `[${w.join(", ")}]`).join(" ")}`);
         if (result.droppedContext.length) output.warn(`Left out to fit the context window: ${result.droppedContext.join(", ")}`);
         tree.refresh();
-        vscode.window.showInformationMessage(`Planned ${result.plan.tasks.length} task(s). See the Agentic Tasks view.`);
+        const next = await vscode.window.showInformationMessage(`Planned ${result.plan.tasks.length} task(s). Review them in the Agentic view.`, "Run now");
+        if (next === "Run now") await vscode.commands.executeCommand("agentic.runPlan", { kind: "run", run: await store.load(run.id) });
       } catch (err) {
         output.error((err as Error).message);
         vscode.window.showErrorMessage(`Planning failed: ${(err as Error).message}`);
