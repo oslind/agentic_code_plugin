@@ -13,6 +13,8 @@ export interface WorkerOptions {
   /** Sandbox rooted at the task's own worktree. */
   sandbox: WorkspaceSandbox;
   task: Task;
+  /** Extra notes for the first message, such as what a failed earlier attempt did. */
+  context?: string;
   checks: CheckConfig[];
   maxTurns?: number;
   signal?: AbortSignal;
@@ -69,7 +71,7 @@ export class Worker {
   constructor(private readonly opts: WorkerOptions) {
     this.messages = [
       { role: "system", content: systemPrompt(opts.task, opts.checks) },
-      { role: "user", content: `Task: ${opts.task.title}\n\n${opts.task.instructions}` },
+      { role: "user", content: `Task: ${opts.task.title}\n\n${opts.task.instructions}${opts.context ? `\n\n${opts.context}` : ""}` },
     ];
   }
 

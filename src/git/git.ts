@@ -17,11 +17,16 @@ export class Git {
   constructor(readonly cwd: string) {}
 
   async run(args: string[], allowFail = false): Promise<string> {
+    return (await this.raw(args, allowFail)).trim();
+  }
+
+  /** Like run, but keeps whitespace. Needed for porcelain output, where leading spaces matter. */
+  async raw(args: string[], allowFail = false): Promise<string> {
     const res = await exec("git", args, { cwd: this.cwd, timeoutMs: 120_000 });
     if (res.code !== 0 && !allowFail) {
       throw new GitError(`git ${args[0]} failed: ${res.stderr.trim() || res.stdout.trim()}`, res.stderr);
     }
-    return res.stdout.trim();
+    return res.stdout;
   }
 
   async ok(args: string[]): Promise<boolean> {
@@ -97,6 +102,19 @@ export class Git {
 
   async changedFiles(from: string, to: string): Promise<string[]> {
     const out = await this.run(["diff", "--name-only", "--no-renames", `${from}...${to}`]);
+    return out ? out.split("\n") : [];
+  }
+
+  mergeBase(a: string, b: string): Promise<string> {
+    return this.run(["merge-base", a, b]);
+  }
+
+  async deleteBranch(branch: string): Promise<void> {
+    await this.run(["branch", "-D", branch]);
+  }
+
+  async listBranches(prefix: string): Promise<string[]> {
+    const out = await this.run(["for-each-ref", "--format=%(refname:short)", `refs/heads/${prefix}`]);
     return out ? out.split("\n") : [];
   }
 

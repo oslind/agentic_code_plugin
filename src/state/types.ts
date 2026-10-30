@@ -23,6 +23,8 @@ export interface Task {
   changedFiles?: string[];
   summary?: string;
   error?: string;
+  /** The most recent error, kept after the task is retried. */
+  lastError?: string;
   createdAt: string;
   updatedAt: string;
 }

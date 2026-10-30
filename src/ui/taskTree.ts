@@ -48,15 +48,17 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<Node> {
     const { task } = node;
     const item = new vscode.TreeItem(task.title, vscode.TreeItemCollapsibleState.None);
     item.iconPath = new vscode.ThemeIcon(ICONS[task.status]);
-    item.description = task.dependsOn.length ? `after ${task.dependsOn.join(", ")}` : task.status;
+    item.description = task.status === "pending" && task.dependsOn.length ? `after ${task.dependsOn.join(", ")}` : task.status.replace("_", " ");
     const tip = new vscode.MarkdownString();
     tip.appendMarkdown(`**${task.title}** \`${task.id}\`\n\n`);
     tip.appendText(task.instructions);
     tip.appendMarkdown(`\n\n**Status:** ${task.status} · **Attempts:** ${task.attempts}`);
     tip.appendMarkdown(`\n\n**Files:** ${task.fileScope.map((f) => `\`${f}\``).join(", ")}`);
+    if (task.branch) tip.appendMarkdown(`\n\n**Branch:** \`${task.branch}\``);
+    if (task.changedFiles?.length) tip.appendMarkdown(`\n\n**Changed:** ${task.changedFiles.map((f) => `\`${f}\``).join(", ")}`);
     if (task.error) tip.appendMarkdown(`\n\n**Error:** ${task.error}`);
     item.tooltip = tip;
-    item.contextValue = "task";
+    item.contextValue = `task-${task.status}`;
     return item;
   }
 }
