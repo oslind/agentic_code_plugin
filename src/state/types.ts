@@ -26,6 +26,8 @@ export interface Task {
 export interface Run {
   id: string;
   request: string;
+  /** The only folder this run's agents may touch. */
+  workspaceRoot?: string;
   createdAt: string;
   updatedAt: string;
   tasks: Task[];

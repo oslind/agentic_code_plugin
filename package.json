@@ -14,6 +14,16 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Agents read and write project files and run checks, so the workspace must be trusted."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Agents need a real folder on disk to sandbox."
+    }
+  },
   "contributes": {
     "commands": [
       {

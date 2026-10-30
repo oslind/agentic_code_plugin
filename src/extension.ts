@@ -7,10 +7,24 @@ import { planRequest } from "./coordinator/planner";
 import { callStructured } from "./llm/structured";
 import { OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { TaskStore } from "./state/taskStore";
+import { WorkspaceSandbox } from "./tools/sandbox";
 import { TaskTreeProvider } from "./ui/taskTree";
 
 const FILE_LIMIT = 2000;
-const EXCLUDE = "**/{node_modules,.git,out,dist,build,.venv,__pycache__,.agentic}/**";
+
+/**
+ * Agents may only work inside the folder open in VS Code. With several
+ * folders open, the user picks one, and the run is confined to it.
+ */
+async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+  const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === "file");
+  if (folders.length === 0) {
+    vscode.window.showErrorMessage("Open a project folder first. Agents can only work inside the open folder.");
+    return undefined;
+  }
+  if (folders.length === 1) return folders[0];
+  return vscode.window.showWorkspaceFolderPick({ placeHolder: "Which folder may the agents work in?" });
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Agentic Code", { log: true });
@@ -52,6 +66,8 @@ export function activate(context: vscode.ExtensionContext): void {
         ignoreFocusOut: true,
       });
       if (!request?.trim()) return;
+      const folder = await pickWorkspaceFolder();
+      if (!folder) return;
       const config = readModelConfig();
       const provider = new OpenAICompatibleProvider(config);
       try {
@@ -60,8 +76,8 @@ export function activate(context: vscode.ExtensionContext): void {
           async (_progress, token) => {
             const abort = new AbortController();
             token.onCancellationRequested(() => abort.abort());
-            const files = await vscode.workspace.findFiles("**/*", EXCLUDE, FILE_LIMIT);
-            const paths = files.map((f) => vscode.workspace.asRelativePath(f, false));
+            const sandbox = await WorkspaceSandbox.create(folder.uri.fsPath);
+            const paths = await sandbox.listFiles("**", FILE_LIMIT);
             return planRequest(
               provider,
               { request, fileTree: paths.length ? fileTree(paths) : undefined },
@@ -69,7 +85,7 @@ export function activate(context: vscode.ExtensionContext): void {
             );
           },
         );
-        const run = await store.createRun(request);
+        const run = await store.createRun(request, folder.uri.fsPath);
         await store.addTasks(run.id, result.plan.tasks);
         for (const r of result.repairs) {
           await store.log({ runId: run.id, taskId: r.taskId, type: "plan_repair", message: `now waits for ${r.addedDependency}: ${r.reason}` });
