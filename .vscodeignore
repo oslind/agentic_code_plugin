@@ -1,0 +1,7 @@
+src/
+test/
+.github/
+**/*.map
+tsconfig.json
+eslint.config.mjs
+vitest.config.mts
