@@ -4,7 +4,7 @@ A Cline-like VS Code extension that coordinates a main agent and multiple specia
 
 ## Status
 
-Steps 1 to 3 of 4: skeleton, coordinator and parallel workers. Recovery (resume, retry and conflict resolution) comes in step 4.
+All four planned steps are in: skeleton, coordinator, parallel workers and recovery.
 
 What works now:
 
@@ -18,6 +18,13 @@ What works now:
 - Verification by your own checks, not the worker's word. The commands in `agentic.checks` run in the worktree, and failures go back to the worker to fix (`agentic.worker.maxFixRounds`). Only files in the task's scope are committed.
 - Approval before integration. Each verified task waits for you to approve the merge, with the diff available. Merges into a per-run integration branch happen one at a time, and the checks run again after each one. A merge that conflicts or breaks the checks is undone, and its branch is kept.
 - Your branch is only changed when you choose **Apply run to my branch**, and only if it has no uncommitted changes.
+- Recovery:
+  - **Resume.** When VS Code starts, runs that were interrupted are offered for resume. Running tasks start again, and verified work waiting for approval is offered for approval again without being redone.
+  - **Retry.** Failed or cancelled tasks can be retried one at a time or all together. A retry gets a new `-tryN` branch, and the worker is told why the last attempt failed and shown its diff. This is also how merge conflicts are resolved: the retry starts from the current integration branch and reapplies the earlier work.
+  - **Nothing is lost.** Unfinished work from a failed attempt is committed to its branch before the worktree is reused.
+  - **Transient failures.** When the model server is briefly unreachable, requests are retried with backoff, and tasks are retried automatically up to 3 attempts.
+  - **Cancel one task** without stopping the run, or cancel the whole run.
+  - **Clean up.** Remove a run's worktrees and keep its branches, or delete everything.
 - An **Agentic** sidebar showing saved runs and their task tree.
 - Task state saved on disk with atomic writes, an append-only event log, a dependency graph with cycle checks, and recovery of tasks interrupted by a restart.
 

@@ -8,7 +8,7 @@ import { callStructured } from "./llm/structured";
 import { OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { TaskStore } from "./state/taskStore";
 import { WorkspaceSandbox } from "./tools/sandbox";
-import { registerRunCommands } from "./ui/runCommands";
+import { offerResume, registerRunCommands } from "./ui/runCommands";
 import { TaskTreeProvider } from "./ui/taskTree";
 
 const FILE_LIMIT = 2000;
@@ -33,6 +33,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const tree = new TaskTreeProvider(store);
 
   registerRunCommands(context, store, tree, output);
+  void offerResume(store).catch((err) => output.warn(`Could not check for interrupted runs: ${(err as Error).message}`));
   context.subscriptions.push(
     output,
     vscode.window.registerTreeDataProvider("agentic.tasks", tree),

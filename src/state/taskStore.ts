@@ -149,6 +149,8 @@ export class TaskStore {
     }
     const time = this.now().toISOString();
     if (status === "running") task.attempts += 1;
+    // Keep the reason for the last failure so a retry can learn from it.
+    if (task.error) task.lastError = task.error;
     task.status = status;
     task.error = error;
     task.updatedAt = time;
@@ -156,6 +158,18 @@ export class TaskStore {
     await this.save(run);
     await this.log({ runId, taskId, type: "status", message: status, data: error ? { error } : undefined });
     return task;
+  }
+
+  /** Puts a failed or cancelled task back in the queue. Its earlier branch is kept. */
+  async retryTask(runId: string, taskId: string): Promise<Task> {
+    const task = await this.setStatus(runId, taskId, "pending");
+    await this.log({ runId, taskId, type: "retry_requested", message: task.title });
+    return task;
+  }
+
+  /** Removes a run's saved state and log. Git branches are not touched. */
+  async deleteRun(runId: string): Promise<void> {
+    await fs.rm(this.runDir(runId), { recursive: true, force: true });
   }
 
   /**

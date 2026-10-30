@@ -13,7 +13,9 @@
     "Other"
   ],
   "main": "./out/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
@@ -58,6 +60,31 @@
         "command": "agentic.applyRun",
         "title": "Agentic: Apply run to my branch",
         "icon": "$(git-merge)"
+      },
+      {
+        "command": "agentic.retryTask",
+        "title": "Agentic: Retry task",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "agentic.retryFailed",
+        "title": "Agentic: Retry failed tasks",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "agentic.cancelTask",
+        "title": "Agentic: Cancel task",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "agentic.showTaskLog",
+        "title": "Agentic: Show log",
+        "icon": "$(output)"
+      },
+      {
+        "command": "agentic.cleanupRun",
+        "title": "Agentic: Clean up run",
+        "icon": "$(trash)"
       }
     ],
     "configuration": {
@@ -198,6 +225,28 @@
         },
         {
           "command": "agentic.applyRun",
+          "when": "view == agentic.tasks && viewItem == run"
+        },
+        {
+          "command": "agentic.retryTask",
+          "when": "view == agentic.tasks && viewItem =~ /^task-(failed|cancelled)$/",
+          "group": "inline"
+        },
+        {
+          "command": "agentic.cancelTask",
+          "when": "view == agentic.tasks && viewItem =~ /^task-(running|verifying)$/",
+          "group": "inline"
+        },
+        {
+          "command": "agentic.showTaskLog",
+          "when": "view == agentic.tasks && viewItem =~ /^(run|task-.*)$/"
+        },
+        {
+          "command": "agentic.retryFailed",
+          "when": "view == agentic.tasks && viewItem == run"
+        },
+        {
+          "command": "agentic.cleanupRun",
           "when": "view == agentic.tasks && viewItem == run"
         }
       ]

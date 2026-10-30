@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { Git } from "../git/git";
+import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
 import { readyTasks, TaskStore } from "../state/taskStore";
 import { Task } from "../state/types";
@@ -30,6 +31,9 @@ export interface OrchestratorOptions {
   maxParallel?: number;
   maxTurns?: number;
   maxFixRounds?: number;
+  /** Attempts per task before a transient failure (such as the model server being down) needs the user. */
+  maxAttempts?: number;
+  retryDelayMs?: number;
   /** Folders linked from the workspace into each worktree, such as node_modules. */
   linkDirs?: string[];
   signal?: AbortSignal;
@@ -72,12 +76,13 @@ export class Orchestrator {
   private readonly git: Git;
   private readonly mergeLock = new Mutex();
   private readonly o: Required<Omit<OrchestratorOptions, "signal" | "onChange">> & Pick<OrchestratorOptions, "signal" | "onChange">;
+  private readonly taskControllers = new Map<string, AbortController>();
   private root = "";
   private integrationDir = "";
   readonly integrationBranch: string;
 
   constructor(options: OrchestratorOptions) {
-    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, linkDirs: ["node_modules"], ...options };
+    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, linkDirs: ["node_modules"], ...options };
     this.git = new Git(options.workspaceRoot);
     this.integrationBranch = integrationBranchFor(options.runId);
   }
@@ -127,21 +132,29 @@ export class Orchestrator {
     }
   }
 
+  /** Stops one task. Its branch is kept and it can be retried later. */
+  cancelTask(taskId: string): boolean {
+    const controller = this.taskControllers.get(taskId);
+    controller?.abort();
+    return controller !== undefined;
+  }
+
   async run(): Promise<RunOutcome> {
     await this.prepare();
+    // Tasks that were mid-flight when VS Code stopped have no live worker; start them again.
     await this.o.store.recoverInterrupted(this.o.runId);
     const active = new Map<string, Promise<void>>();
 
     for (;;) {
       if (this.o.signal?.aborted) break;
       const run = await this.o.store.load(this.o.runId);
-      for (const task of readyTasks(run)) {
+      // Work that was verified before a restart only needs the user's approval again.
+      const resumable = run.tasks.filter((t) => t.status === "awaiting_approval" && t.branch && t.commit);
+      for (const task of [...resumable, ...readyTasks(run)]) {
         if (active.size >= this.o.maxParallel) break;
         if (active.has(task.id)) continue;
-        active.set(
-          task.id,
-          this.runTask(task).finally(() => active.delete(task.id)),
-        );
+        const job = task.status === "awaiting_approval" ? this.resumeApproval(task) : this.runTask(task);
+        active.set(task.id, job.finally(() => active.delete(task.id)));
       }
       if (active.size === 0) break;
       await Promise.race(active.values());
@@ -163,30 +176,56 @@ export class Orchestrator {
     };
   }
 
+  private async current(taskId: string): Promise<Task | undefined> {
+    return (await this.o.store.load(this.o.runId)).tasks.find((t) => t.id === taskId);
+  }
+
+  /** What the last attempt left behind, so a retry can build on it instead of starting blind. */
+  private async previousAttemptNote(task: Task): Promise<string | undefined> {
+    const error = task.error ?? task.lastError;
+    if (!task.branch || !error || task.attempts === 0) return undefined;
+    if (!(await this.git.branchExists(task.branch))) return `A previous attempt failed: ${error}`;
+    const integrationHead = await this.git.at(this.integrationDir).head();
+    const base = await this.git.mergeBase(integrationHead, task.branch).catch(() => undefined);
+    const diff = base ? await this.git.diff(base, task.branch).catch(() => "") : "";
+    const shown = diff.length > 6000 ? `${diff.slice(0, 6000)}\n[... diff cut ...]` : diff;
+    return [
+      `A previous attempt at this task failed: ${error}`,
+      "The project may have changed since then; files from other tasks are already merged.",
+      shown ? `Its changes are below for reference. Reapply what is still useful.\n\n${shown}` : "It made no committed changes.",
+    ].join("\n\n");
+  }
+
   private async runTask(task: Task): Promise<void> {
     const dir = this.worktreeDir(task.id);
+    const controller = new AbortController();
+    this.taskControllers.set(task.id, controller);
+    const signal = this.o.signal ? AbortSignal.any([this.o.signal, controller.signal]) : controller.signal;
     try {
+      const note = await this.previousAttemptNote(task);
       await this.setStatus(task, "running");
-      const attempt = (await this.o.store.load(this.o.runId)).tasks.find((t) => t.id === task.id)?.attempts ?? 1;
+      const attempt = (await this.current(task.id))?.attempts ?? 1;
       // A retry gets a new branch, so earlier attempts stay available for recovery.
       const branch = `agentic/${shortId(this.o.runId)}/${task.id}${attempt > 1 ? `-try${attempt}` : ""}`;
       // Start from the integration branch, which already holds the work of finished dependencies.
       const base = await this.git.at(this.integrationDir).head();
       if (await exists(dir)) await this.git.removeWorktree(dir);
+      if (await this.git.branchExists(branch)) await this.git.deleteBranch(branch);
       await fs.mkdir(path.dirname(dir), { recursive: true });
       await this.git.addWorktree(dir, branch, base);
       await this.linkDirs(dir);
-      await this.o.store.updateTask(this.o.runId, task.id, { branch });
-      await this.log("worktree", dir, task.id, { branch, base });
+      await this.o.store.updateTask(this.o.runId, task.id, { branch, commit: undefined });
+      await this.log("worktree", dir, task.id, { branch, base, attempt });
 
       const sandbox = await WorkspaceSandbox.create(dir);
       const worker = new Worker({
         provider: this.o.provider,
         sandbox,
         task,
+        context: note,
         checks: this.o.checks,
         maxTurns: this.o.maxTurns,
-        signal: this.o.signal,
+        signal,
         approve: (reason, call) => this.o.approveTool(task, reason, call),
         log: (type, message, data) => void this.log(type, message, task.id, data),
       });
@@ -196,7 +235,8 @@ export class Orchestrator {
       for (let round = 0; ; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the configured checks decide.
-        checks = await runAllChecks(this.o.checks, dir, this.o.signal);
+        checks = await runAllChecks(this.o.checks, dir, signal);
+        signal.throwIfAborted();
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
         if (failed.length === 0) break;
@@ -222,30 +262,69 @@ export class Orchestrator {
       }
       const changedFiles = await this.git.changedFiles(base, branch);
       await this.o.store.updateTask(this.o.runId, task.id, { commit, changedFiles, summary: result.summary });
-
       await this.setStatus(task, "awaiting_approval");
-      const diff = await this.git.diff(base, branch);
-      const latest = (await this.o.store.load(this.o.runId)).tasks.find((t) => t.id === task.id) ?? task;
-      if (!(await this.o.approveMerge({ task: latest, changedFiles, diff, checks }))) {
-        throw new OrchestratorError("Merge rejected by the user. The branch is kept.");
-      }
-      await this.integrate(task, branch);
-      await this.setStatus(task, "done");
       await this.git.removeWorktree(dir);
+      await this.approveAndIntegrate(task, base, branch, checks);
     } catch (err) {
-      const cancelled = this.o.signal?.aborted;
-      const message = cancelled ? "Cancelled" : (err as Error).message;
-      await this.log(cancelled ? "cancelled" : "task_failed", message, task.id);
-      const current = (await this.o.store.load(this.o.runId)).tasks.find((t) => t.id === task.id);
-      if (current && current.status !== "done" && current.status !== "failed" && current.status !== "cancelled") {
-        await this.setStatus(task, cancelled ? "cancelled" : "failed", message);
-      }
+      await this.saveUnfinished(dir, task, err);
+      await this.handleFailure(task, err, controller.signal.aborted);
+    } finally {
+      this.taskControllers.delete(task.id);
     }
+  }
+
+  /** Commits whatever a failed attempt left in its worktree, so nothing is lost when it is retried. */
+  private async saveUnfinished(dir: string, task: Task, err: unknown): Promise<void> {
+    if (!(await exists(dir))) return;
+    try {
+      const { commit } = await this.commitScoped(dir, task, `unfinished attempt (${(err as Error).message})`);
+      if (commit) await this.log("saved_unfinished", commit, task.id);
+    } catch {
+      // The worktree may be half set up; there is nothing more to save.
+    }
+  }
+
+  private async resumeApproval(task: Task): Promise<void> {
+    try {
+      const head = await this.git.at(this.integrationDir).head();
+      const base = await this.git.mergeBase(head, task.branch!);
+      await this.log("resumed_approval", task.branch!, task.id);
+      await this.approveAndIntegrate(task, base, task.branch!, []);
+    } catch (err) {
+      await this.handleFailure(task, err, false);
+    }
+  }
+
+  private async approveAndIntegrate(task: Task, base: string, branch: string, checks: CheckResult[]): Promise<void> {
+    const latest = (await this.current(task.id)) ?? task;
+    const diff = await this.git.diff(base, branch);
+    const changedFiles = latest.changedFiles ?? (await this.git.changedFiles(base, branch));
+    if (!(await this.o.approveMerge({ task: latest, changedFiles, diff, checks }))) {
+      throw new OrchestratorError("Merge rejected by the user. The branch is kept.");
+    }
+    await this.integrate(task, branch);
+    await this.setStatus(task, "done");
+  }
+
+  private async handleFailure(task: Task, err: unknown, taskCancelled: boolean): Promise<void> {
+    const cancelled = taskCancelled || this.o.signal?.aborted === true;
+    const message = cancelled ? "Cancelled" : (err as Error).message;
+    const current = await this.current(task.id);
+    if (!current || current.status === "done" || current.status === "failed" || current.status === "cancelled") return;
+    // Brief outages of the model server should not need the user: try again automatically.
+    if (!cancelled && isTransient(err) && current.attempts < this.o.maxAttempts && current.status !== "awaiting_approval") {
+      await this.log("transient_failure", message, task.id, { attempt: current.attempts });
+      await sleep(this.o.retryDelayMs * current.attempts);
+      await this.setStatus(task, "pending", `Retrying after: ${message}`);
+      return;
+    }
+    await this.log(cancelled ? "cancelled" : "task_failed", message, task.id);
+    await this.setStatus(task, cancelled ? "cancelled" : "failed", message);
   }
 
   private async commitScoped(dir: string, task: Task, summary: string): Promise<{ commit?: string; ignored: string[] }> {
     const git = this.git.at(dir);
-    const out = await git.run(["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"]);
+    const out = await git.raw(["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"]);
     const files = out.split("\0").filter(Boolean).map((line) => line.slice(3));
     const inScope = files.filter((f) => matchesAny(f, task.fileScope));
     const ignored = files.filter((f) => !matchesAny(f, task.fileScope));
@@ -290,6 +369,14 @@ export async function applyRun(workspaceRoot: string, integrationBranch: string)
   return git.merge(integrationBranch, `Merge ${integrationBranch}`);
 }
 
+function isTransient(err: unknown): boolean {
+  return err instanceof ProviderError && err.retryable;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await fs.lstat(p);
@@ -297,4 +384,24 @@ async function exists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Removes a run's worktrees. Branches are kept unless `deleteBranches` is set,
+ * since they are how failed or rejected work is recovered.
+ */
+export async function cleanupRun(workspaceRoot: string, runId: string, deleteBranches = false): Promise<{ worktrees: number; branches: string[] }> {
+  const git = new Git(workspaceRoot);
+  const root = await fs.realpath(workspaceRoot);
+  const dir = path.join(root, AGENT_DIR, "worktrees", shortId(runId));
+  let worktrees = 0;
+  const entries = await fs.readdir(dir).catch(() => [] as string[]);
+  for (const name of entries) {
+    await git.removeWorktree(path.join(dir, name));
+    worktrees++;
+  }
+  await fs.rm(dir, { recursive: true, force: true });
+  const branches = deleteBranches ? await git.listBranches(`agentic/${shortId(runId)}/`) : [];
+  for (const b of branches) await git.deleteBranch(b);
+  return { worktrees, branches };
 }
