@@ -1,0 +1,87 @@
+{
+  "name": "agentic-code-plugin",
+  "displayName": "Agentic Code",
+  "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
+  "version": "0.0.1",
+  "publisher": "oslind",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Other"],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentic.testModelConnection",
+        "title": "Agentic: Test model connection"
+      },
+      {
+        "command": "agentic.showLog",
+        "title": "Agentic: Show log"
+      }
+    ],
+    "configuration": {
+      "title": "Agentic Code",
+      "properties": {
+        "agentic.model.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/v1",
+          "description": "Base URL of an OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp)."
+        },
+        "agentic.model.name": {
+          "type": "string",
+          "default": "qwen3.8:27b",
+          "description": "Model name as the server knows it."
+        },
+        "agentic.model.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key. Local servers usually need none."
+        },
+        "agentic.model.contextWindow": {
+          "type": "number",
+          "default": 32768,
+          "description": "Context window in tokens. Prompts are budgeted to fit inside it."
+        },
+        "agentic.model.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "description": "Sampling temperature. Low values make small models follow formats more reliably."
+        },
+        "agentic.model.requestTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "Timeout for one model request. Local models can be slow."
+        },
+        "agentic.model.structuredOutput": {
+          "type": "string",
+          "enum": ["json_schema", "json_object", "none"],
+          "default": "json_schema",
+          "description": "How to ask the server for JSON. Use json_object or none if the server rejects json_schema."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "~1.90.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.2.0"
+  }
+}
