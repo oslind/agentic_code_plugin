@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import { Mutex } from "../util/mutex";
 import { Run, RunEvent, Task, TaskStatus, TRANSITIONS } from "./types";
 
 export type NewTask = Pick<Task, "title" | "instructions"> &
@@ -11,6 +12,9 @@ export type NewTask = Pick<Task, "title" | "instructions"> &
  * Layout: <root>/runs/<runId>/state.json and <root>/runs/<runId>/events.jsonl.
  */
 export class TaskStore {
+  // Workers update tasks in parallel; every read-modify-write goes through this lock.
+  private readonly lock = new Mutex();
+
   constructor(
     private readonly root: string,
     private readonly now: () => Date = () => new Date(),
@@ -87,7 +91,11 @@ export class TaskStore {
       });
   }
 
-  async addTasks(runId: string, newTasks: NewTask[]): Promise<Task[]> {
+  addTasks(runId: string, newTasks: NewTask[]): Promise<Task[]> {
+    return this.lock.run(() => this.addTasksLocked(runId, newTasks));
+  }
+
+  private async addTasksLocked(runId: string, newTasks: NewTask[]): Promise<Task[]> {
     const run = await this.load(runId);
     const time = this.now().toISOString();
     const added: Task[] = newTasks.map((t) => ({
@@ -113,7 +121,24 @@ export class TaskStore {
     return added;
   }
 
-  async setStatus(runId: string, taskId: string, status: TaskStatus, error?: string): Promise<Task> {
+  setStatus(runId: string, taskId: string, status: TaskStatus, error?: string): Promise<Task> {
+    return this.lock.run(() => this.setStatusLocked(runId, taskId, status, error));
+  }
+
+  /** Records results on a task without changing its status. */
+  updateTask(runId: string, taskId: string, patch: Partial<Pick<Task, "branch" | "commit" | "changedFiles" | "summary">>): Promise<Task> {
+    return this.lock.run(async () => {
+      const run = await this.load(runId);
+      const task = run.tasks.find((t) => t.id === taskId);
+      if (!task) throw new Error(`Unknown task ${taskId}`);
+      Object.assign(task, patch, { updatedAt: this.now().toISOString() });
+      run.updatedAt = task.updatedAt;
+      await this.save(run);
+      return task;
+    });
+  }
+
+  private async setStatusLocked(runId: string, taskId: string, status: TaskStatus, error?: string): Promise<Task> {
     const run = await this.load(runId);
     const task = run.tasks.find((t) => t.id === taskId);
     if (!task) {

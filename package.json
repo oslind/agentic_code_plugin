@@ -43,6 +43,21 @@
       {
         "command": "agentic.showLog",
         "title": "Agentic: Show log"
+      },
+      {
+        "command": "agentic.runPlan",
+        "title": "Agentic: Run plan",
+        "icon": "$(play)"
+      },
+      {
+        "command": "agentic.cancelRun",
+        "title": "Agentic: Cancel run",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "agentic.applyRun",
+        "title": "Agentic: Apply run to my branch",
+        "icon": "$(git-merge)"
       }
     ],
     "configuration": {
@@ -87,6 +102,56 @@
           ],
           "default": "json_schema",
           "description": "How to ask the server for JSON. Use json_object or none if the server rejects json_schema."
+        },
+        "agentic.checks": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Checks that decide whether a task is done, run in each worker's worktree and again after each merge. Example: `[{\"name\": \"test\", \"command\": \"npm test\"}, {\"name\": \"lint\", \"command\": \"npm run lint\"}]`. Workers can run these by name but cannot run any other command.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "command"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "command": {
+                "type": "string"
+              },
+              "timeoutMs": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "agentic.maxParallelWorkers": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "How many workers run at once. A single local GPU usually serves one request at a time, so higher values mostly help with remote or batched servers."
+        },
+        "agentic.worker.maxTurns": {
+          "type": "number",
+          "default": 40,
+          "description": "Tool calls a worker may make on one task before it is stopped."
+        },
+        "agentic.worker.maxFixRounds": {
+          "type": "number",
+          "default": 2,
+          "description": "How many times a worker is sent failing check output to fix before the task fails."
+        },
+        "agentic.worktree.linkDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules"
+          ],
+          "description": "Folders linked from the project into each worktree so checks can run without reinstalling dependencies."
         }
       }
     },
@@ -118,6 +183,22 @@
           "command": "agentic.refreshTasks",
           "when": "view == agentic.tasks",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentic.runPlan",
+          "when": "view == agentic.tasks && viewItem == run",
+          "group": "inline"
+        },
+        {
+          "command": "agentic.cancelRun",
+          "when": "view == agentic.tasks && viewItem == run",
+          "group": "inline"
+        },
+        {
+          "command": "agentic.applyRun",
+          "when": "view == agentic.tasks && viewItem == run"
         }
       ]
     }
