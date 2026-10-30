@@ -8,11 +8,34 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["AI", "Other"],
+  "categories": [
+    "AI",
+    "Other"
+  ],
   "main": "./out/extension.js",
   "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Agents read and write project files and run checks, so the workspace must be trusted."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Agents need a real folder on disk to sandbox."
+    }
+  },
   "contributes": {
     "commands": [
+      {
+        "command": "agentic.plan",
+        "title": "Agentic: Plan a task",
+        "icon": "$(add)"
+      },
+      {
+        "command": "agentic.refreshTasks",
+        "title": "Agentic: Refresh tasks",
+        "icon": "$(refresh)"
+      },
       {
         "command": "agentic.testModelConnection",
         "title": "Agentic: Test model connection"
@@ -57,11 +80,46 @@
         },
         "agentic.model.structuredOutput": {
           "type": "string",
-          "enum": ["json_schema", "json_object", "none"],
+          "enum": [
+            "json_schema",
+            "json_object",
+            "none"
+          ],
           "default": "json_schema",
           "description": "How to ask the server for JSON. Use json_object or none if the server rejects json_schema."
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentic",
+          "title": "Agentic",
+          "icon": "media/agentic.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentic": [
+        {
+          "id": "agentic.tasks",
+          "name": "Tasks"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentic.plan",
+          "when": "view == agentic.tasks",
+          "group": "navigation"
+        },
+        {
+          "command": "agentic.refreshTasks",
+          "when": "view == agentic.tasks",
+          "group": "navigation"
+        }
+      ]
     }
   },
   "scripts": {
@@ -73,11 +131,13 @@
     "check": "npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {
+    "picomatch": "^4.0.7",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
+    "@types/picomatch": "^4.0.3",
     "@types/vscode": "~1.90.0",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",
