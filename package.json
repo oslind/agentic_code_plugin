@@ -89,6 +89,24 @@
         "command": "agentic.cleanupRun",
         "title": "Agentic: Clean up run",
         "icon": "$(trash)"
+      },
+      {
+        "command": "agentic.newTask",
+        "title": "Agentic: New task",
+        "icon": "$(add)"
+      },
+      {
+        "command": "agentic.openSettings",
+        "title": "Agentic: Settings",
+        "icon": {
+          "light": "media/settings-dot.svg",
+          "dark": "media/settings-dot.svg"
+        }
+      },
+      {
+        "command": "agentic.showHistory",
+        "title": "Agentic: Switch conversation",
+        "icon": "$(history)"
       }
     ],
     "configuration": {
@@ -183,6 +201,26 @@
             "node_modules"
           ],
           "description": "Folders linked from the project into each worktree so checks can run without reinstalling dependencies."
+        },
+        "agentic.chat.historySize": {
+          "type": "number",
+          "default": 10,
+          "minimum": 3,
+          "maximum": 100,
+          "description": "How many recent chat conversations are kept. At least 3 are always kept. Older ones are deleted; their runs stay in the Tasks view."
+        },
+        "agentic.chat.defaultMode": {
+          "type": "string",
+          "enum": [
+            "plan",
+            "act"
+          ],
+          "default": "plan",
+          "enumDescriptions": [
+            "Discuss and plan. Nothing runs.",
+            "Sub-agents carry out plans as soon as they are made."
+          ],
+          "description": "Mode for new conversations when none was used before."
         }
       }
     },
@@ -198,13 +236,34 @@
     "views": {
       "agentic": [
         {
+          "type": "webview",
+          "id": "agentic.chat",
+          "name": "Chat"
+        },
+        {
           "id": "agentic.tasks",
-          "name": "Tasks"
+          "name": "Tasks",
+          "visibility": "collapsed"
         }
       ]
     },
     "menus": {
       "view/title": [
+        {
+          "command": "agentic.openSettings",
+          "when": "view == agentic.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentic.newTask",
+          "when": "view == agentic.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentic.showHistory",
+          "when": "view == agentic.chat",
+          "group": "navigation@3"
+        },
         {
           "command": "agentic.plan",
           "when": "view == agentic.tasks",

@@ -8,7 +8,11 @@ import { callStructured } from "./llm/structured";
 import { OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { TaskStore } from "./state/taskStore";
 import { WorkspaceSandbox } from "./tools/sandbox";
-import { offerResume, registerRunCommands } from "./ui/runCommands";
+import { ChatController } from "./chat/chatController";
+import { ConversationStore } from "./chat/conversationStore";
+import { ChatMode } from "./chat/types";
+import { ChatViewProvider } from "./ui/chatView";
+import { confinedFolder, offerResume, registerRunCommands } from "./ui/runCommands";
 import { TaskTreeProvider } from "./ui/taskTree";
 
 const FILE_LIMIT = 2000;
@@ -32,10 +36,53 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new TaskStore(context.globalStorageUri.fsPath);
   const tree = new TaskTreeProvider(store);
 
-  registerRunCommands(context, store, tree, output);
+  const runs = registerRunCommands(context, store, tree, output);
+
+  const conversations = new ConversationStore(context.globalStorageUri.fsPath, () =>
+    vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),
+  );
+  const chat = new ChatController(conversations, store, {
+    provider: () => new OpenAICompatibleProvider(readModelConfig()),
+    pickWorkspace: async () => (await pickWorkspaceFolder())?.uri.fsPath,
+    // The coordinator only ever sees the file list of a folder that is open right now.
+    fileTree: async (root) => {
+      const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
+      if (!folder) return undefined;
+      const sandbox = await WorkspaceSandbox.create(folder.uri.fsPath);
+      const paths = await sandbox.listFiles("**", FILE_LIMIT);
+      return paths.length ? fileTree(paths) : undefined;
+    },
+    runPlan: (runId) => runs.start(runId),
+    cancelRun: (runId) => runs.cancel(runId),
+    defaultMode: () =>
+      context.globalState.get<ChatMode>("agentic.chatMode") ??
+      vscode.workspace.getConfiguration("agentic.chat").get<ChatMode>("defaultMode", "plan"),
+    setDefaultMode: (mode) => void context.globalState.update("agentic.chatMode", mode),
+    log: (level, message) => output[level](message),
+  });
+  const chatView = new ChatViewProvider(context.extensionUri, chat, store, output);
   void offerResume(store).catch((err) => output.warn(`Could not check for interrupted runs: ${(err as Error).message}`));
   context.subscriptions.push(
     output,
+    { dispose: () => chat.dispose() },
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, chatView, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.commands.registerCommand("agentic.newTask", () => chatView.focus(true)),
+    vscode.commands.registerCommand("agentic.openSettings", () =>
+      vscode.commands.executeCommand("workbench.action.openSettings", `@ext:${context.extension.id}`),
+    ),
+    vscode.commands.registerCommand("agentic.showHistory", async () => {
+      const list = await conversations.list();
+      const pick = await vscode.window.showQuickPick(
+        [
+          { label: "$(add) New task", id: "" },
+          ...list.map((c) => ({ label: c.title, description: new Date(c.updatedAt).toLocaleString(), detail: c.workspaceRoot, id: c.id })),
+        ],
+        { placeHolder: "Switch conversation" },
+      );
+      if (!pick) return;
+      if (pick.id) await chat.open(pick.id);
+      await chatView.focus(!pick.id);
+    }),
     vscode.window.registerTreeDataProvider("agentic.tasks", tree),
     vscode.commands.registerCommand("agentic.refreshTasks", () => tree.refresh()),
     vscode.commands.registerCommand("agentic.testModelConnection", async () => {

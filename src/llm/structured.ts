@@ -12,6 +12,13 @@ export function extractJson(raw: string): unknown {
     throw new SyntaxError("Reply ended inside a <think> block");
   }
 
+  // A reply that is already valid JSON may itself contain ``` inside a string.
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Not plain JSON; look for a fenced block next.
+  }
+
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence?.[1]) {
     text = fence[1].trim();

@@ -25,7 +25,10 @@ What works now:
   - **Transient failures.** When the model server is briefly unreachable, requests are retried with backoff, and tasks are retried automatically up to 3 attempts.
   - **Cancel one task** without stopping the run, or cancel the whole run.
   - **Clean up.** Remove a run's worktrees and keep its branches, or delete everything.
-- An **Agentic** sidebar showing saved runs and their task tree.
+- A **chat sidebar** in the style of Cline. Type a request in the input box at the top; replies from the coordinator and from each sub-agent appear below it, with the plan and each task's status. The green dot opens settings, **+** starts a new agentic task, and the history button (or the dropdown in the chat) switches between conversations. The most recent conversations are kept on disk (`agentic.chat.historySize`, default 10, never fewer than 3).
+- **Plan and Act modes.** Plan mode only discusses and proposes plans; nothing runs. Act mode starts sub-agents as soon as a plan is made. Pressing **Run** on a proposed plan switches to Act mode.
+- **Strict delegation.** The coordinator has no tools at all: it cannot read or change files, and replies containing code are rejected and retried. Its only way to get work done is to hand a request to the planner, which splits it into tasks that sub-agents carry out within their own file scopes. A "run" from the coordinator in Plan mode is refused in code, not just in the prompt.
+- A **Tasks** view (collapsed under the chat) showing saved runs and their task tree, for retrying, cancelling, cleaning up and applying runs.
 - Task state saved on disk with atomic writes, an append-only event log, a dependency graph with cycle checks, and recovery of tasks interrupted by a restart.
 
 ## Try it
@@ -48,7 +51,7 @@ What works now:
      { "name": "typecheck", "command": "npx tsc --noEmit" }
    ]
    ```
-5. Open the **Agentic** sidebar and click **+** to plan a request. Review the tasks, then press **Run** on the plan.
+5. Open the **Agentic** sidebar and type a request in the chat. In Plan mode the coordinator proposes a plan; switch to Act (or press **Run plan**) to let the sub-agents do it. Each merge still asks for your approval.
 
 The workspace folder must be the root of a git repository. Checks are commands you configure, and they run with your permissions like any VS Code task. Workers can only start them by name.
 

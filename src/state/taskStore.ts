@@ -14,6 +14,7 @@ export type NewTask = Pick<Task, "title" | "instructions"> &
 export class TaskStore {
   // Workers update tasks in parallel; every read-modify-write goes through this lock.
   private readonly lock = new Mutex();
+  private readonly listeners = new Set<(event: RunEvent) => void>();
 
   constructor(
     private readonly root: string,
@@ -66,8 +67,21 @@ export class TaskStore {
   async log(event: Omit<RunEvent, "time">): Promise<void> {
     const dir = this.runDir(event.runId);
     await fs.mkdir(dir, { recursive: true });
-    const line = JSON.stringify({ time: this.now().toISOString(), ...event }) + "\n";
-    await fs.appendFile(path.join(dir, "events.jsonl"), line, "utf8");
+    const full: RunEvent = { time: this.now().toISOString(), ...event };
+    await fs.appendFile(path.join(dir, "events.jsonl"), JSON.stringify(full) + "\n", "utf8");
+    for (const listener of this.listeners) {
+      try {
+        listener(full);
+      } catch {
+        // A broken listener must never stop a run.
+      }
+    }
+  }
+
+  /** Calls `listener` after every logged event. Returns a function that stops it. */
+  onEvent(listener: (event: RunEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   async readLog(runId: string): Promise<RunEvent[]> {
