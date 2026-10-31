@@ -17,6 +17,8 @@ export class ProviderError extends Error {
     message: string,
     readonly status?: number,
     readonly retryable = false,
+    /** True when the failed request asked for a response format. */
+    readonly sentFormat = false,
   ) {
     super(message);
     this.name = "ProviderError";
@@ -36,12 +38,58 @@ export class OpenAICompatibleProvider implements ModelProvider {
   constructor(
     private readonly config: OpenAICompatibleConfig,
     private readonly fetchFn: FetchFn = fetch,
+    /** Called when the server rejects a structured output mode and a weaker one is used. */
+    private readonly onFallback?: (from: StructuredOutputMode, to: StructuredOutputMode, error: string) => void,
   ) {
     this.model = config.model;
     this.contextWindow = config.contextWindow;
   }
 
+  /** Structured output modes from strongest to none. A server that rejects one gets the next. */
+  private static readonly FALLBACK: StructuredOutputMode[] = ["json_schema", "json_object", "none"];
+
+  /**
+   * Modes found not to work, per server and model, shared by every provider
+   * in this session so the failing request is not repeated on each call.
+   * Cleared when the settings change, since the user may have fixed the server.
+   */
+  private static readonly degraded = new Map<string, StructuredOutputMode>();
+
+  static resetFallbacks(): void {
+    OpenAICompatibleProvider.degraded.clear();
+  }
+
+  private get key(): string {
+    return `${this.config.baseUrl}|${this.config.model}`;
+  }
+
+  /** The configured mode, or a weaker one if the server already rejected it. */
+  get structuredOutput(): StructuredOutputMode {
+    const order = OpenAICompatibleProvider.FALLBACK;
+    const degraded = OpenAICompatibleProvider.degraded.get(this.key);
+    const configured = this.config.structuredOutput;
+    return degraded && order.indexOf(degraded) > order.indexOf(configured) ? degraded : configured;
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
+    const order = OpenAICompatibleProvider.FALLBACK;
+    for (let mode = this.structuredOutput; ; ) {
+      try {
+        return await this.send(request, mode);
+      } catch (err) {
+        const next = order[order.indexOf(mode) + 1];
+        // Some servers and models (for example Ollama with certain GGUFs) cannot
+        // constrain output to a schema. The reply is validated by callStructured
+        // anyway, so ask again with a weaker format instead of failing.
+        if (!(err instanceof ProviderError) || !request.jsonSchema || !next || !rejectsFormat(err)) throw err;
+        OpenAICompatibleProvider.degraded.set(this.key, next);
+        this.onFallback?.(mode, next, err.message);
+        mode = next;
+      }
+    }
+  }
+
+  private async send(request: ChatRequest, mode: StructuredOutputMode): Promise<ChatResponse> {
     const body: Record<string, unknown> = {
       model: this.config.model,
       messages: request.messages,
@@ -51,12 +99,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (request.maxTokens !== undefined) {
       body.max_tokens = request.maxTokens;
     }
-    if (request.jsonSchema && this.config.structuredOutput === "json_schema") {
+    if (request.jsonSchema && mode === "json_schema") {
       body.response_format = {
         type: "json_schema",
         json_schema: { name: request.jsonSchema.name, schema: request.jsonSchema.schema, strict: true },
       };
-    } else if (request.jsonSchema && this.config.structuredOutput === "json_object") {
+    } else if (request.jsonSchema && mode === "json_object") {
       body.response_format = { type: "json_object" };
     }
 
@@ -94,7 +142,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           false,
         );
       }
-      throw new ProviderError(`Model server returned ${res.status}: ${text.slice(0, 500)}`, res.status, retryable);
+      throw new ProviderError(`Model server returned ${res.status}: ${text.slice(0, 500)}`, res.status, retryable, body.response_format !== undefined);
     }
 
     const json = (await res.json()) as {
@@ -111,4 +159,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       completionTokens: json.usage?.completion_tokens,
     };
   }
+}
+
+/** Errors that mean the server cannot produce the requested response format, rather than a general failure. */
+export function rejectsFormat(err: ProviderError): boolean {
+  if (!err.sentFormat || err.status === undefined || err.status === 404 || err.status === 429) return false;
+  if (err.status === 400 || err.status === 422 || err.status === 501) return true;
+  return /format|grammar|vocab|schema|response_format|json/i.test(err.message);
 }

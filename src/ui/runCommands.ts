@@ -1,8 +1,7 @@
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
-import { readModelConfig, readRunConfig } from "../config";
+import { createProvider, readRunConfig } from "../config";
 import { applyRun, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
-import { OpenAICompatibleProvider } from "../providers/openaiCompatible";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
 import { Run, Task } from "../state/types";
@@ -114,7 +113,7 @@ export function registerRunCommands(
     const orchestrator = new Orchestrator({
       store,
       runId: run.id,
-      provider: new RetryingProvider(new OpenAICompatibleProvider(readModelConfig(folder.uri))),
+      provider: new RetryingProvider(createProvider(folder.uri, output)),
       workspaceRoot: folder.uri.fsPath,
       checks: config.checks,
       maxParallel: config.maxParallel,

@@ -150,7 +150,7 @@
             "none"
           ],
           "default": "json_schema",
-          "description": "How to ask the server for JSON. Use json_object or none if the server rejects json_schema."
+          "description": "How to ask the server for JSON. If the server rejects a mode (for example Ollama's \"failed to load model vocabulary required for format\"), the extension falls back to json_object and then none by itself. Replies are always checked against the schema and retried, so none still works."
         },
         "agentic.checks": {
           "type": "array",

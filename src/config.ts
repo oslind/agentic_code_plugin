@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { OpenAICompatibleConfig } from "./providers/openaiCompatible";
+import { OpenAICompatibleConfig, OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { StructuredOutputMode } from "./providers/types";
 import { CheckConfig } from "./checks/runner";
 
@@ -20,6 +20,13 @@ export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
     requestTimeoutMs: c.get<number>("requestTimeoutMs", 300000),
     structuredOutput: c.get<StructuredOutputMode>("structuredOutput", "json_schema"),
   };
+}
+
+/** A provider for the current settings. Logs when the server forces a weaker structured output mode. */
+export function createProvider(scope: vscode.Uri | undefined, log: { warn(message: string): void }): OpenAICompatibleProvider {
+  return new OpenAICompatibleProvider(readModelConfig(scope), fetch, (from, to, error) =>
+    log.warn(`The model server rejected structured output "${from}" (${error}). Using "${to}" instead; replies are still checked against the schema.`),
+  );
 }
 
 /** Says which settings scope the model name comes from, for error messages. */

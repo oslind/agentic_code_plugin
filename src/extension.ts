@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { z } from "zod";
-import { readModelConfig } from "./config";
+import { createProvider, readModelConfig } from "./config";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -42,7 +42,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),
   );
   const chat = new ChatController(conversations, store, {
-    provider: (root) => new OpenAICompatibleProvider(readModelConfig(root ? vscode.Uri.file(root) : undefined)),
+    provider: (root) => createProvider(root ? vscode.Uri.file(root) : undefined, output),
     modelLabel: (root) => {
       const c = readModelConfig(root ? vscode.Uri.file(root) : undefined);
       return `${c.model} at ${c.baseUrl}`;
@@ -71,6 +71,8 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => chat.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration("agentic.model")) return;
+      // The user may have switched model or server; try the configured format again.
+      OpenAICompatibleProvider.resetFallbacks();
       const c = readModelConfig();
       output.info(`Model settings changed: now ${c.model} at ${c.baseUrl} (${c.source})`);
       chat.settingsChanged();
@@ -97,7 +99,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("agentic.refreshTasks", () => tree.refresh()),
     vscode.commands.registerCommand("agentic.testModelConnection", async () => {
       const config = readModelConfig();
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = createProvider(undefined, output);
       output.info(`Testing ${config.model} at ${config.baseUrl}`);
       try {
         // A structured call tests both reachability and that the model can follow a JSON format.
@@ -129,7 +131,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const folder = await pickWorkspaceFolder();
       if (!folder) return;
       const config = readModelConfig(folder.uri);
-      const provider = new OpenAICompatibleProvider(config);
+      const provider = createProvider(folder.uri, output);
       try {
         const result = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: `Planning with ${config.model}...`, cancellable: true },
