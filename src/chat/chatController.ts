@@ -12,7 +12,10 @@ import { ChatEntry, ChatMode, Conversation, ConversationSummary } from "./types"
 
 /** What the chat needs from VS Code. Kept small so the controller can be tested without it. */
 export interface ChatHost {
-  provider(): ModelProvider;
+  /** A provider built from the current settings, scoped to the conversation's folder. */
+  provider(workspaceRoot?: string): ModelProvider;
+  /** Short description of the model in use, shown in the chat. */
+  modelLabel(workspaceRoot?: string): string;
   /** The workspace folder a new conversation's agents are confined to. */
   pickWorkspace(): Promise<string | undefined>;
   fileTree(workspaceRoot: string, signal: AbortSignal): Promise<string | undefined>;
@@ -33,6 +36,8 @@ export interface PlanView {
 
 export interface ChatViewState {
   mode: ChatMode;
+  /** The model the next message will use, for example "qwen3:8b at http://localhost:11434/v1". */
+  model: string;
   /** What the chat is doing right now, if anything. */
   busy?: string;
   conversations: ConversationSummary[];
@@ -93,6 +98,11 @@ export class ChatController {
     return () => this.listeners.delete(listener);
   }
 
+  /** Called when settings change, so the chat shows the model it will use next. */
+  settingsChanged(): void {
+    this.changed();
+  }
+
   private changed(): void {
     for (const l of this.listeners) l();
   }
@@ -124,6 +134,7 @@ export class ChatController {
     }
     return {
       mode: this.mode,
+      model: this.host.modelLabel(current?.workspaceRoot),
       busy: this.busy,
       conversations,
       current: current && { id: current.id, title: current.title, workspaceRoot: current.workspaceRoot, entries: current.entries },
@@ -201,7 +212,8 @@ export class ChatController {
     let startRun: string | undefined;
     try {
       c = await this.conversations.load(c.id);
-      const provider = this.host.provider();
+      const provider = this.host.provider(c.workspaceRoot);
+      this.host.log("info", `Coordinator using ${this.host.modelLabel(c.workspaceRoot)}`);
       const fileTree = await this.host.fileTree(c.workspaceRoot, abort.signal).catch(() => undefined);
       const pending = await this.pendingPlan(c);
       const turn = await coordinatorTurn(

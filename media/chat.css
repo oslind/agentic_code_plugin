@@ -426,3 +426,12 @@ ol.tasks {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.input-actions .model {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}

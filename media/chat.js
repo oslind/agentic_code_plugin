@@ -121,6 +121,7 @@
       "div",
       { class: "input-actions" },
       el("span", { class: "hint mode-" + state.mode }, state.mode === "plan" ? "Plan mode" : "Act mode"),
+      el("span", { class: "model", title: "Model used for the next message. Change it in settings (green dot)." }, state.model || ""),
       el("span", { class: "spacer" }),
       busy ? el("button", { class: "secondary", onclick: () => post({ type: "cancel" }) }, "Stop") : null,
       el("button", { class: "primary", disabled: busy, onclick: () => send(ta) }, "Send"),
