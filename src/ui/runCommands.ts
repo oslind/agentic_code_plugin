@@ -1,7 +1,7 @@
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
 import { readModelConfig, readRunConfig } from "../config";
-import { applyRun, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator } from "../coordinator/orchestrator";
+import { applyRun, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { OpenAICompatibleProvider } from "../providers/openaiCompatible";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
@@ -9,13 +9,19 @@ import { Run, Task } from "../state/types";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
 
+export interface RunControl {
+  /** Runs a plan for the chat. Errors are thrown, not shown. */
+  start(runId: string): Promise<RunOutcome | undefined>;
+  cancel(runId: string): void;
+}
+
 type RunNode = { kind: "run"; run: Run } | { kind: "task"; run: Run; task: Task } | undefined;
 
 /**
  * A run may only touch the folder it was planned in, and only while that
  * folder is open in VS Code. This re-checks it before anything runs.
  */
-async function confinedFolder(run: Run): Promise<vscode.WorkspaceFolder> {
+export async function confinedFolder(run: Pick<Run, "workspaceRoot">): Promise<vscode.WorkspaceFolder> {
   if (!run.workspaceRoot) throw new Error("This run has no workspace folder recorded.");
   const want = await fs.realpath(run.workspaceRoot);
   for (const f of vscode.workspace.workspaceFolders ?? []) {
@@ -85,61 +91,72 @@ export function registerRunCommands(
   store: TaskStore,
   tree: TaskTreeProvider,
   output: vscode.LogOutputChannel,
-): void {
+): RunControl {
   const active = new Map<string, { abort: AbortController; orchestrator: Orchestrator }>();
+
+  /**
+   * Runs a plan with sub-agents. Resolves undefined if the user chose not to
+   * start it. With `fromChat`, errors are thrown to the chat instead of shown.
+   */
+  async function execute(run: Run, fromChat: boolean): Promise<RunOutcome | undefined> {
+    if (active.has(run.id)) throw new Error("This run is already in progress.");
+    const folder = await confinedFolder(run);
+    const config = readRunConfig(folder.uri);
+    if (config.checks.length === 0) {
+      const go = await vscode.window.showWarningMessage(
+        "No checks are configured, so nothing will verify the workers' changes.",
+        { modal: true, detail: "Add tests, lint or type checks under agentic.checks in your settings." },
+        "Run anyway",
+      );
+      if (go !== "Run anyway") return undefined;
+    }
+    const abort = new AbortController();
+    const orchestrator = new Orchestrator({
+      store,
+      runId: run.id,
+      provider: new RetryingProvider(new OpenAICompatibleProvider(readModelConfig())),
+      workspaceRoot: folder.uri.fsPath,
+      checks: config.checks,
+      maxParallel: config.maxParallel,
+      maxTurns: config.maxTurns,
+      maxFixRounds: config.maxFixRounds,
+      linkDirs: config.linkDirs,
+      signal: abort.signal,
+      approveMerge,
+      approveTool,
+      onChange: () => tree.refresh(),
+    });
+    active.set(run.id, { abort, orchestrator });
+    try {
+      output.info(`Running "${run.request}" in ${folder.uri.fsPath}`);
+      const outcome = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: "Agentic: running tasks" },
+        () => orchestrator.run(),
+      );
+      output.info(`Done: ${outcome.done.join(", ") || "none"}. Failed: ${outcome.failed.join(", ") || "none"}. Blocked: ${outcome.blocked.join(", ") || "none"}.`);
+      if (!fromChat) {
+        const summary = `${outcome.done.length} done, ${outcome.failed.length} failed, ${outcome.blocked.length} blocked. Work is on ${outcome.integrationBranch}.`;
+        void vscode.window.showInformationMessage(summary, "Apply to my branch", "Show log").then(async (next) => {
+          if (next === "Apply to my branch") await vscode.commands.executeCommand("agentic.applyRun", { kind: "run", run });
+          if (next === "Show log") output.show();
+        });
+      }
+      return outcome;
+    } finally {
+      active.delete(run.id);
+      tree.refresh();
+    }
+  }
 
   context.subscriptions.push(
     vscode.commands.registerCommand("agentic.runPlan", async (node: RunNode) => {
       const run = await pickRun(store, node);
       if (!run) return;
-      if (active.has(run.id)) {
-        vscode.window.showWarningMessage("This run is already in progress.");
-        return;
-      }
       try {
-        const folder = await confinedFolder(run);
-        const config = readRunConfig(folder.uri);
-        if (config.checks.length === 0) {
-          const go = await vscode.window.showWarningMessage(
-            "No checks are configured, so nothing will verify the workers' changes.",
-            { modal: true, detail: "Add tests, lint or type checks under agentic.checks in your settings." },
-            "Run anyway",
-          );
-          if (go !== "Run anyway") return;
-        }
-        const abort = new AbortController();
-        const orchestrator = new Orchestrator({
-          store,
-          runId: run.id,
-          provider: new RetryingProvider(new OpenAICompatibleProvider(readModelConfig())),
-          workspaceRoot: folder.uri.fsPath,
-          checks: config.checks,
-          maxParallel: config.maxParallel,
-          maxTurns: config.maxTurns,
-          maxFixRounds: config.maxFixRounds,
-          linkDirs: config.linkDirs,
-          signal: abort.signal,
-          approveMerge,
-          approveTool,
-          onChange: () => tree.refresh(),
-        });
-        active.set(run.id, { abort, orchestrator });
-        output.info(`Running "${run.request}" in ${folder.uri.fsPath}`);
-        const outcome = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Window, title: "Agentic: running tasks" },
-          () => orchestrator.run(),
-        );
-        output.info(`Done: ${outcome.done.join(", ") || "none"}. Failed: ${outcome.failed.join(", ") || "none"}. Blocked: ${outcome.blocked.join(", ") || "none"}.`);
-        const summary = `${outcome.done.length} done, ${outcome.failed.length} failed, ${outcome.blocked.length} blocked. Work is on ${outcome.integrationBranch}.`;
-        const next = await vscode.window.showInformationMessage(summary, "Apply to my branch", "Show log");
-        if (next === "Apply to my branch") await vscode.commands.executeCommand("agentic.applyRun", { kind: "run", run });
-        if (next === "Show log") output.show();
+        await execute(run, false);
       } catch (err) {
         output.error((err as Error).message);
         vscode.window.showErrorMessage(`Run failed: ${(err as Error).message}`);
-      } finally {
-        active.delete(run.id);
-        tree.refresh();
       }
     }),
     vscode.commands.registerCommand("agentic.cancelRun", async (node: RunNode) => {
@@ -246,4 +263,11 @@ export function registerRunCommands(
       }
     }),
   );
+
+  return {
+    start: async (runId) => execute(await store.load(runId), true),
+    cancel: (runId) => {
+      active.get(runId)?.abort.abort();
+    },
+  };
 }
