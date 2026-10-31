@@ -3,9 +3,15 @@ import { OpenAICompatibleConfig } from "./providers/openaiCompatible";
 import { StructuredOutputMode } from "./providers/types";
 import { CheckConfig } from "./checks/runner";
 
-export function readModelConfig(): OpenAICompatibleConfig {
-  const c = vscode.workspace.getConfiguration("agentic.model");
+/**
+ * Reads the model settings fresh on every call, so changes apply to the next
+ * request without a reload. Pass the workspace folder so folder-level
+ * settings in a multi-root workspace are honoured too.
+ */
+export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
+  const c = vscode.workspace.getConfiguration("agentic.model", scope);
   return {
+    source: modelNameSource(scope),
     baseUrl: c.get<string>("baseUrl", "http://localhost:11434/v1"),
     model: c.get<string>("name", "qwen3.8:27b"),
     apiKey: c.get<string>("apiKey", "") || undefined,
@@ -14,6 +20,19 @@ export function readModelConfig(): OpenAICompatibleConfig {
     requestTimeoutMs: c.get<number>("requestTimeoutMs", 300000),
     structuredOutput: c.get<StructuredOutputMode>("structuredOutput", "json_schema"),
   };
+}
+
+/** Says which settings scope the model name comes from, for error messages. */
+export function modelNameSource(scope?: vscode.Uri): string {
+  const i = vscode.workspace.getConfiguration("agentic.model", scope).inspect<string>("name");
+  if (!i) return "agentic.model.name";
+  const where: [unknown, string][] = [
+    [i.workspaceFolderLanguageValue ?? i.workspaceFolderValue, "Folder settings"],
+    [i.workspaceLanguageValue ?? i.workspaceValue, "Workspace settings"],
+    [i.globalLanguageValue ?? i.globalValue, "User settings (includes Remote settings in WSL/SSH)"],
+  ];
+  const hit = where.find(([v]) => v !== undefined);
+  return hit ? `agentic.model.name from ${hit[1]}` : "agentic.model.name, which is not set anywhere, so the built-in default is used";
 }
 
 export interface RunConfig {

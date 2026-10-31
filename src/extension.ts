@@ -42,7 +42,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),
   );
   const chat = new ChatController(conversations, store, {
-    provider: () => new OpenAICompatibleProvider(readModelConfig()),
+    provider: (root) => new OpenAICompatibleProvider(readModelConfig(root ? vscode.Uri.file(root) : undefined)),
+    modelLabel: (root) => {
+      const c = readModelConfig(root ? vscode.Uri.file(root) : undefined);
+      return `${c.model} at ${c.baseUrl}`;
+    },
     pickWorkspace: async () => (await pickWorkspaceFolder())?.uri.fsPath,
     // The coordinator only ever sees the file list of a folder that is open right now.
     fileTree: async (root) => {
@@ -65,6 +69,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     output,
     { dispose: () => chat.dispose() },
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration("agentic.model")) return;
+      const c = readModelConfig();
+      output.info(`Model settings changed: now ${c.model} at ${c.baseUrl} (${c.source})`);
+      chat.settingsChanged();
+    }),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, chatView, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.commands.registerCommand("agentic.newTask", () => chatView.focus(true)),
     vscode.commands.registerCommand("agentic.openSettings", () =>
@@ -118,7 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!request?.trim()) return;
       const folder = await pickWorkspaceFolder();
       if (!folder) return;
-      const config = readModelConfig();
+      const config = readModelConfig(folder.uri);
       const provider = new OpenAICompatibleProvider(config);
       try {
         const result = await vscode.window.withProgress(

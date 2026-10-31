@@ -139,6 +139,7 @@ describe("ChatController", () => {
     let current = mode;
     const host: ChatHost = {
       provider: () => provider,
+      modelLabel: () => "test at http://localhost",
       pickWorkspace: async () => "/ws",
       fileTree: async () => "src/\n  index.ts",
       runPlan: async (runId): Promise<RunOutcome> => {

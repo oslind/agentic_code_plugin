@@ -114,7 +114,7 @@ export function registerRunCommands(
     const orchestrator = new Orchestrator({
       store,
       runId: run.id,
-      provider: new RetryingProvider(new OpenAICompatibleProvider(readModelConfig())),
+      provider: new RetryingProvider(new OpenAICompatibleProvider(readModelConfig(folder.uri))),
       workspaceRoot: folder.uri.fsPath,
       checks: config.checks,
       maxParallel: config.maxParallel,

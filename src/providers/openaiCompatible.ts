@@ -8,6 +8,8 @@ export interface OpenAICompatibleConfig {
   temperature: number;
   requestTimeoutMs: number;
   structuredOutput: StructuredOutputMode;
+  /** Where the model name came from, named in errors so a wrong setting is easy to find. */
+  source?: string;
 }
 
 export class ProviderError extends Error {
@@ -83,6 +85,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       const retryable = res.status === 429 || res.status >= 500;
+      if (res.status === 404) {
+        throw new ProviderError(
+          `Model "${this.config.model}" was not found at ${this.config.baseUrl} (404). ` +
+            `The name comes from ${this.config.source ?? "agentic.model.name"}. ` +
+            `Set it to a model the server has, for example one listed by "ollama list". Server said: ${text.slice(0, 300)}`,
+          404,
+          false,
+        );
+      }
       throw new ProviderError(`Model server returned ${res.status}: ${text.slice(0, 500)}`, res.status, retryable);
     }
 

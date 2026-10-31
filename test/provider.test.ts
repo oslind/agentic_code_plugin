@@ -45,6 +45,16 @@ describe("OpenAICompatibleProvider", () => {
     expect(err.retryable).toBe(true);
   });
 
+  it("names the model, server and setting source on a 404", async () => {
+    const f = fakeFetch(404, { error: { message: "model 'qwen3.8:27b' not found" } });
+    const p = new OpenAICompatibleProvider({ ...base, source: "agentic.model.name from Workspace settings" }, f.fn);
+    const err = await p.chat({ messages: [{ role: "user", content: "x" }] }).catch((e) => e as ProviderError);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.retryable).toBe(false);
+    expect(err.message).toMatch(/"qwen3\.8:27b" was not found at http:\/\/localhost:11434\/v1/);
+    expect(err.message).toMatch(/from Workspace settings/);
+  });
+
   it("marks 4xx errors as not retryable", async () => {
     const p = new OpenAICompatibleProvider(base, fakeFetch(400, "bad").fn);
     const err = await p.chat({ messages: [] }).catch((e) => e);
