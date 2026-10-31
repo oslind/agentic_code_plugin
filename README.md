@@ -32,6 +32,13 @@ What works now:
 
 1. Start a local model, for example `ollama run qwen3.8:27b`.
 2. Run `npm install` and `npm run compile`, then press F5 in VS Code to open an Extension Development Host.
+   To install it as a regular extension instead, build a `.vsix` and install that file:
+   ```sh
+   npm install
+   npm run package
+   code --install-extension agentic-code-plugin.vsix --force
+   ```
+   `npm run package` compiles first and always writes `agentic-code-plugin.vsix` in the repo root. In WSL, run these in the WSL terminal and the extension installs into the WSL side of VS Code.
 3. Run **Agentic: Test model connection** from the command palette.
 4. Add your checks to settings, for example:
    ```json
