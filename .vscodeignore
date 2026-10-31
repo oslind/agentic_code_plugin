@@ -5,3 +5,8 @@ test/
 tsconfig.json
 eslint.config.mjs
 vitest.config.mts
+.agentic/
+coverage/
+.vscode-test/
+*.vsix
+.gitignore

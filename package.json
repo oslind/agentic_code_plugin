@@ -5,6 +5,10 @@
   "version": "0.0.1",
   "publisher": "oslind",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oslind/agentic_code_plugin.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -253,12 +257,14 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "typecheck": "tsc -p . --noEmit",
     "lint": "eslint src test",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm test"
+    "check": "npm run typecheck && npm run lint && npm test",
+    "package": "vsce package --out agentic-code-plugin.vsix"
   },
   "dependencies": {
     "picomatch": "^4.0.7",
@@ -269,6 +275,7 @@
     "@types/node": "^22.0.0",
     "@types/picomatch": "^4.0.3",
     "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^3.9.2",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.0.0",
