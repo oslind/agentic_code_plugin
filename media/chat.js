@@ -194,10 +194,54 @@
     return el(
       "div",
       { class: "row" },
-      o.changedFiles.length ? cmd("showRunChanges", "Show changes", "secondary", "Open the combined diff of everything the sub-agents changed") : null,
-      o.changedFiles.length ? cmd("applyRun", "Apply to my branch", "primary", "Merge the changes into the branch you have checked out. Asks first.") : null,
       o.failed ? cmd("retryFailed", "Retry failed tasks", "secondary", "Start the failed tasks again; they are told why they failed") : null,
       cmd("showTaskLog", "Details", "secondary", "Every step the sub-agents took"),
+    );
+  }
+
+  // ---- review of pending file changes: nothing is written until Accept ----
+
+  const STATUS_LABEL = { pending: "waiting for you", accepted: "written", rejected: "rejected" };
+
+  function reviewCard(entry) {
+    const plan = state.plans[entry.runId];
+    const rows = plan ? plan.changes.filter((c) => !entry.taskId || c.taskId === entry.taskId) : [];
+    if (rows.length === 0) return el("div", { class: "muted" }, "These changes are no longer saved.");
+    const review = (action, path) => post({ type: "review", runId: entry.runId, action, path, taskId: entry.taskId });
+    const list = el(
+      "ul",
+      { class: "changes" },
+      ...rows.map((c) =>
+        el(
+          "li",
+          { class: "change status-" + c.status },
+          el("div", { class: "change-head" },
+            el("button", { class: "link", title: c.kind === "new" ? "Open the new file" : "Open the side-by-side diff", onclick: () => review("show", c.path) }, c.path),
+            el("span", { class: "tag" }, c.kind === "new" ? "new file" : "edit"),
+            el("span", { class: "muted" }, c.status === "accepted" && c.auto ? "written (auto-approved)" : STATUS_LABEL[c.status]),
+          ),
+          c.note ? el("div", { class: "change-note" }, c.note) : null,
+          c.status === "pending"
+            ? el("div", { class: "row" },
+                el("button", { class: "secondary", onclick: () => review("show", c.path) }, c.kind === "new" ? "Show" : "Show diff"),
+                el("button", { class: "primary", onclick: () => review("accept", c.path) }, c.note ? "Accept anyway" : "Accept"),
+                el("button", { class: "secondary", onclick: () => review("reject", c.path) }, "Reject"),
+              )
+            : null,
+        ),
+      ),
+    );
+    const pending = rows.filter((c) => c.status === "pending").length;
+    return el(
+      "div",
+      { class: "review" },
+      list,
+      pending > 1
+        ? el("div", { class: "row" },
+            el("button", { class: "primary", onclick: () => review("accept") }, `Accept all ${pending}`),
+            el("button", { class: "secondary", onclick: () => review("reject") }, "Reject all"),
+          )
+        : null,
     );
   }
 
@@ -243,6 +287,7 @@
     if (kind === "direct") label = "You → " + (entry.agentName || "sub-agent");
     if (kind === "question") label = "? " + who + " asks you";
     if (kind === "approval") label = "⚑ " + who + " asks for permission";
+    if (kind === "review") label = "✎ " + who + " proposes changes";
     if (kind === "checks") label = "Coordinator · checks";
     const head = el(
       "div",
@@ -263,6 +308,7 @@
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
       kind === "checks" ? checksCard(entry) : null,
       kind === "approval" ? approvalCard(entry) : null,
+      kind === "review" && entry.runId ? reviewCard(entry) : null,
       kind === "question" ? questionCard(entry) : null,
     );
   }
@@ -452,10 +498,9 @@
 
   let permsOpen = !!saved.permsOpen;
   const PERMS = [
-    ["editFiles", "Edit files", "Sub-agents edit files in their own task's scope without asking. When off, each change is shown to you first and only written if you allow it."],
-    ["sensitiveFiles", "Sensitive files", "package.json, lockfiles and CI files."],
+    ["editFiles", "Edit files", "Sub-agents' changes are written to your project right away. When off, each change opens for review and is only written when you press Accept."],
+    ["sensitiveFiles", "Sensitive files", "The same for package.json, lockfiles and CI files."],
     ["commands", "Run commands", "Check commands (tests, lint, ...) run without asking. When off, each command is shown to you first and only runs if you allow it. Commands always run inside the project folder."],
-    ["merges", "Merges", "Verified work into the run's integration branch. Your own branch always asks."],
   ];
 
   function permissionsBar() {
@@ -506,7 +551,7 @@
       el(
         "p",
         { class: "muted" },
-        "The coordinator talks with you and splits the work into small tasks. Every change is made by a sub-agent that may only touch its own files, on its own branch. Nothing reaches your branch without your approval.",
+        "The coordinator talks with you and splits the work into small tasks. Every change is made by a sub-agent that may only touch its own files. You review each change in VS Code, and nothing is written to your project until you accept it (unless you turn on Edit files).",
       ),
       el(
         "p",

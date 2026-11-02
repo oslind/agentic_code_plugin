@@ -2,11 +2,13 @@ import { promises as fs } from "fs";
 import * as vscode from "vscode";
 import { CheckConfig } from "../checks/runner";
 import { createProvider, readPermissions, readRunConfig } from "../config";
-import { applyRun, runChanges, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
+import { acceptChange, rejectChange } from "../changes/review";
+import { Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
 import { Run, Task } from "../state/types";
-import { isAutoApproved } from "../tools/policy";
+import { isAutoApproved, isChangeAutoAccepted } from "../tools/policy";
+import { ChangeViews } from "./changeViews";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
 import { RunHooks } from "../chat/chatController";
@@ -42,32 +44,6 @@ async function pickRun(store: TaskStore, node: RunNode): Promise<Run | undefined
   return pick?.run;
 }
 
-async function showDiff(request: MergeRequest): Promise<void> {
-  const doc = await vscode.workspace.openTextDocument({ language: "diff", content: request.diff });
-  await vscode.window.showTextDocument(doc, { preview: true });
-}
-
-async function approveMerge(request: MergeRequest): Promise<boolean> {
-  // Only reached for work whose checks passed; the user's own branch is never touched here.
-  if (readPermissions().merges) return true;
-  const files = request.changedFiles.join(", ");
-  const checks = request.checks.length ? request.checks.map((c) => `${c.name} ${c.skipped ? "skipped" : "passed"}`).join(", ") : "no checks configured";
-  for (;;) {
-    const choice = await vscode.window.showInformationMessage(
-      `Merge "${request.task.title}"?`,
-      { modal: true, detail: `${request.task.summary ?? ""}\n\nFiles: ${files}\nChecks: ${checks}` },
-      "Merge",
-      "Show diff",
-      "Reject",
-    );
-    if (choice === "Show diff") {
-      await showDiff(request);
-      continue;
-    }
-    return choice === "Merge";
-  }
-}
-
 async function approveTool(task: Task, reason: string, call: ToolCall, preview?: string): Promise<boolean> {
   if (autoApproved(call)) return true;
   const target = "path" in call ? `change ${call.path}` : call.tool === "request_check" ? `run \`${call.command}\`` : call.tool;
@@ -101,7 +77,7 @@ export function autoApproved(call: ToolCall): boolean {
 
 /** Offers to resume runs that stopped mid-way, for example when VS Code was closed. */
 export async function offerResume(store: TaskStore): Promise<void> {
-  const unfinished = new Set<string>(["running", "verifying", "awaiting_approval"]);
+  const unfinished = new Set<string>(["running", "verifying"]);
   for (const run of await store.listRuns()) {
     if (run.kind === "research" || !run.tasks.some((t) => unfinished.has(t.status))) continue;
     if (!(await confinedFolder(run).catch(() => undefined))) continue;
@@ -116,6 +92,7 @@ export function registerRunCommands(
   store: TaskStore,
   tree: TaskTreeProvider,
   output: vscode.LogOutputChannel,
+  views: ChangeViews,
 ): RunControl {
   const active = new Map<string, { abort: AbortController; orchestrator: Orchestrator }>();
 
@@ -150,12 +127,16 @@ export function registerRunCommands(
       maxFixRounds: config.maxFixRounds,
       linkDirs: config.linkDirs,
       signal: abort.signal,
-      approveMerge,
       approveTool: hooks?.approveTool ?? approveTool,
       approveCommand: hooks?.approveCommand ?? commandApprover(),
+      onChanges: hooks?.onChanges ?? (async (_task, changes) => {
+        // Outside the chat: accept what the switches allow, and leave the rest for "Review pending changes".
+        for (const c of changes) {
+          if (isChangeAutoAccepted(c.path, readPermissions())) await acceptChange(store, run.id, c.path, folder.uri.fsPath, { auto: true });
+        }
+      }),
       askUser: hooks?.askUser,
       inbox: hooks?.inbox,
-      askBeforeWrites: () => !readPermissions().editFiles,
       onChange: () => tree.refresh(),
     });
     active.set(run.id, { abort, orchestrator });
@@ -167,9 +148,10 @@ export function registerRunCommands(
       );
       output.info(`Done: ${outcome.done.join(", ") || "none"}. Failed: ${outcome.failed.join(", ") || "none"}. Blocked: ${outcome.blocked.join(", ") || "none"}.`);
       if (!fromChat) {
-        const summary = `${outcome.done.length} done, ${outcome.failed.length} failed, ${outcome.blocked.length} blocked. Work is on ${outcome.integrationBranch}.`;
-        void vscode.window.showInformationMessage(summary, "Apply to my branch", "Show log").then(async (next) => {
-          if (next === "Apply to my branch") await vscode.commands.executeCommand("agentic.applyRun", { kind: "run", run });
+        const pending = ((await store.load(run.id)).changes ?? []).filter((c) => c.status === "pending").length;
+        const summary = `${outcome.done.length} done, ${outcome.failed.length} failed, ${outcome.blocked.length} blocked.${pending ? ` ${pending} change(s) wait for your review.` : ""}`;
+        void vscode.window.showInformationMessage(summary, ...(pending ? ["Review changes"] : []), "Show log").then(async (next) => {
+          if (next === "Review changes") await vscode.commands.executeCommand("agentic.reviewChanges", { kind: "run", run });
           if (next === "Show log") output.show();
         });
       }
@@ -199,7 +181,7 @@ export function registerRunCommands(
         return;
       }
       target.abort.abort();
-      output.warn("Cancelling run. Branches are kept.");
+      output.warn("Cancelling run. Pending changes are kept for review.");
     }),
     vscode.commands.registerCommand("agentic.cancelTask", (node: RunNode) => {
       if (node?.kind !== "task") return;
@@ -207,7 +189,7 @@ export function registerRunCommands(
         vscode.window.showInformationMessage("That task is not running.");
         return;
       }
-      output.warn(`Cancelling task ${node.task.id}. Its branch is kept.`);
+      output.warn(`Cancelling task ${node.task.id}.`);
     }),
     vscode.commands.registerCommand("agentic.retryTask", async (node: RunNode) => {
       if (node?.kind !== "task") return;
@@ -241,77 +223,52 @@ export function registerRunCommands(
       const doc = await vscode.workspace.openTextDocument({ language: "log", content: lines.join("\n") || "No events yet." });
       await vscode.window.showTextDocument(doc, { preview: true });
     }),
-    vscode.commands.registerCommand("agentic.cleanupRun", async (node: RunNode) => {
+    vscode.commands.registerCommand("agentic.deleteRun", async (node: RunNode) => {
       const run = await pickRun(store, node);
       if (!run) return;
       if (active.has(run.id)) {
-        vscode.window.showWarningMessage("Cancel the run before cleaning it up.");
+        vscode.window.showWarningMessage("Cancel the run before deleting it.");
         return;
       }
-      try {
-        const folder = await confinedFolder(run);
-        const choice = await vscode.window.showWarningMessage(
-          "Clean up this run?",
-          {
-            modal: true,
-            detail:
-              "Removing worktrees frees disk space and keeps all branches, so work can still be recovered. Deleting branches and the saved run cannot be undone.",
-          },
-          "Remove worktrees",
-          "Delete everything",
-        );
-        if (!choice) return;
-        const all = choice === "Delete everything";
-        const result = await cleanupRun(folder.uri.fsPath, run.id, all);
-        if (all) await store.deleteRun(run.id);
-        else await store.log({ runId: run.id, type: "cleanup", message: `Removed ${result.worktrees} worktree(s)` });
-        output.info(`Cleaned up run: ${result.worktrees} worktree(s), ${result.branches.length} branch(es) deleted.`);
-        tree.refresh();
-      } catch (err) {
-        vscode.window.showErrorMessage((err as Error).message);
-      }
+      const choice = await vscode.window.showWarningMessage(
+        "Delete this run from the history?",
+        { modal: true, detail: "Its log and any changes still waiting for review are removed. Files already written to your project stay as they are." },
+        "Delete",
+      );
+      if (choice !== "Delete") return;
+      await store.deleteRun(run.id);
+      tree.refresh();
     }),
-    vscode.commands.registerCommand("agentic.showRunChanges", async (node: RunNode) => {
+    vscode.commands.registerCommand("agentic.reviewChanges", async (node: RunNode) => {
       const run = await pickRun(store, node);
       if (!run) return;
-      try {
-        const folder = await confinedFolder(run);
-        const diff = await runChanges(folder.uri.fsPath, integrationBranchFor(run.id));
-        const doc = await vscode.workspace.openTextDocument({ language: "diff", content: diff || "No changes compared with your current branch." });
-        await vscode.window.showTextDocument(doc, { preview: true });
-      } catch (err) {
-        vscode.window.showErrorMessage((err as Error).message);
-      }
-    }),
-    vscode.commands.registerCommand("agentic.applyRun", async (node: RunNode) => {
-      const run = await pickRun(store, node);
-      if (!run) return;
-      try {
-        const folder = await confinedFolder(run);
-        const branch = integrationBranchFor(run.id);
-        const ok = await vscode.window.showWarningMessage(
-          "Bring the sub-agents' changes into your current branch?",
-          {
-            modal: true,
-            detail: `This merges ${branch} into the branch you have checked out and changes your files. Commit or stash your own changes first.`,
-          },
-          "Apply",
-          "Show changes first",
-        );
-        if (ok === "Show changes first") {
-          await vscode.commands.executeCommand("agentic.showRunChanges", { kind: "run", run });
+      for (;;) {
+        const pending = ((await store.load(run.id)).changes ?? []).filter((c) => c.status === "pending");
+        if (pending.length === 0) {
+          vscode.window.showInformationMessage("No changes are waiting for review in this run.");
           return;
         }
-        if (ok !== "Apply") return;
-        const conflicts = await applyRun(folder.uri.fsPath, branch);
-        if (conflicts.length) {
-          vscode.window.showErrorMessage(`Merge stopped on conflicts in ${conflicts.join(", ")}. Nothing was changed.`);
-        } else {
-          await store.log({ runId: run.id, type: "applied", message: branch });
-          vscode.window.showInformationMessage(`Merged ${branch} into your branch.`);
+        const pick = await vscode.window.showQuickPick(
+          pending.map((c) => ({ label: c.path, description: c.original === null ? "new file" : "edit", change: c })),
+          { placeHolder: "Choose a change to review" },
+        );
+        if (!pick) return;
+        await views.show(run.id, pick.change.path);
+        const action = await vscode.window.showQuickPick(["Accept", "Reject", "Back"], { placeHolder: `${pick.change.path}: accept or reject?` });
+        try {
+          const folder = await confinedFolder(run);
+          if (action === "Accept") {
+            const res = await acceptChange(store, run.id, pick.change.path, folder.uri.fsPath);
+            if (!res.ok && res.reason === "changed_on_disk") {
+              const again = await vscode.window.showQuickPick(["Overwrite", "Keep my version"], { placeHolder: res.message });
+              if (again === "Overwrite") await acceptChange(store, run.id, pick.change.path, folder.uri.fsPath, { overwrite: true });
+            } else if (!res.ok) vscode.window.showWarningMessage(res.message);
+          }
+          if (action === "Reject") await rejectChange(store, run.id, pick.change.path);
+          if (action === "Accept" || action === "Reject") await views.close(run.id, pick.change.path);
+        } catch (err) {
+          vscode.window.showErrorMessage((err as Error).message);
         }
-      } catch (err) {
-        vscode.window.showErrorMessage((err as Error).message);
       }
     }),
   );

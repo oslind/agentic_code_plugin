@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkToolCall } from "../src/tools/policy";
+import { checkToolCall, isProtectedPath, isSensitivePath } from "../src/tools/policy";
 import { toolCallSchema, workerTurnSchema } from "../src/tools/protocol";
 
 const ctx = { fileScope: ["src/auth/**", "package.json"], allowedChecks: ["test", "lint"] };
@@ -18,8 +18,11 @@ describe("checkToolCall", () => {
     expect(checkToolCall({ tool: "write_file", path: ".git/config", content: "" }, { ...ctx, fileScope: ["**"] }).verdict).toBe("deny");
     expect(verdict({ tool: "read_file", path: "src/auth/.env" })).toBe("deny");
   });
-  it("asks before changing sensitive files", () => {
-    expect(verdict({ tool: "write_file", path: "package.json", content: "{}" })).toBe("ask");
+  it("lets sub-agents propose changes to sensitive files; the review decides", () => {
+    expect(verdict({ tool: "write_file", path: "package.json", content: "{}" })).toBe("allow");
+    expect(isSensitivePath("package.json")).toBe(true);
+    expect(isProtectedPath(".agentic/runs/x.json")).toBe(true);
+    expect(isProtectedPath("src/a.ts")).toBe(false);
   });
   it("only runs configured checks", () => {
     expect(verdict({ tool: "run_check", name: "test" })).toBe("allow");

@@ -54,9 +54,7 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
           };
         }
         case "verifying":
-          return agent({ text: "Running the configured checks on my work.", tag: "verify" });
-        case "awaiting_approval":
-          return agent({ text: "My work passed the checks and is waiting for your approval to merge.", tag: "approval", tone: "warning" });
+          return agent({ text: "Running the checks on a scratch copy that has my changes. Your files are not touched.", tag: "verify" });
         case "done":
           return agent({ text: "Task complete.", tag: "done", tone: "success" });
         default:
@@ -87,17 +85,13 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
     case "task_failed":
       return agent({ text: `Failed: ${short(event.message)}`, tag: "failed", tone: "error" });
     case "cancelled":
-      return agent({ text: "Cancelled. My branch is kept.", tag: "cancelled", tone: "warning" });
-    case "merged":
-      return agent({ text: "Merged into the run's integration branch.", tag: "merged", tone: "success" });
-    case "merge_conflict":
-      return agent({ text: `Merge conflict in ${short(event.message)}. My branch is kept; retry to redo it on top.`, tag: "conflict", tone: "error" });
-    case "integration_failed":
-      return agent({ text: `Checks failed after merging (${short(event.message)}). The merge was undone.`, tag: "integration", tone: "error" });
+      return agent({ text: "Cancelled. Nothing was written to your project.", tag: "cancelled", tone: "warning" });
+    case "change_accepted":
+      return { author: "system", text: `Wrote ${event.message} to your project.`, tone: "success" };
+    case "change_rejected":
+      return { author: "system", text: `Rejected the change to ${event.message}. Nothing was written.` };
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
-    case "integration_branch":
-      return coordinator(`Work collects on ${event.message}. Your own branch is not touched.`);
     default:
       return undefined;
   }

@@ -15,13 +15,17 @@ type FromView =
   | { type: "runPlan"; runId: string }
   | { type: "cancel" }
   | { type: "settings" }
-  | { type: "runCommand"; command: "applyRun" | "showTaskLog" | "retryFailed" | "cleanupRun" | "showRunChanges"; runId: string }
+  | { type: "runCommand"; command: "showTaskLog" | "retryFailed"; runId: string }
+  | { type: "review"; runId: string; action: "show" | "accept" | "reject"; path?: string; taskId?: string }
   | { type: "decide"; entryId: string; decision: unknown }
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
   | { type: "setPermission"; key: string; value: boolean }
   | { type: "editChecks" };
 
-const RUN_COMMANDS = new Set(["applyRun", "showTaskLog", "retryFailed", "cleanupRun", "showRunChanges"]);
+const RUN_COMMANDS = new Set(["showTaskLog", "retryFailed"]);
+const REVIEW_ACTIONS = new Set(["show", "accept", "reject"]);
+/** A workspace-relative path as the page sends it back. The store only holds paths the policy already accepted. */
+const isRelPath = (x: unknown): x is string => typeof x === "string" && x.length > 0 && x.length < 1000 && !x.startsWith("/") && !x.split("/").includes("..");
 
 function isId(x: unknown): x is string {
   return typeof x === "string" && /^[\w-]{1,100}$/.test(x);
@@ -122,6 +126,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         case "editChecks":
           await this.controller.editChecks();
+          return;
+        case "review":
+          if (isId(m.runId) && REVIEW_ACTIONS.has(m.action) && (m.path === undefined || isRelPath(m.path)) && (m.taskId === undefined || isId(m.taskId))) {
+            await this.controller.review(m.runId, m.action, m.path, m.taskId);
+          }
           return;
         case "runCommand":
           if (RUN_COMMANDS.has(m.command) && isId(m.runId)) {

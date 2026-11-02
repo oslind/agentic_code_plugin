@@ -3,7 +3,8 @@ import { Run } from "../state/types";
 
 /** Files changed by the run's finished tasks, without duplicates. */
 export function changedFilesOf(run: Run): string[] {
-  return [...new Set(run.tasks.filter((t) => t.status === "done").flatMap((t) => t.changedFiles ?? []))].sort();
+  const fromTasks = run.tasks.filter((t) => t.status === "done").flatMap((t) => t.changedFiles ?? []);
+  return [...new Set([...fromTasks, ...(run.changes ?? []).map((c) => c.path)])].sort();
 }
 
 /**
@@ -26,11 +27,17 @@ export function describeOutcome(run: Run, outcome: RunOutcome): string {
     const mark = outcome.done.includes(t.id) || t.status === "done" ? "✓" : outcome.failed.includes(t.id) || t.status === "failed" || t.status === "cancelled" ? "✕" : "○";
     return `${mark} ${t.title}: ${said}`;
   });
+  const changes = run.changes ?? [];
+  const waiting = changes.filter((c) => c.status === "pending").length;
+  const written = changes.filter((c) => c.status === "accepted").length;
+  const rejected = changes.filter((c) => c.status === "rejected").length;
   const next = files.length
     ? [
         `Changed files: ${files.join(", ")}.`,
-        "These changes are saved on a separate branch, so your own files are untouched. Press \"Show changes\" to review them, and \"Apply to my branch\" to bring them into the branch you have checked out.",
+        waiting
+          ? `${waiting} change(s) wait for your review in the cards above. Nothing is written to your project until you press Accept.${written ? ` ${written} already written.` : ""}`
+          : `${written} change(s) written to your project.${rejected ? ` ${rejected} rejected.` : ""}`,
       ]
-    : ["No files were changed, so there is nothing to apply."];
+    : ["No files were changed."];
   return [head, "", "What the sub-agents did:", ...lines, "", ...next].join("\n");
 }

@@ -689,3 +689,41 @@ pre.change-preview {
   background: var(--vscode-textCodeBlock-background);
   border-radius: 4px;
 }
+
+.review ul.changes {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+}
+.review li.change {
+  padding: 6px 0;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+}
+.review .change-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.review button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font-family: var(--vscode-editor-font-family);
+}
+.review button.link:hover {
+  text-decoration: underline;
+}
+.review li.status-accepted .change-head,
+.review li.status-rejected .change-head {
+  opacity: 0.75;
+}
+.review li.status-rejected button.link {
+  text-decoration: line-through;
+}
+.review .change-note {
+  color: var(--vscode-editorWarning-foreground);
+  margin: 4px 0;
+}

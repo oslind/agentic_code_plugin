@@ -54,7 +54,6 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<Node> {
     tip.appendText(task.instructions);
     tip.appendMarkdown(`\n\n**Status:** ${task.status} · **Attempts:** ${task.attempts}`);
     tip.appendMarkdown(`\n\n**Files:** ${task.fileScope.map((f) => `\`${f}\``).join(", ")}`);
-    if (task.branch) tip.appendMarkdown(`\n\n**Branch:** \`${task.branch}\``);
     if (task.changedFiles?.length) tip.appendMarkdown(`\n\n**Changed:** ${task.changedFiles.map((f) => `\`${f}\``).join(", ")}`);
     if (task.error) tip.appendMarkdown(`\n\n**Error:** ${task.error}`);
     item.tooltip = tip;

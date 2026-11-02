@@ -12,19 +12,21 @@ What works now:
 - Structured output built for small models: strips `<think>` blocks, code fences and prose, validates against a schema, and retries with the error as feedback.
 - A coordinator that turns a request into at most 8 dependency-ordered tasks, each with a file scope. Plans are checked for duplicate ids, unknown dependencies, cycles and paths outside the workspace, and the model is asked to fix them. Tasks that could write the same files are ordered automatically so they never run at the same time.
 - Context budgeting that fits prompts into the configured context window, dropping or cutting low-priority context first.
-- A one-tool-per-turn worker protocol with a policy check: writes must stay in the task's file scope, secrets and `.git` are off limits, `package.json`, lockfiles and CI files need approval, and only configured checks can run.
+- A one-tool-per-turn worker protocol with a policy check: writes must stay in the task's file scope, secrets and `.git` are off limits, `package.json`, lockfiles and CI files follow their own switch, and only configured checks can run.
 - A workspace sandbox: agents can only reach the folder open in VS Code. Every path is resolved to its real location on disk, so symlinks that point outside are refused for reads, writes and listings. Writes open files with `O_NOFOLLOW`. The extension only runs in trusted workspaces.
-- Parallel workers. Each task runs in its own git worktree and branch under `.agentic/` in the project, with a sandbox rooted at that worktree. A worker makes one tool call per turn and keeps its history inside the context window.
-- Verification by your own checks, not the worker's word. The commands in `agentic.checks` run in the worktree, and failures go back to the worker to fix (`agentic.worker.maxFixRounds`). Only files in the task's scope are committed.
-- Approval before integration. Each verified task waits for you to approve the merge, with the diff available. Merges into a per-run integration branch happen one at a time, and the checks run again after each one. A merge that conflicts or breaks the checks is undone, and its branch is kept.
-- Your branch is only changed when you choose **Apply run to my branch**, and only if it has no uncommitted changes.
+- **No git.** The extension never runs git, creates branches or commits. The project folder does not need to be a git repository.
+- **You review every change.** A sub-agent's writes stay in memory as pending changes. Nothing is written to your project until you accept it:
+  - a new file opens as a new editor tab with the proposed text;
+  - an edit to an existing file opens VS Code's side-by-side diff (current file on the left, proposed version on the right), with removed, changed and added lines highlighted;
+  - each change has **Accept** and **Reject** buttons in the chat, plus **Accept all** and **Reject all** when there are several. No popups.
+  - If you edited the file yourself in the meantime, Accept warns you first, and a second Accept overwrites it.
+- Parallel workers without git. Tasks that run at the same time have separate files (the planner makes tasks that share files wait for each other). A task that depends on another sees that task's pending changes, so it can build on them before you accept anything.
+- Verification by your own checks, not the worker's word. The checks run on a scratch copy of the project with the pending changes written in (`.agentic/scratch/`, removed afterwards; `node_modules` is linked, not copied, see `agentic.scratch.linkDirs`). Failures go back to the worker to fix (`agentic.worker.maxFixRounds`). Your files are never touched by a check.
 - Recovery:
-  - **Resume.** When VS Code starts, runs that were interrupted are offered for resume. Running tasks start again, and verified work waiting for approval is offered for approval again without being redone.
-  - **Retry.** Failed or cancelled tasks can be retried one at a time or all together. A retry gets a new `-tryN` branch, and the worker is told why the last attempt failed and shown its diff. This is also how merge conflicts are resolved: the retry starts from the current integration branch and reapplies the earlier work.
-  - **Nothing is lost.** Unfinished work from a failed attempt is committed to its branch before the worktree is reused.
+  - **Resume.** When VS Code starts, runs that were interrupted are offered for resume. Running tasks start again.
+  - **Retry.** Failed or cancelled tasks can be retried one at a time or all together. The worker is told why the last attempt failed and shown what it had written.
   - **Transient failures.** When the model server is briefly unreachable, requests are retried with backoff, and tasks are retried automatically up to 3 attempts.
   - **Cancel one task** without stopping the run, or cancel the whole run.
-  - **Clean up.** Remove a run's worktrees and keep its branches, or delete everything.
 - A **chat sidebar** in the style of Cline. Type a request in the input box at the top; replies from the coordinator and from each sub-agent appear below it, with the plan and each task's status. The green dot opens settings, **+** starts a new agentic task, and the history button (or the dropdown in the chat) switches between conversations. The most recent conversations are kept on disk (`agentic.chat.historySize`, default 10, never fewer than 3).
 - **Plan and Act modes.** Plan mode only discusses and proposes plans; nothing runs. Act mode starts sub-agents as soon as a plan is made. Pressing **Run** on a proposed plan switches to Act mode.
 - **Strict delegation.** The coordinator has no tools at all: it cannot read or change files, and replies containing code are rejected and retried. Its only way to get work done is to hand a request to the planner, which splits it into tasks that sub-agents carry out within their own file scopes. A "run" from the coordinator in Plan mode is refused in code, not just in the prompt.
@@ -32,13 +34,14 @@ What works now:
 - **Shared knowledge.** What sub-agents report, and the coordinator's answers to research questions, are passed on. The planner gets them and copies the facts each task needs into its instructions. Every sub-agent of the next run also gets them as a briefing, and a task that builds on others gets those tasks' reports.
 - **Checks per project.** Before the first run in a folder, the chat looks at the project (package.json scripts, pytest and ruff, cargo, go, dotnet, gradle or maven, make) and proposes test, lint and type-check commands. You edit and approve them, and the choice is saved for that folder. The settings stay as defaults, and the beaker button changes the checks later. If nothing is found, the run starts without asking. Research never asks.
 - **Sub-agents can ask.** A sub-agent can request a check command it needs (Allow, Allow and remember, or Deny), or ask you a question when it can't continue. You can type a message to any running sub-agent from the Agents panel, and it reads it before its next step.
-- **Auto-approve switches** under the input box: edit files (on by default), sensitive files (package.json, lockfiles, CI), run commands, and merges into the run's integration branch. A switch that is off never blocks the work, it means you approve each step:
-  - a file change is shown as removed and added lines, and nothing is written until you allow it;
-  - a command (tests, lint, a check a sub-agent asks for) is shown, and nothing runs until you allow it. "Allow for the rest of this run" stops repeat questions for the same command.
+- **Auto-approve switches** under the input box. A switch that is on means you have given that authority and are not asked. A switch that is off never blocks the work; the step waits for you:
+  - **Edit files** (off by default): when on, sub-agents' changes are written as soon as their task is done. When off, they queue for your Accept or Reject in the chat.
+  - **Sensitive files** (package.json, lockfiles, `.github`): the same, for those files only. Edit files does not cover them.
+  - **Run commands**: when on, checks run without asking. When off, each command is shown and nothing runs until you allow it. "Allow for the rest of this run" stops repeat questions for the same command.
 
-  Workspace confinement, the protected files (.git, secrets, .agentic) and applying a run to your own branch are never auto-approved. Commands always run with their working folder inside the project, and commands that point outside it (absolute paths, `..`, `~`, variables, `$(...)`, sudo/ssh) are refused.
+  Workspace confinement and the protected files (.git, secrets, .agentic, .vscode/settings.json) are never writable, whatever is switched on. Commands always run with their working folder inside the project, and commands that point outside it (absolute paths, `..`, `~`, variables, `$(...)`, sudo/ssh) are refused.
 - **Heavier delegation.** The planner is told to prefer many small tasks: up to `agentic.delegation.maxTasks` (default 12). Research uses up to `agentic.delegation.maxResearchers` read-only sub-agents (default 5). `agentic.maxParallelWorkers` still sets how many run at the same time.
-- A **Run history (advanced)** view, collapsed under the chat, lists every saved run as a tree of its tasks. Right-click a run or task there to retry, cancel, view its log, clean up branches, or apply a run to your branch.
+- A **Run history (advanced)** view, collapsed under the chat, lists every saved run as a tree of its tasks. Right-click a run or task there to retry, cancel, view its log, review its changes, or delete the run.
 - Task state saved on disk with atomic writes, an append-only event log, a dependency graph with cycle checks, and recovery of tasks interrupted by a restart.
 
 ## Try it
@@ -61,9 +64,9 @@ What works now:
      { "name": "typecheck", "command": "npx tsc --noEmit" }
    ]
    ```
-5. Open the **Agentic** sidebar and type a request in the chat. In Plan mode the coordinator proposes a plan; switch to Act (or press **Run plan**) to let the sub-agents do it. Each merge still asks for your approval.
+5. Open the **Agentic** sidebar and type a request in the chat. In Plan mode the coordinator proposes a plan; switch to Act (or press **Run plan**) to let the sub-agents do it. Their changes wait for your Accept in the chat unless Edit files is on.
 
-The workspace folder must be the root of a git repository. Checks are commands you configure, and they run with your permissions like any VS Code task. Workers can only start them by name.
+Any folder works; git is not needed. Checks are commands you configure, and they run with your permissions like any VS Code task. Workers can only start them by name.
 
 Settings live under `agentic.model.*`. If your server rejects `json_schema` response formats, set `agentic.model.structuredOutput` to `json_object` or `none`.
 

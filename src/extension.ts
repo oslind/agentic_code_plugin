@@ -1,3 +1,4 @@
+import { ChangeViews } from "./ui/changeViews";
 import * as vscode from "vscode";
 import { z } from "zod";
 import { createProvider, PERMISSION_KEYS, readModelConfig, readPermissions, readRunConfig } from "./config";
@@ -42,7 +43,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new TaskStore(context.globalStorageUri.fsPath);
   const tree = new TaskTreeProvider(store);
 
-  const runs = registerRunCommands(context, store, tree, output);
+  const views = ChangeViews.register(context, store);
+  const runs = registerRunCommands(context, store, tree, output, views);
 
   const conversations = new ConversationStore(context.globalStorageUri.fsPath, () =>
     vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),
@@ -93,6 +95,8 @@ export function activate(context: vscode.ExtensionContext): void {
     setDefaultMode: (mode) => void context.globalState.update("agentic.chatMode", mode),
     log: (level, message) => output[level](message),
     openFolder: async (root) => (await confinedFolder({ workspaceRoot: root }).catch(() => undefined))?.uri.fsPath,
+    showChange: (runId, filePath) => views.show(runId, filePath),
+    closeChange: (runId, filePath) => views.close(runId, filePath),
     delegationLimits: () => {
       const c = vscode.workspace.getConfiguration("agentic.delegation");
       return { maxTasks: c.get<number>("maxTasks", 12), maxResearchers: c.get<number>("maxResearchers", 5) };

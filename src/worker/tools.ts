@@ -1,5 +1,5 @@
 import { CheckConfig, runCheck } from "../checks/runner";
-import { WorkspaceSandbox } from "../tools/sandbox";
+import { ProjectFiles } from "../tools/sandbox";
 import { ToolCall } from "../tools/protocol";
 
 const MAX_READ_LINES = 300;
@@ -8,9 +8,11 @@ const MAX_MATCHES = 40;
 const MAX_SEARCH_FILE_BYTES = 256 * 1024;
 
 export interface ToolContext {
-  sandbox: WorkspaceSandbox;
+  sandbox: ProjectFiles;
   checks: CheckConfig[];
   signal?: AbortSignal;
+  /** Where checks run: a scratch copy that holds the pending changes. */
+  checkDir?: () => Promise<string>;
 }
 
 export interface ToolOutcome {
@@ -61,7 +63,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       }
       case "write_file":
         await ctx.sandbox.writeFile(call.path, call.content);
-        return { ok: true, output: `Wrote ${call.path} (${call.content.split("\n").length} lines).`, wrote: call.path };
+        return { ok: true, output: `Wrote ${call.path} (${call.content.split("\n").length} lines). The user reviews it before it reaches the project.`, wrote: call.path };
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
         const count = text.split(call.search).length - 1;
@@ -80,7 +82,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       case "run_check": {
         const check = ctx.checks.find((c) => c.name === call.name);
         if (!check) return { ok: false, output: `Unknown check '${call.name}'.` };
-        const res = await runCheck(check, ctx.sandbox.root, ctx.signal);
+        const res = await runCheck(check, ctx.checkDir ? await ctx.checkDir() : ctx.sandbox.root, ctx.signal);
         return { ok: res.passed, output: `${check.name}: ${res.passed ? "passed" : "FAILED"}\n${res.output}` };
       }
       case "finish":

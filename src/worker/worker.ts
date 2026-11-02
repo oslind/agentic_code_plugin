@@ -4,14 +4,16 @@ import { ChatMessage, ModelProvider } from "../providers/types";
 import { Task } from "../state/types";
 import { checkToolCall } from "../tools/policy";
 import { ToolCall, workerTurnSchema } from "../tools/protocol";
-import { WorkspaceSandbox } from "../tools/sandbox";
+import { ProjectFiles } from "../tools/sandbox";
 import { compactHistory } from "./history";
 import { executeTool } from "./tools";
 
 export interface WorkerOptions {
   provider: ModelProvider;
-  /** Sandbox rooted at the task's own worktree. */
-  sandbox: WorkspaceSandbox;
+  /** The project as this sub-agent sees it. Writes stay pending until the user accepts them. */
+  sandbox: ProjectFiles;
+  /** Folder where check commands run. Defaults to the project folder (used by research, which never writes). */
+  checkDir?: () => Promise<string>;
   task: Task;
   /** Extra notes for the first message, such as what a failed earlier attempt did. */
   context?: string;
@@ -33,8 +35,6 @@ export interface WorkerOptions {
   inbox?: () => string[];
   /** Asks the user a question in the chat and resolves with the answer. Without it, ask_user is refused. */
   askUser?: (question: string) => Promise<string>;
-  /** Ask the user before each file edit (auto-approve for edits is off). */
-  askBeforeWrites?: boolean;
 }
 
 export interface WorkerResult {
@@ -96,7 +96,7 @@ Rules:
 }
 
 /**
- * One agent working one task in its own worktree. The conversation is kept so
+ * One agent working one task on its view of the project. The conversation is kept so
  * the orchestrator can send it check failures and let it continue.
  */
 export class Worker {
@@ -159,7 +159,6 @@ export class Worker {
         fileScope: task.fileScope,
         allowedChecks: this.opts.readOnly ? [] : checks.map((c) => c.name),
         knownCommands: new Map(checks.map((c) => [c.name, c.command])),
-        askBeforeWrites: this.opts.askBeforeWrites,
       });
       if (decision.verdict === "deny") {
         this.opts.log("denied", decision.reason, { call: turn.call });
@@ -212,7 +211,7 @@ export class Worker {
           continue;
         }
       }
-      const outcome = await executeTool(call, { sandbox: this.opts.sandbox, checks: this.checks, signal });
+      const outcome = await executeTool(call, { sandbox: this.opts.sandbox, checks: this.checks, signal, checkDir: this.opts.checkDir });
       if (outcome.wrote) this.changed.add(outcome.wrote);
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });
     }
@@ -221,7 +220,7 @@ export class Worker {
 }
 
 /** What a file change will do, for the approval card. Small enough to read; long changes are cut. */
-export async function previewChange(call: ToolCall, sandbox: WorkspaceSandbox, max = 6000): Promise<string | undefined> {
+export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max = 6000): Promise<string | undefined> {
   if (call.tool !== "write_file" && call.tool !== "replace_in_file") return undefined;
   const before = await sandbox.readFile(call.path).catch(() => undefined);
   let text: string;

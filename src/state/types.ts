@@ -17,10 +17,9 @@ export interface Task {
   fileScope: string[];
   status: TaskStatus;
   attempts: number;
-  branch?: string;
-  /** Commit on `branch` with the task's verified work. */
-  commit?: string;
   changedFiles?: string[];
+  /** Files a failed attempt had written, so a retry can build on them. Never applied. */
+  unfinished?: { path: string; content: string }[];
   summary?: string;
   error?: string;
   /** The most recent error, kept after the task is retried. */
@@ -38,9 +37,26 @@ export interface Run {
   workspaceRoot?: string;
   /** What the coordinator had learned when the run was planned. Every sub-agent of the run gets it. */
   briefing?: string;
+  /** File changes the sub-agents propose. Nothing is written to the project until one is accepted. */
+  changes?: PendingChange[];
   createdAt: string;
   updatedAt: string;
   tasks: Task[];
+}
+
+/**
+ * One file a sub-agent wants to create or change. `original` is the file's
+ * text when the sub-agent first read it (null for a new file), so the review
+ * can show a side-by-side diff and notice if the file changed on disk since.
+ */
+export interface PendingChange {
+  path: string;
+  taskId: string;
+  original: string | null;
+  proposed: string;
+  status: "pending" | "accepted" | "rejected";
+  /** Set when accepted without the user: the auto-approve switch for edits was on. */
+  auto?: boolean;
 }
 
 export interface RunEvent {
