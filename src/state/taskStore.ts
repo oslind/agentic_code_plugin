@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { Mutex } from "../util/mutex";
-import { Run, RunEvent, Task, TaskStatus, TRANSITIONS } from "./types";
+import { PendingChange, Run, RunEvent, Task, TaskStatus, TRANSITIONS } from "./types";
 
 export type NewTask = Pick<Task, "title" | "instructions"> &
   Partial<Pick<Task, "id" | "parentId" | "dependsOn" | "fileScope">>;
@@ -140,7 +140,7 @@ export class TaskStore {
   }
 
   /** Records results on a task without changing its status. */
-  updateTask(runId: string, taskId: string, patch: Partial<Pick<Task, "branch" | "commit" | "changedFiles" | "summary">>): Promise<Task> {
+  updateTask(runId: string, taskId: string, patch: Partial<Pick<Task, "changedFiles" | "summary" | "unfinished">>): Promise<Task> {
     return this.lock.run(async () => {
       const run = await this.load(runId);
       const task = run.tasks.find((t) => t.id === taskId);
@@ -174,14 +174,45 @@ export class TaskStore {
     return task;
   }
 
-  /** Puts a failed or cancelled task back in the queue. Its earlier branch is kept. */
+  /** Adds a task's proposed file changes. A later change to the same file from the same run replaces the earlier pending one. */
+  addChanges(runId: string, changes: PendingChange[]): Promise<Run> {
+    return this.lock.run(async () => {
+      const run = await this.load(runId);
+      const list = (run.changes ??= []);
+      for (const c of changes) {
+        const i = list.findIndex((x) => x.path === c.path && x.status === "pending");
+        if (i >= 0) list.splice(i, 1, { ...c, original: list[i]!.original });
+        else list.push(c);
+      }
+      run.updatedAt = this.now().toISOString();
+      await this.save(run);
+      return run;
+    });
+  }
+
+  /** Marks one pending change accepted or rejected. Resolves the change, or undefined if it was not pending. */
+  setChangeStatus(runId: string, filePath: string, status: "accepted" | "rejected", auto = false): Promise<PendingChange | undefined> {
+    return this.lock.run(async () => {
+      const run = await this.load(runId);
+      const change = run.changes?.find((c) => c.path === filePath && c.status === "pending");
+      if (!change) return undefined;
+      change.status = status;
+      if (auto) change.auto = true;
+      run.updatedAt = this.now().toISOString();
+      await this.save(run);
+      await this.log({ runId, taskId: change.taskId, type: `change_${status}`, message: filePath, data: auto ? { auto } : undefined });
+      return change;
+    });
+  }
+
+  /** Puts a failed or cancelled task back in the queue. What its last attempt wrote is kept for the retry. */
   async retryTask(runId: string, taskId: string): Promise<Task> {
     const task = await this.setStatus(runId, taskId, "pending");
     await this.log({ runId, taskId, type: "retry_requested", message: task.title });
     return task;
   }
 
-  /** Removes a run's saved state and log. Git branches are not touched. */
+  /** Removes a run's saved state and log.  */
   async deleteRun(runId: string): Promise<void> {
     await fs.rm(this.runDir(runId), { recursive: true, force: true });
   }

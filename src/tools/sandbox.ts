@@ -13,12 +13,21 @@ export class SandboxError extends Error {
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const SKIP_DIRS = new Set([".git", "node_modules", ".agentic"]);
 
+/** What a sub-agent's tools see of the project: the real files, or the real files plus pending changes. */
+export interface ProjectFiles {
+  /** The project folder on disk. */
+  readonly root: string;
+  readFile(relPath: string): Promise<string>;
+  writeFile(relPath: string, content: string): Promise<void>;
+  listFiles(glob?: string, limit?: number): Promise<string[]>;
+}
+
 /**
  * The only way agents touch the file system. Every path is resolved against
  * one workspace folder, and the real path on disk (after following symlinks)
  * must stay inside it. Nothing outside the folder open in VS Code is reachable.
  */
-export class WorkspaceSandbox {
+export class WorkspaceSandbox implements ProjectFiles {
   private constructor(readonly root: string) {}
 
   static async create(workspaceFolder: string): Promise<WorkspaceSandbox> {

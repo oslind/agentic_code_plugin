@@ -4,11 +4,12 @@ import { RunOutcome } from "../coordinator/orchestrator";
 import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
-import { Run, RunEvent, Task, TaskStatus } from "../state/types";
+import { PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
 import { CheckConfig } from "../checks/runner";
 import { DetectedCheck } from "../checks/detect";
 import { ToolCall } from "../tools/protocol";
-import { AutoApprove, isAutoApproved } from "../tools/policy";
+import { AutoApprove, isAutoApproved, isChangeAutoAccepted } from "../tools/policy";
+import { acceptChange, changeKind, rejectChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isReadOnlyRequest, researchQuestions } from "./coordinatorChat";
@@ -48,6 +49,10 @@ export interface ChatHost {
   researchLimits(): { maxTurns: number; maxParallel: number };
   /** How heavily the coordinator may delegate. */
   delegationLimits(): { maxTasks: number; maxResearchers: number };
+  /** Opens a pending change in VS Code: a new file as its own editor, an edit as a side-by-side diff. */
+  showChange(runId: string, filePath: string): Promise<void>;
+  /** Closes the editors showing a change once it is decided. */
+  closeChange(runId: string, filePath: string): Promise<void>;
 }
 
 /** How a run started from the chat talks back to the user. */
@@ -59,7 +64,12 @@ export interface RunHooks {
   approveCommand: (task: Task, check: CheckConfig) => Promise<boolean>;
   askUser: (task: Task, question: string) => Promise<string>;
   inbox: (taskId: string) => string[];
+  /** A task finished with file changes. They are pending until accepted here or by an auto-approve switch. */
+  onChanges: (task: Task, changes: PendingChange[]) => Promise<void>;
 }
+
+/** What the user can do with a pending change from the chat. */
+export type ReviewAction = "show" | "accept" | "reject";
 
 /** What the user chose on a card that waited for them. */
 export type Decision =
@@ -75,6 +85,19 @@ export interface PlanView {
   /** True once any task has started, so the plan can no longer be run from the chat. */
   started: boolean;
   waves: number;
+  /** Proposed file changes and what became of them. */
+  changes: ChangeView[];
+}
+
+export interface ChangeView {
+  path: string;
+  taskId: string;
+  kind: "new" | "edit";
+  status: PendingChange["status"];
+  /** Written by an auto-approve switch rather than by the user. */
+  auto?: boolean;
+  /** Why the last Accept did not go through, e.g. the file changed on disk. */
+  note?: string;
 }
 
 export interface ChatViewState {
@@ -132,6 +155,8 @@ export class ChatController {
   private readonly pending = new Map<string, { conversationId: string; resolve: (d: Decision | undefined) => void }>();
   /** Messages the user sent to a sub-agent, waiting for its next step. Keyed by run and task. */
   private readonly inboxes = new Map<string, string[]>();
+  /** Why an Accept did not go through, by "runId:path". Cleared once the change is decided. */
+  private readonly changeNotes = new Map<string, string>();
   /** Commands the user allowed for the rest of a run, keyed by run id. */
   private readonly allowedCommands = new Map<string, Set<string>>();
 
@@ -196,6 +221,14 @@ export class ChatController {
         tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
         started: !isUnstarted(run),
         waves: parallelWaves(run.tasks).length,
+        changes: (run.changes ?? []).map((ch) => ({
+          path: ch.path,
+          taskId: ch.taskId,
+          kind: changeKind(ch),
+          status: ch.status,
+          auto: ch.auto,
+          note: this.changeNotes.get(`${runId}:${ch.path}`),
+        })),
       };
     }
     return {
@@ -304,6 +337,45 @@ export class ChatController {
     p.resolve(decision);
   }
 
+  /**
+   * Shows, accepts or rejects a pending change from the chat. Without a path,
+   * accepts or rejects every pending change of that run's task (or the whole run).
+   */
+  async review(runId: string, action: ReviewAction, filePath?: string, taskId?: string): Promise<void> {
+    const conversationId = this.runOwner.get(runId) ?? this.currentId;
+    const run = await this.tasks.load(runId);
+    if (action === "show") {
+      if (filePath) await this.host.showChange(runId, filePath);
+      return;
+    }
+    const root = run.workspaceRoot && (await this.host.openFolder(run.workspaceRoot));
+    if (!root) throw new Error(`${run.workspaceRoot ?? "This run's folder"} is not open in VS Code, so nothing can be written.`);
+    const targets = (run.changes ?? []).filter(
+      (c) => c.status === "pending" && (filePath ? c.path === filePath : !taskId || c.taskId === taskId),
+    );
+    for (const c of targets) {
+      const key = `${runId}:${c.path}`;
+      if (action === "reject") {
+        await rejectChange(this.tasks, runId, c.path);
+        this.changeNotes.delete(key);
+      } else {
+        // A second Accept after a "changed on disk" note means: overwrite.
+        const res = await acceptChange(this.tasks, runId, c.path, root, { overwrite: this.changeNotes.has(key) });
+        if (res.ok) this.changeNotes.delete(key);
+        else {
+          this.changeNotes.set(key, res.message);
+          continue;
+        }
+      }
+      await this.host.closeChange(runId, c.path).catch(() => undefined);
+    }
+    if (conversationId && targets.length > 1) {
+      const n = targets.length;
+      await this.append(conversationId, { author: "system", runId, text: action === "accept" ? `Accepted ${n} change(s).` : `Rejected ${n} change(s). Nothing was written for them.` });
+    }
+    this.changed();
+  }
+
   /** Sends a message straight to a running sub-agent. It reads it before its next step. */
   async messageAgent(runId: string, taskId: string, text: string): Promise<void> {
     const conversationId = this.runOwner.get(runId);
@@ -380,6 +452,30 @@ export class ChatController {
           this.allowedFor(runId).add(call.command);
         }
         return true;
+      },
+      onChanges: async (task, changes) => {
+        const auto = this.host.permissions();
+        const written: string[] = [];
+        for (const ch of changes) {
+          if (!isChangeAutoAccepted(ch.path, auto)) continue;
+          const res = await acceptChange(this.tasks, runId, ch.path, workspaceRoot, { auto: true });
+          if (res.ok) written.push(ch.path);
+          else this.changeNotes.set(`${runId}:${ch.path}`, res.message);
+        }
+        const waiting = changes.filter((ch) => !written.includes(ch.path));
+        await this.append(conversationId, {
+          author: "agent",
+          kind: "review",
+          runId,
+          taskId: task.id,
+          agentName: task.title,
+          tone: waiting.length ? "warning" : "success",
+          text: waiting.length
+            ? `I have ${waiting.length} change(s) for you to review. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were written right away because an auto-approve switch is on.` : ""}`
+            : `My ${written.length} change(s) were written to your project, because an auto-approve switch is on.`,
+        });
+        // Open what waits for review, so the user sees it right away.
+        for (const ch of waiting.slice(0, 3)) await this.host.showChange(runId, ch.path).catch((err) => this.host.log("warn", (err as Error).message));
       },
       approveCommand: async (task, check) => {
         if (this.host.permissions().commands || this.allowedFor(runId).has(check.command)) return true;
@@ -619,7 +715,7 @@ export class ChatController {
       this.changed();
       await this.append(conversationId, {
         author: "coordinator",
-        text: `Starting sub-agents for ${run.tasks.length} task(s). Each works on its own branch and may only change its own files.`,
+        text: `Starting sub-agents for ${run.tasks.length} task(s). Each may only change its own files, and you review every change before it is written.`,
       });
       const outcome = await this.host.runPlan(runId, this.hooksFor(conversationId, runId, checks, workspaceRoot));
       // Let sub-agent messages that are still queued land before the summary.
@@ -650,8 +746,8 @@ export class ChatController {
 
   /**
    * Sends read-only sub-agents to answer the coordinator's questions about the
-   * project. They read the open folder directly (no branches, nothing to
-   * merge) and their file scope is empty, so the policy refuses every write.
+   * project. They read the open folder directly and their file scope is
+   * empty, so the policy refuses every write.
    */
   private async research(c: Conversation, turn: CoordinatorResult, signal: AbortSignal): Promise<void> {
     const root = await this.host.openFolder(c.workspaceRoot);

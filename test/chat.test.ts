@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChatController, ChatHost, RunHooks } from "../src/chat/chatController";
 import { CheckConfig } from "../src/checks/runner";
 import { DetectedCheck, detectChecks } from "../src/checks/detect";
-import { AutoApprove, checkToolCall } from "../src/tools/policy";
+import { AutoApprove, checkToolCall, isChangeAutoAccepted } from "../src/tools/policy";
 import { commandLeavesProject } from "../src/tools/commandGuard";
 import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
@@ -17,7 +17,7 @@ import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
 import { RunOutcome } from "../src/coordinator/orchestrator";
 import { changedFilesOf, describeOutcome } from "../src/chat/outcome";
-import { Run } from "../src/state/types";
+import { PendingChange, Run } from "../src/state/types";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 import { TaskStore } from "../src/state/taskStore";
 
@@ -174,6 +174,8 @@ describe("ChatController", () => {
     detected?: DetectedCheck[];
     saved?: CheckConfig[];
     permissions?: Partial<AutoApprove>;
+    /** The folder the conversation works in. Defaults to a folder that does not exist. */
+    workspace?: string;
     /** Runs inside the fake run, with the hooks the chat passed. */
     during?: (hooks: RunHooks, runId: string, tasks: TaskStore) => Promise<void>;
   }
@@ -187,18 +189,20 @@ describe("ChatController", () => {
     const savedChecks: CheckConfig[][] = [];
     let saved = opts.saved;
     let current = mode;
-    const permissions: AutoApprove = { editFiles: true, sensitiveFiles: false, commands: false, merges: false, ...opts.permissions };
+    const permissions: AutoApprove = { editFiles: true, sensitiveFiles: false, commands: false, ...opts.permissions };
+    const shown: string[] = [];
+    const closed: string[] = [];
     const host: ChatHost = {
       provider: () => provider,
       modelLabel: () => "test at http://localhost",
-      pickWorkspace: async () => "/ws",
+      pickWorkspace: async () => opts.workspace ?? "/ws",
       fileTree: async () => "src/\n  index.ts",
       runPlan: async (runId, hooks): Promise<RunOutcome> => {
         started.push(runId);
         usedChecks.push(hooks.checks);
         await tasks.log({ runId, taskId: "add-model", type: "tool_call", message: "write_file", data: { thought: "Writing the model.", call: { tool: "write_file", path: "src/model.ts" } } });
         await opts.during?.(hooks, runId, tasks);
-        return { integrationBranch: "agentic/x/integration", done: ["add-model", "add-api"], failed: [], blocked: [] };
+        return { done: ["add-model", "add-api"], failed: [], blocked: [] };
       },
       cancelRun: () => {},
       defaultMode: () => current,
@@ -216,9 +220,79 @@ describe("ChatController", () => {
       setPermission: async (key, value) => {
         permissions[key] = value;
       },
+      showChange: async (_runId, p) => void shown.push(p),
+      closeChange: async (_runId, p) => void closed.push(p),
     };
-    return { controller: new ChatController(conversations, tasks, host), started, provider, usedChecks, savedChecks, tasks };
+    return { controller: new ChatController(conversations, tasks, host), started, provider, usedChecks, savedChecks, tasks, shown, closed };
   }
+
+  describe("reviewing changes in the chat", () => {
+    async function runWithChanges(permissions: Partial<AutoApprove>) {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      await fs.writeFile(path.join(ws, "README.md"), "old\n");
+      const changes: PendingChange[] = [
+        { path: "src/model.ts", taskId: "add-model", original: null, proposed: "export type User = {};\n", status: "pending" },
+        { path: "README.md", taskId: "add-model", original: "old\n", proposed: "new\n", status: "pending" },
+      ];
+      const setupResult = setup([turn("Plan below.", "plan", "Add a User model and an API that uses it."), plan], "act", {
+        workspace: ws,
+        saved: [],
+        permissions,
+        during: async (hooks, runId, tasks) => {
+          await tasks.addChanges(runId, changes);
+          const task = (await tasks.load(runId)).tasks.find((t) => t.id === "add-model")!;
+          await hooks.onChanges(task, changes);
+        },
+      });
+      await setupResult.controller.send("add users");
+      const state = await setupResult.controller.state();
+      const runId = state.current!.entries.find((e) => e.kind === "review")!.runId!;
+      return { ...setupResult, ws, runId };
+    }
+
+    it("shows a review card, opens the changes, and writes nothing until Accept", async () => {
+      const { controller, tasks, ws, runId, shown, closed } = await runWithChanges({ editFiles: false });
+      const state = await controller.state();
+      const card = state.current!.entries.find((e) => e.kind === "review")!;
+      expect(card).toMatchObject({ author: "agent", taskId: "add-model", agentName: "Add model" });
+      expect(card.text).toMatch(/2 change\(s\) for you to review/);
+      expect(state.plans[runId]!.changes.map((c) => [c.path, c.kind, c.status])).toEqual([
+        ["src/model.ts", "new", "pending"],
+        ["README.md", "edit", "pending"],
+      ]);
+      expect(shown).toEqual(["src/model.ts", "README.md"]);
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("old\n");
+      expect((await controller.state()).current!.entries.find((e) => e.kind === "outcome")!.text).toMatch(/wait for your review/);
+
+      await controller.review(runId, "accept", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("new\n");
+      expect(closed).toEqual(["README.md"]);
+      await controller.review(runId, "reject", undefined, "add-model");
+      await expect(fs.access(path.join(ws, "src", "model.ts"))).rejects.toThrow();
+      expect((await tasks.load(runId)).changes!.map((c) => c.status)).toEqual(["rejected", "accepted"]);
+    });
+
+    it("asks before overwriting a file the user changed meanwhile, then overwrites on a second Accept", async () => {
+      const { controller, ws, runId } = await runWithChanges({ editFiles: false });
+      await fs.writeFile(path.join(ws, "README.md"), "mine\n");
+      await controller.review(runId, "accept", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("mine\n");
+      expect((await controller.state()).plans[runId]!.changes.find((c) => c.path === "README.md")!.note).toMatch(/changed on disk/);
+      await controller.review(runId, "accept", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("new\n");
+    });
+
+    it("writes right away when Edit files is on, without asking", async () => {
+      const { controller, ws, runId, shown } = await runWithChanges({ editFiles: true });
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("new\n");
+      expect(await fs.readFile(path.join(ws, "src", "model.ts"), "utf8")).toBe("export type User = {};\n");
+      expect(shown).toEqual([]);
+      const state = await controller.state();
+      expect(state.current!.entries.find((e) => e.kind === "review")!.text).toMatch(/written to your project, because an auto-approve switch is on/);
+      expect(state.plans[runId]!.changes.every((c) => c.status === "accepted" && c.auto)).toBe(true);
+    });
+  });
 
   it("passes what research found to the planner and to every sub-agent of the next run", async () => {
     await fs.mkdir(path.join(dir, "ws"), { recursive: true });
@@ -533,15 +607,20 @@ describe("detectChecks", () => {
 });
 
 describe("permissions in the policy", () => {
-  it("asks before every edit when edits are not auto-approved, and always asks for new commands", () => {
+  it("leaves edits to the review, and always asks for new commands", () => {
     const ctx = { fileScope: ["src/**"], allowedChecks: [] };
     expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, ctx).verdict).toBe("allow");
-    expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("ask");
+    const off = { editFiles: false, sensitiveFiles: false, commands: false };
+    expect(isChangeAutoAccepted("src/a.ts", off)).toBe(false);
+    expect(isChangeAutoAccepted("src/a.ts", { ...off, editFiles: true })).toBe(true);
+    // Sensitive files follow their own switch, not the edit switch.
+    expect(isChangeAutoAccepted("package.json", { ...off, editFiles: true })).toBe(false);
+    expect(isChangeAutoAccepted("package.json", { ...off, sensitiveFiles: true })).toBe(true);
     expect(checkToolCall({ tool: "request_check", name: "t", command: "make t", reason: "" }, ctx).verdict).toBe("ask");
     // Commands that point outside the project are refused, not asked about.
     expect(checkToolCall({ tool: "request_check", name: "t", command: "rm -rf /", reason: "" }, ctx).verdict).toBe("deny");
     // Workspace rules hold whatever is auto-approved.
-    expect(checkToolCall({ tool: "write_file", path: "../x", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("deny");
+    expect(checkToolCall({ tool: "write_file", path: "../x", content: "" }, ctx).verdict).toBe("deny");
   });
 });
 
@@ -550,17 +629,22 @@ describe("describeOutcome", () => {
     ({ id, title: `Task ${id}`, instructions: "x", dependsOn: [], fileScope: [], status, ...extra });
   const run = (tasks: unknown[]) => ({ id: "r1", tasks }) as unknown as Run;
 
-  it("says what changed, which files, and what Apply does", () => {
+  it("says what changed, which files, and that changes wait for review", () => {
     const r = run([
       task("a", "done", { summary: "Added the model.", changedFiles: ["src/user.ts"] }),
       task("b", "done", { summary: "Added the API.", changedFiles: ["src/api.ts", "src/user.ts"] }),
     ]);
+    (r as { changes?: unknown }).changes = [
+      { path: "src/user.ts", taskId: "b", original: null, proposed: "x", status: "pending" },
+      { path: "src/api.ts", taskId: "b", original: "", proposed: "x", status: "accepted" },
+    ];
     const text = describeOutcome(r, { done: ["a", "b"], failed: [], blocked: [] } as unknown as RunOutcome);
     expect(text).toMatch(/^All 2 task\(s\) are done\./);
     expect(text).toMatch(/✓ Task a: Added the model\./);
     expect(text).toMatch(/Changed files: src\/api\.ts, src\/user\.ts\./);
-    expect(text).toMatch(/Apply to my branch/);
-    expect(text).not.toMatch(/integration/);
+    expect(text).toMatch(/1 change\(s\) wait for your review/);
+    expect(text).toMatch(/until you press Accept\. 1 already written/);
+    expect(text).not.toMatch(/integration|branch|merge/i);
     expect(changedFilesOf(r)).toEqual(["src/api.ts", "src/user.ts"]);
   });
 
@@ -569,7 +653,7 @@ describe("describeOutcome", () => {
     const text = describeOutcome(r, { done: ["a"], failed: ["b"], blocked: ["c"] } as unknown as RunOutcome);
     expect(text).toMatch(/1 of 3 task\(s\) are done\. 1 failed\. 1 could not start/);
     expect(text).toMatch(/✕ Task b: Model gave up\./);
-    expect(text).toMatch(/nothing to apply/);
+    expect(text).toMatch(/No files were changed\./);
   });
 });
 

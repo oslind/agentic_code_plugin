@@ -9,8 +9,6 @@ export interface PolicyContext {
   allowedChecks: string[];
   /** Commands of the allowed checks by name, so a known check can be requested again without asking. */
   knownCommands?: Map<string, string>;
-  /** Ask the user before every write, even inside the scope. */
-  askBeforeWrites?: boolean;
 }
 
 export type PolicyDecision =
@@ -71,17 +69,14 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
           reason: `'${p}' is outside this task's file scope (${ctx.fileScope.join(", ")}). Only change files in scope.`,
         };
       }
-      if (matchesAny(p, SENSITIVE)) {
-        return { verdict: "ask", reason: `Changing '${p}' needs approval`, path: p };
-      }
-      if (ctx.askBeforeWrites) return { verdict: "ask", reason: `Edit '${p}'`, path: p };
+      // Writes stay pending until the user accepts them (or an auto-approve switch does), so they need no question here.
       return { verdict: "allow", path: p };
     }
   }
 }
 
 
-/** package.json, lockfiles and CI files: writable only with approval (or the matching auto-approve setting). */
+/** package.json, lockfiles and CI files: accepted only by the user, or by the "sensitive files" switch. */
 export function isSensitivePath(path: string): boolean {
   const p = normalizeWorkspacePath(path);
   return p !== undefined && p !== null && matchesAny(p, SENSITIVE);
@@ -92,7 +87,17 @@ export interface AutoApprove {
   editFiles: boolean;
   sensitiveFiles: boolean;
   commands: boolean;
-  merges: boolean;
+}
+
+/** Never writable, whatever is accepted: .git, secrets, .agentic and VS Code settings. */
+export function isProtectedPath(path: string): boolean {
+  const p = normalizeWorkspacePath(path);
+  return !p || matchesAny(p, PROTECTED);
+}
+
+/** Whether a pending change may be written without the user, given the switches. */
+export function isChangeAutoAccepted(path: string, auto: AutoApprove): boolean {
+  return isSensitivePath(path) ? auto.sensitiveFiles : auto.editFiles;
 }
 
 /** Whether the user's auto-approve switches already allow a call the policy flagged. */

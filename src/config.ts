@@ -61,34 +61,31 @@ export function readRunConfig(scope?: vscode.Uri): RunConfig {
     maxParallel: Math.max(1, Math.min(8, c.get<number>("maxParallelWorkers", 2))),
     maxTurns: c.get<number>("worker.maxTurns", 40),
     maxFixRounds: c.get<number>("worker.maxFixRounds", 2),
-    linkDirs: c.get<string[]>("worktree.linkDirs", ["node_modules"]),
+    linkDirs: c.get<string[]>("scratch.linkDirs", ["node_modules"]),
   };
 }
 
 /**
- * What runs without asking. Workspace confinement, protected files (.git,
- * secrets, .agentic) and applying a run to your own branch are never
- * affected by these.
+ * What happens without asking. A switch that is off means the user approves
+ * each step in the chat. Workspace confinement and the protected files
+ * (.git, secrets, .agentic) are never affected by these.
  */
 export interface Permissions extends AutoApprove {
-  /** Sub-agents may write files in their task's scope without asking. */
+  /** Sub-agents' file changes are written to the project without review. */
   editFiles: boolean;
-  /** Sub-agents may also change package.json, lockfiles and CI files without asking. */
+  /** The same for package.json, lockfiles and CI files. */
   sensitiveFiles: boolean;
-  /** Commands sub-agents request as checks run without asking. */
+  /** Check commands run without asking. */
   commands: boolean;
-  /** Verified work merges into the run's integration branch without asking. */
-  merges: boolean;
 }
 
-export const PERMISSION_KEYS = ["editFiles", "sensitiveFiles", "commands", "merges"] as const;
+export const PERMISSION_KEYS = ["editFiles", "sensitiveFiles", "commands"] as const;
 
 export function readPermissions(): Permissions {
   const c = vscode.workspace.getConfiguration("agentic.autoApprove");
   return {
-    editFiles: c.get<boolean>("editFiles", true),
+    editFiles: c.get<boolean>("editFiles", false),
     sensitiveFiles: c.get<boolean>("sensitiveFiles", false),
     commands: c.get<boolean>("commands", false),
-    merges: c.get<boolean>("merges", false),
   };
 }
