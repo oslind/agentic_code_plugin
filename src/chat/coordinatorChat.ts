@@ -172,15 +172,32 @@ export function isReadOnlyRequest(text: string): boolean {
  * instructions, and reading words in each. Such a "plan" is research.
  */
 export function isReadOnlyPlan(tasks: { title: string; instructions: string; changes?: boolean }[]): boolean {
-  if (tasks.length === 0) return false;
-  // The planner says so for every task.
-  if (tasks.every((t) => t.changes === false)) return true;
-  // Or no task asks for a change and each one reads or reports. A task the planner marked as changing is trusted.
-  return tasks.every((t) => {
-    if (t.changes === true) return false;
-    const text = `${t.title}. ${t.instructions}`;
-    return !CHANGE_WORDS.test(withoutReportPhrases(text)) && READ_WORDS.test(text);
-  });
+  return tasks.length > 0 && tasks.every((t) => editingReason(t) === undefined);
+}
+
+/** Verbs that tell a sub-agent to change files. Only counted as an instruction, never inside a description. */
+const EDIT_VERBS =
+  /^(add|implement|fix|change|create|write|update|remove|delete|rename|refactor|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|rewrite|insert|append|extract|split|lägg till|fixa|ändra|skapa|skriv|ta bort|byt)\b/i;
+/** Words that may come before the verb of an instruction, e.g. "Then add", "Please also create", "You must update". */
+const LEAD_IN = /^((please|also|then|and|next|finally|first|now|you (should|must|need to|will)|make sure (to|you))\s+)+/i;
+
+/**
+ * Why a planned task counts as changing files, or undefined if it only reads.
+ * A task changes files when one of its instructions starts with an editing
+ * verb ("Add …", "Then create …"). A verb inside a description ("explain how
+ * the port is set up") does not count. The planner's own "changes" flag is
+ * only trusted when it says false: small models copy "changes": true from
+ * the example without thinking about it.
+ */
+export function editingReason(task: { title: string; instructions: string; changes?: boolean }): string | undefined {
+  if (task.changes === false) return undefined;
+  const text = withoutReportPhrases(`${task.title}. ${task.instructions}`);
+  for (const raw of text.split(/[.;:!?\n]+|,?\s+(?:and|then|och|sedan)\s+|,\s+/i)) {
+    const clause = raw.trim().replace(LEAD_IN, "");
+    const verb = EDIT_VERBS.exec(clause);
+    if (verb) return `"${task.title}" says "${clause.slice(0, 60)}"`;
+  }
+  return undefined;
 }
 
 /**

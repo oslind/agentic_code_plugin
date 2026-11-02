@@ -11,7 +11,7 @@ import { ToolCall } from "../tools/protocol";
 import { AutoApprove, isAutoApproved } from "../tools/policy";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
-import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, researchQuestions } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, researchQuestions } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
@@ -533,6 +533,8 @@ export class ChatController {
             onThinking: (t) => (planThinking = t),
           },
         );
+        const editing = result.plan.tasks.map(editingReason).find((r) => r !== undefined);
+        if (editing) this.host.log("info", `Plan kept as a change plan because ${editing}.`);
         if (isReadOnlyPlan(result.plan.tasks)) {
           // Every task only reads: that is research, which needs no Act mode and changes nothing.
           await this.append(c.id, {
