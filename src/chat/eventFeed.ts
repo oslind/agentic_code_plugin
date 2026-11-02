@@ -36,23 +36,41 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
     case "status":
       if (!event.taskId) return undefined;
       switch (event.message) {
-        case "running":
-          return agent({ text: `Started on ${task?.fileScope.join(", ") ?? "its files"}.`, tag: "start" });
+        case "running": {
+          // Shown as the coordinator handing a task to a new sub-agent.
+          const attempt = task && task.attempts > 1 ? ` (attempt ${task.attempts})` : "";
+          return {
+            author: "coordinator",
+            kind: "spawn",
+            runId: event.runId,
+            taskId: event.taskId,
+            agentName: task?.title ?? event.taskId,
+            tag: "sub-agent started",
+            text: `Started sub-agent "${task?.title ?? event.taskId}"${attempt}.\n${
+              task && task.fileScope.length === 0 ? "Read-only: it may not change any files." : `May change: ${task?.fileScope.join(", ") ?? "its files"}`
+            }${
+              task ? `\nTask: ${short(task.instructions, 300)}` : ""
+            }`,
+          };
+        }
         case "verifying":
           return agent({ text: "Running the configured checks on my work.", tag: "verify" });
         case "awaiting_approval":
           return agent({ text: "My work passed the checks and is waiting for your approval to merge.", tag: "approval", tone: "warning" });
         case "done":
-          return agent({ text: task?.summary ? `Done: ${short(task.summary)}` : "Done.", tag: "done", tone: "success" });
+          return agent({ text: "Task complete.", tag: "done", tone: "success" });
         default:
           return undefined;
       }
     case "tool_call": {
       const call = data.call as Record<string, unknown> | undefined;
-      if (event.message === "finish") return agent({ text: short(String(call?.summary ?? "Finished.")), tag: "finish" });
+      const thinking = typeof data.thinking === "string" ? data.thinking : undefined;
       const thought = typeof data.thought === "string" ? short(data.thought) : "";
+      if (event.message === "finish") {
+        return agent({ kind: "report", text: String(call?.summary ?? "Finished."), tag: "report to coordinator", thought: thought || undefined, thinking });
+      }
       const what = target(call);
-      return agent({ text: thought || `${event.message} ${what}`.trim(), tag: what ? `${event.message} ${what}` : event.message });
+      return agent({ text: thought || `${event.message} ${what}`.trim(), thought: thought || undefined, thinking, tag: what ? `${event.message} ${what}` : event.message });
     }
     case "denied":
       return agent({ text: `Blocked: ${short(event.message)}`, tag: "policy", tone: "warning" });

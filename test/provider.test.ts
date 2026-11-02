@@ -71,6 +71,12 @@ describe("OpenAICompatibleProvider", () => {
     expect(JSON.parse(f.calls[0]!.init.body as string).response_format).toEqual({ type: "json_object" });
   });
 
+  it("returns the server's separate reasoning field", async () => {
+    const f = fakeFetch(200, { choices: [{ message: { content: "{}", reasoning: "Think first." } }] });
+    const res = await new OpenAICompatibleProvider(base, f.fn).chat({ messages: [] });
+    expect(res.reasoning).toBe("Think first.");
+  });
+
   it("marks 5xx errors as retryable", async () => {
     const p = new OpenAICompatibleProvider(base, fakeFetch(503, "busy").fn);
     const err = await p.chat({ messages: [] }).catch((e) => e);

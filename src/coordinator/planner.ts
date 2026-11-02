@@ -1,15 +1,16 @@
 import { ContextSection, estimateTokens, fitToBudget } from "../context/budget";
 import { callStructured } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
-import { MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
+import { DEFAULT_MAX_TASKS, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
 
 // Kept short on purpose: small models follow a few concrete rules and one
 // example better than a long policy document.
-const SYSTEM_PROMPT = `You are the coordinator of a team of coding agents. Split the user's request into small tasks.
+const systemPrompt = (maxTasks: number) => `You are the coordinator of a team of coding agents. Split the user's request into small, focused tasks and delegate heavily.
 
 Rules:
-- At most ${MAX_TASKS} tasks. Prefer fewer. One task per file or module where possible.
+- Up to ${maxTasks} tasks. Prefer more, smaller tasks over a few large ones: one task per file or module. Independent tasks run in parallel, and small tasks are easier for each agent to get right.
 - Each task must be doable alone by a worker who sees only that task and its files.
+- If "What we know so far" is given, copy the facts a task needs (file names, how things work, decisions) into that task's instructions.
 - fileScope lists every file or glob the task may create or change, relative to the workspace root.
 - Tasks that change the same files must not run at the same time: make one depend on the other.
 - dependsOn lists ids of tasks whose results this task needs.
@@ -18,12 +19,20 @@ Rules:
 Reply with JSON only, in this shape:
 {"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"]},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"]}]}`;
 
+function taskLimit(input: PlanInput): number {
+  return Math.max(1, Math.min(MAX_TASKS, Math.floor(input.maxTasks ?? DEFAULT_MAX_TASKS)));
+}
+
 export interface PlanInput {
   request: string;
   /** Compact file listing of the workspace. Truncated to fit if needed. */
   fileTree?: string;
   /** Extra context such as README or package.json excerpts, lowest priority. */
   notes?: string;
+  /** What the coordinator learned earlier in the conversation: research answers and sub-agent reports. */
+  learned?: string;
+  /** Most tasks the plan may have (agentic.delegation.maxTasks). */
+  maxTasks?: number;
 }
 
 export interface PlanResult {
@@ -46,10 +55,14 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   if (input.notes) {
     sections.push({ name: "notes", text: `Project notes:\n${input.notes}`, priority: 10 });
   }
-  const user = fitToBudget(sections, budget - estimateTokens(SYSTEM_PROMPT));
+  if (input.learned) {
+    sections.push({ name: "learned", text: `What we know so far (from earlier research and sub-agent reports):\n${input.learned}`, priority: 40 });
+  }
+  const system = systemPrompt(taskLimit(input));
+  const user = fitToBudget(sections, budget - estimateTokens(system));
   return {
     messages: [
-      { role: "system" as const, content: SYSTEM_PROMPT },
+      { role: "system" as const, content: system },
       { role: "user" as const, content: user.text },
     ],
     dropped: [...user.dropped, ...user.truncated.map((n) => `${n} (truncated)`)],
@@ -59,17 +72,21 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
 export async function planRequest(
   provider: ModelProvider,
   input: PlanInput,
-  options: { signal?: AbortSignal; onAttempt?: (n: number, error?: string) => void } = {},
+  options: { signal?: AbortSignal; onAttempt?: (n: number, error?: string) => void; onThinking?: (thinking: string) => void } = {},
 ): Promise<PlanResult> {
   const { messages, dropped } = buildPlannerMessages(input, provider.contextWindow);
   const plan = await callStructured({
     provider,
     messages,
-    schema: planSchema,
+    schema: planSchema.refine((p) => p.tasks.length <= taskLimit(input), {
+      message: `Too many tasks: at most ${taskLimit(input)}. Merge the smallest related tasks.`,
+      path: ["tasks"],
+    }),
     schemaName: "plan",
     maxRetries: 3,
     signal: options.signal,
     onAttempt: options.onAttempt,
+    onThinking: options.onThinking,
   });
   const repaired = repairPlan(plan);
   return { ...repaired, droppedContext: dropped };

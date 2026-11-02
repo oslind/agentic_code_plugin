@@ -2,12 +2,22 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ChatController, ChatHost } from "../src/chat/chatController";
+import { ChatController, ChatHost, RunHooks } from "../src/chat/chatController";
+import { CheckConfig } from "../src/checks/runner";
+import { DetectedCheck, detectChecks } from "../src/checks/detect";
+import { AutoApprove, checkToolCall } from "../src/tools/policy";
+import { commandLeavesProject } from "../src/tools/commandGuard";
+import { runAllChecks, runCheck } from "../src/checks/runner";
+import { previewChange } from "../src/worker/worker";
+import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
 import { buildCoordinatorMessages, coordinatorTurn, enforceMode } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
+import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
 import { RunOutcome } from "../src/coordinator/orchestrator";
+import { changedFilesOf, describeOutcome } from "../src/chat/outcome";
+import { Run } from "../src/state/types";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 import { TaskStore } from "../src/state/taskStore";
 
@@ -114,6 +124,21 @@ describe("coordinator turn", () => {
   });
 });
 
+describe("thinking", () => {
+  it("takes thinking from the server's reasoning field or from <think> blocks", () => {
+    expect(extractThinking('{"a":1}', "I should answer.")).toBe("I should answer.");
+    expect(extractThinking('<think>Plan it first.</think>{"a":1}')).toBe("Plan it first.");
+    expect(extractThinking('{"a":1}')).toBeUndefined();
+  });
+
+  it("returns the coordinator's thought and thinking with its turn", async () => {
+    const p = scripted([`<think>The user wants a rename.</think>${JSON.stringify({ thought: "Clear enough to delegate.", reply: "Delegating.", action: "plan", request: "Rename foo to bar in src/foo.ts" })}`]);
+    const result = await coordinatorTurn(p, { mode: "plan", entries: [{ id: "1", time: "", author: "user", text: "rename" }] });
+    expect(result.thought).toBe("Clear enough to delegate.");
+    expect(result.thinking).toBe("The user wants a rename.");
+  });
+});
+
 describe("eventToEntry", () => {
   const tasks = [{ id: "t1", title: "Add model", instructions: "", dependsOn: [], fileScope: ["src/a.ts"], status: "running" as const, attempts: 1, createdAt: "", updatedAt: "" }];
 
@@ -125,35 +150,129 @@ describe("eventToEntry", () => {
     expect(e).toMatchObject({ author: "agent", agentName: "Add model", text: "Look at the file first.", tag: "read_file src/a.ts" });
   });
 
+  it("marks a sub-agent start as the coordinator starting a sub-agent", () => {
+    const e = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "status", message: "running" }, tasks);
+    expect(e).toMatchObject({ author: "coordinator", kind: "spawn", taskId: "t1", agentName: "Add model" });
+    expect(e!.text).toMatch(/src\/a\.ts/);
+  });
+
+  it("shows a sub-agent's finish as its report to the coordinator, with its thinking", () => {
+    const e = eventToEntry(
+      { time: "", runId: "r", taskId: "t1", type: "tool_call", message: "finish", data: { thought: "All done.", thinking: "Checked everything.", call: { tool: "finish", summary: "Added the User type." } } },
+      tasks,
+    );
+    expect(e).toMatchObject({ author: "agent", kind: "report", text: "Added the User type.", thinking: "Checked everything." });
+  });
+
   it("ignores bookkeeping events", () => {
     expect(eventToEntry({ time: "", runId: "r", taskId: "t1", type: "worktree", message: "/x" }, tasks)).toBeUndefined();
   });
 });
 
 describe("ChatController", () => {
-  function setup(replies: string[], mode: ChatMode) {
+  interface SetupOptions {
+    detected?: DetectedCheck[];
+    saved?: CheckConfig[];
+    permissions?: Partial<AutoApprove>;
+    /** Runs inside the fake run, with the hooks the chat passed. */
+    during?: (hooks: RunHooks, runId: string, tasks: TaskStore) => Promise<void>;
+  }
+
+  function setup(replies: string[], mode: ChatMode, opts: SetupOptions = {}) {
     const conversations = new ConversationStore(path.join(dir, "state"));
     const tasks = new TaskStore(path.join(dir, "state"));
     const provider = scripted(replies);
     const started: string[] = [];
+    const usedChecks: CheckConfig[][] = [];
+    const savedChecks: CheckConfig[][] = [];
+    let saved = opts.saved;
     let current = mode;
+    const permissions: AutoApprove = { editFiles: true, sensitiveFiles: false, commands: false, merges: false, ...opts.permissions };
     const host: ChatHost = {
       provider: () => provider,
       modelLabel: () => "test at http://localhost",
       pickWorkspace: async () => "/ws",
       fileTree: async () => "src/\n  index.ts",
-      runPlan: async (runId): Promise<RunOutcome> => {
+      runPlan: async (runId, hooks): Promise<RunOutcome> => {
         started.push(runId);
+        usedChecks.push(hooks.checks);
         await tasks.log({ runId, taskId: "add-model", type: "tool_call", message: "write_file", data: { thought: "Writing the model.", call: { tool: "write_file", path: "src/model.ts" } } });
+        await opts.during?.(hooks, runId, tasks);
         return { integrationBranch: "agentic/x/integration", done: ["add-model", "add-api"], failed: [], blocked: [] };
       },
       cancelRun: () => {},
       defaultMode: () => current,
       setDefaultMode: (m) => (current = m),
       log: () => {},
+      openFolder: async () => path.join(dir, "ws"),
+      researchLimits: () => ({ maxTurns: 10, maxParallel: 1 }),
+      delegationLimits: () => ({ maxTasks: 12, maxResearchers: 5 }),
+      checksFor: async () => ({ saved, defaults: [], detected: opts.detected ?? [] }),
+      saveChecks: async (_root, checks) => {
+        saved = checks;
+        savedChecks.push(checks);
+      },
+      permissions: () => permissions,
+      setPermission: async (key, value) => {
+        permissions[key] = value;
+      },
     };
-    return { controller: new ChatController(conversations, tasks, host), started, provider };
+    return { controller: new ChatController(conversations, tasks, host), started, provider, usedChecks, savedChecks, tasks };
   }
+
+  it("passes what research found to the planner and to every sub-agent of the next run", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    await fs.writeFile(path.join(dir, "ws", "README.md"), "# Flight sim\n");
+    const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+    const { controller, provider, tasks } = setup(
+      [
+        JSON.stringify({ reply: "Reading.", action: "research", request: "", questions: ["What does this project do?"] }),
+        worker("Done.", { tool: "finish", summary: "It is a flight simulator; physics lives in src/physics.ts." }),
+        JSON.stringify({ reply: "It is a flight simulator.", action: "none", request: "" }),
+        turn("Plan below.", "plan", "Add wind to the physics."),
+        plan,
+      ],
+      "plan",
+    );
+    await controller.send("What is this?");
+    await controller.send("Add wind");
+    const plannerCall = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
+    expect(plannerCall).toMatch(/What we know so far[\s\S]*physics lives in src\/physics\.ts/);
+    const runId = (await controller.state()).current!.entries.find((e) => e.kind === "plan")!.runId!;
+    expect((await tasks.load(runId)).briefing).toMatch(/physics lives in src\/physics\.ts[\s\S]*Coordinator concluded: It is a flight simulator/);
+  });
+
+  it("answers a question about the project with read-only research, even in Plan mode", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    await fs.writeFile(path.join(dir, "ws", "README.md"), "# Flight sim\nA flight simulator.\n");
+    const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+    const { controller, started } = setup(
+      [
+        JSON.stringify({ thought: "Need to read the code.", reply: "I'll have a sub-agent read the project.", action: "research", request: "", questions: ["What does this project do?"] }),
+        worker("Read the README.", { tool: "read_file", path: "README.md" }),
+        worker("Try to edit, which must be refused.", { tool: "write_file", path: "README.md", content: "hacked" }),
+        worker("Done.", { tool: "finish", summary: "It is a flight simulator, described in README.md." }),
+        JSON.stringify({ thought: "Answer from the report.", reply: "This project is a flight simulator (see README.md).", action: "plan", request: "Do more things to the project" }),
+      ],
+      "plan",
+    );
+    await controller.send("Analyze this project and report back");
+    await new Promise((r) => setTimeout(r, 50));
+    const state = await controller.state();
+    const entries = state.current!.entries;
+    expect(started).toEqual([]);
+    expect(await fs.readFile(path.join(dir, "ws", "README.md"), "utf8")).toMatch(/Flight sim/);
+    const research = entries.find((e) => e.kind === "research")!;
+    expect(state.plans[research.runId!]).toMatchObject({ kind: "research", tasks: [{ status: "done", fileScope: [] }] });
+    expect(entries.some((e) => e.kind === "spawn" && /Read-only/.test(e.text))).toBe(true);
+    expect(entries.some((e) => e.author === "agent" && /Blocked/.test(e.text))).toBe(true);
+    expect(entries.some((e) => e.kind === "report" && /flight simulator/.test(e.text))).toBe(true);
+    // The final answer comes from the reports, and cannot start more work.
+    expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "This project is a flight simulator (see README.md)." });
+    expect(entries.filter((e) => e.kind === "plan")).toHaveLength(0);
+    // Research never ends with a run summary or Apply buttons.
+    expect(entries.some((e) => e.kind === "outcome")).toBe(false);
+  });
 
   it("Plan mode proposes a plan and does not start sub-agents", async () => {
     const { controller, started } = setup([turn("I'll split this up.", "plan", "Add a User model and an API that uses it."), plan], "plan");
@@ -185,6 +304,7 @@ describe("ChatController", () => {
     const entries = (await controller.state()).current!.entries;
     expect(entries.some((e) => e.author === "agent" && e.text === "Writing the model." && e.agentName === "Add model")).toBe(true);
     expect(entries.at(-1)).toMatchObject({ kind: "outcome", tone: "success" });
+    expect(entries.at(-1)!.text).toMatch(/What the sub-agents did:\n✓ Add model/);
   });
 
   it("a coordinator asking to run in Plan mode runs nothing", async () => {
@@ -197,5 +317,241 @@ describe("ChatController", () => {
     expect(started).toEqual([]);
     const entries = (await controller.state()).current!.entries;
     expect(entries.at(-1)).toMatchObject({ author: "system", tone: "warning" });
+  });
+  /** Waits until a card of this kind is waiting for the user, then returns it. */
+  async function waitForCard(controller: ChatController, kind: string) {
+    for (let i = 0; i < 100; i++) {
+      const st = await controller.state();
+      const e = st.current?.entries.find((x) => x.kind === kind && st.waiting.includes(x.id));
+      if (e) return e;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`No waiting ${kind} card`);
+  }
+
+  const planReplies = () => [turn("On it.", "plan", "Add a User model and an API that uses it."), plan];
+
+  it("proposes detected checks before the first run in a folder, and remembers the choice", async () => {
+    const { controller, usedChecks, savedChecks } = setup(planReplies(), "act", { detected: [{ name: "test", command: "npm test", source: "package.json script" }] });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "checks");
+    expect(card.checks).toEqual([{ name: "test", command: "npm test", source: "package.json script" }]);
+    await controller.decide(card.id, { kind: "checks", remember: true, checks: [{ name: "test", command: "npm test -- --run" }] });
+    await sending;
+    expect(usedChecks).toEqual([[{ name: "test", command: "npm test -- --run" }]]);
+    expect(savedChecks).toEqual([[{ name: "test", command: "npm test -- --run" }]]);
+  });
+
+  it("does not ask about checks when nothing is found, or when the folder already has saved checks", async () => {
+    const a = setup(planReplies(), "act");
+    await a.controller.send("add users");
+    expect(a.usedChecks).toEqual([[]]);
+    const b = setup(planReplies(), "act", { saved: [{ name: "lint", command: "ruff check ." }], detected: [{ name: "test", command: "pytest", source: "x" }] });
+    await b.controller.send("add users");
+    expect(b.usedChecks).toEqual([[{ name: "lint", command: "ruff check ." }]]);
+  });
+
+  it("asks before a sub-agent runs a new command, and can remember it for the folder", async () => {
+    let allowed: boolean | undefined;
+    const task = { id: "add-model", title: "Add model" } as never;
+    const { controller, savedChecks } = setup(planReplies(), "act", {
+      during: async (hooks) => {
+        allowed = await hooks.approveTool(task, "x", { tool: "request_check", name: "pytest", command: "pytest -q", reason: "tests my change" });
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "approval");
+    expect(card).toMatchObject({ rememberable: true, agentName: "Add model" });
+    expect(card.text).toMatch(/pytest -q/);
+    await controller.decide(card.id, { kind: "allow", remember: true });
+    await sending;
+    expect(allowed).toBe(true);
+    expect(savedChecks.at(-1)).toEqual([{ name: "pytest", command: "pytest -q" }]);
+  });
+
+  it("auto-approves commands when that switch is on", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { commands: true },
+      during: async (hooks) => {
+        allowed = await hooks.approveTool({ id: "add-model", title: "Add model" } as never, "x", { tool: "request_check", name: "t", command: "make t", reason: "r" });
+      },
+    });
+    await controller.send("add users");
+    expect(allowed).toBe(true);
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => /Auto-approved/.test(e.text))).toBe(true);
+  });
+
+  it("shows a file change before it is written, when edits are not auto-approved", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { editFiles: false },
+      during: async (hooks) => {
+        allowed = await hooks.approveTool({ id: "add-model", title: "Add model" } as never, "Edit 'src/a.ts'", { tool: "write_file", path: "src/a.ts", content: "x" }, "- old\n+ x");
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "approval");
+    expect(card).toMatchObject({ preview: "- old\n+ x", rememberable: false });
+    expect(card.text).toMatch(/Nothing is written until you allow it/);
+    await controller.decide(card.id, { kind: "deny" });
+    await sending;
+    expect(allowed).toBe(false);
+  });
+
+  it("asks before each check command runs when commands are not auto-approved, and can allow it for the run", async () => {
+    const results: boolean[] = [];
+    const task = { id: "add-model", title: "Add model" } as never;
+    const check = { name: "test", command: "npm test" };
+    const { controller } = setup(planReplies(), "act", {
+      during: async (hooks) => {
+        results.push(await hooks.approveCommand(task, check));
+        results.push(await hooks.approveCommand(task, check));
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "approval");
+    expect(card.text).toMatch(/npm test/);
+    expect(card.rememberLabel).toBe("Allow for the rest of this run");
+    await controller.decide(card.id, { kind: "allow", remember: true });
+    await sending;
+    // The second run of the same command in this run did not ask again.
+    expect(results).toEqual([true, true]);
+    const cards = (await controller.state()).current!.entries.filter((e) => e.kind === "approval");
+    expect(cards).toHaveLength(1);
+  });
+
+  it("runs check commands without asking when commands are auto-approved", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { commands: true },
+      during: async (hooks) => {
+        allowed = await hooks.approveCommand({ id: "add-model", title: "Add model" } as never, { name: "test", command: "npm test" });
+      },
+    });
+    await controller.send("add users");
+    expect(allowed).toBe(true);
+  });
+
+  it("lets a sub-agent ask the user, and delivers direct messages on its next step", async () => {
+    let answer = "";
+    let inbox: string[] = [];
+    const { controller } = setup(planReplies(), "act", {
+      during: async (hooks, runId, tasks) => {
+        await tasks.setStatus(runId, "add-model", "running");
+        answer = await hooks.askUser({ id: "add-model", title: "Add model" } as never, "Should ids be numbers or strings?");
+        inbox = hooks.inbox("add-model");
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "question");
+    const runId = card.runId!;
+    await controller.messageAgent(runId, "add-model", "Use UUID strings.");
+    await controller.decide(card.id, { kind: "answer", text: "Strings" });
+    await sending;
+    expect(answer).toBe("Strings");
+    expect(inbox).toEqual(["Use UUID strings."]);
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => e.kind === "direct" && e.agentName === "Add model")).toBe(true);
+  });
+});
+
+describe("detectChecks", () => {
+  it("suggests checks from package.json scripts, Python and Go projects", async () => {
+    const files: Record<string, string> = {
+      "package.json": JSON.stringify({ scripts: { test: "vitest run", lint: "eslint ." } }),
+      "pnpm-lock.yaml": "",
+      "tsconfig.json": "{}",
+    };
+    const node = await detectChecks(Object.keys(files), async (p) => files[p]);
+    expect(node.map((c) => c.command)).toEqual(["pnpm test", "pnpm lint", "npx tsc --noEmit"]);
+
+    const py = await detectChecks(["pyproject.toml", "tests/test_x.py"], async () => "[tool.ruff]\n");
+    expect(py.map((c) => c.command)).toEqual(["python -m pytest -q", "ruff check ."]);
+
+    const go = await detectChecks(["go.mod", "main.go"], async () => "");
+    expect(go.map((c) => c.command)).toEqual(["go test ./...", "go vet ./..."]);
+  });
+
+  it("ignores npm's placeholder test script", async () => {
+    const out = await detectChecks(["package.json"], async () => JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
+    expect(out).toEqual([]);
+  });
+});
+
+describe("permissions in the policy", () => {
+  it("asks before every edit when edits are not auto-approved, and always asks for new commands", () => {
+    const ctx = { fileScope: ["src/**"], allowedChecks: [] };
+    expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, ctx).verdict).toBe("allow");
+    expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("ask");
+    expect(checkToolCall({ tool: "request_check", name: "t", command: "make t", reason: "" }, ctx).verdict).toBe("ask");
+    // Commands that point outside the project are refused, not asked about.
+    expect(checkToolCall({ tool: "request_check", name: "t", command: "rm -rf /", reason: "" }, ctx).verdict).toBe("deny");
+    // Workspace rules hold whatever is auto-approved.
+    expect(checkToolCall({ tool: "write_file", path: "../x", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("deny");
+  });
+});
+
+describe("describeOutcome", () => {
+  const task = (id: string, status: string, extra: Record<string, unknown> = {}) =>
+    ({ id, title: `Task ${id}`, instructions: "x", dependsOn: [], fileScope: [], status, ...extra });
+  const run = (tasks: unknown[]) => ({ id: "r1", tasks }) as unknown as Run;
+
+  it("says what changed, which files, and what Apply does", () => {
+    const r = run([
+      task("a", "done", { summary: "Added the model.", changedFiles: ["src/user.ts"] }),
+      task("b", "done", { summary: "Added the API.", changedFiles: ["src/api.ts", "src/user.ts"] }),
+    ]);
+    const text = describeOutcome(r, { done: ["a", "b"], failed: [], blocked: [] } as unknown as RunOutcome);
+    expect(text).toMatch(/^All 2 task\(s\) are done\./);
+    expect(text).toMatch(/✓ Task a: Added the model\./);
+    expect(text).toMatch(/Changed files: src\/api\.ts, src\/user\.ts\./);
+    expect(text).toMatch(/Apply to my branch/);
+    expect(text).not.toMatch(/integration/);
+    expect(changedFilesOf(r)).toEqual(["src/api.ts", "src/user.ts"]);
+  });
+
+  it("says when nothing changed and counts failures", () => {
+    const r = run([task("a", "done", { summary: "Read it." }), task("b", "failed", { error: "Model gave up." }), task("c", "pending")]);
+    const text = describeOutcome(r, { done: ["a"], failed: ["b"], blocked: ["c"] } as unknown as RunOutcome);
+    expect(text).toMatch(/1 of 3 task\(s\) are done\. 1 failed\. 1 could not start/);
+    expect(text).toMatch(/✕ Task b: Model gave up\./);
+    expect(text).toMatch(/nothing to apply/);
+  });
+});
+
+describe("commands stay inside the project", () => {
+  it("allows ordinary project commands", () => {
+    for (const c of ["npm test", "npm run lint -- --fix", "python -m pytest tests/test_api.py -q", "cd web && npm test", "cargo test 2>/dev/null", "make test"]) {
+      expect(commandLeavesProject(c), c).toBeUndefined();
+    }
+  });
+  it("refuses commands that point outside it", () => {
+    for (const c of ["rm -rf /", "cat ../secret", "cd .. && ls", "ls ~", "cat ~/.ssh/id_rsa", "echo $HOME", "cat $(pwd)/../x", "ls `pwd`", "type C:\\x", "cp a /tmp/b", "sudo make install", "ssh host ls", "a\nb"]) {
+      expect(commandLeavesProject(c), c).toBeDefined();
+    }
+  });
+  it("the runner refuses such a command even if it was configured", async () => {
+    const res = await runCheck({ name: "bad", command: "cat ../x" }, dir);
+    expect(res).toMatchObject({ passed: false });
+    expect(res.output).toMatch(/Refused to run/);
+  });
+  it("a check the user does not approve is skipped, not run", async () => {
+    const res = await runAllChecks([{ name: "t", command: "node -e process.exit(1)" }], dir, undefined, async () => false);
+    expect(res).toEqual([expect.objectContaining({ name: "t", skipped: true, passed: true })]);
+  });
+});
+
+describe("previewChange", () => {
+  it("shows new files, replacements and edits as removed and added lines", async () => {
+    await fs.mkdir(path.join(dir, "p", "src"), { recursive: true });
+    await fs.writeFile(path.join(dir, "p", "src", "a.ts"), "one\ntwo\nthree\n");
+    const sandbox = await WorkspaceSandbox.create(path.join(dir, "p"));
+    expect(await previewChange({ tool: "write_file", path: "src/new.ts", content: "hi" }, sandbox)).toBe("New file:\n+ hi");
+    expect(await previewChange({ tool: "replace_in_file", path: "src/a.ts", search: "two", replace: "2" }, sandbox)).toBe("- two\n+ 2");
+    expect(await previewChange({ tool: "write_file", path: "src/a.ts", content: "one\n2\nthree\n" }, sandbox)).toBe("@@ line 2 @@\n- two\n+ 2");
+    // Nothing was written.
+    expect(await fs.readFile(path.join(dir, "p", "src", "a.ts"), "utf8")).toBe("one\ntwo\nthree\n");
   });
 });

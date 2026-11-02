@@ -1,16 +1,19 @@
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
-import { createProvider, readRunConfig } from "../config";
-import { applyRun, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
+import { CheckConfig } from "../checks/runner";
+import { createProvider, readPermissions, readRunConfig } from "../config";
+import { applyRun, runChanges, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
 import { Run, Task } from "../state/types";
+import { isAutoApproved } from "../tools/policy";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
+import { RunHooks } from "../chat/chatController";
 
 export interface RunControl {
-  /** Runs a plan for the chat. Errors are thrown, not shown. */
-  start(runId: string): Promise<RunOutcome | undefined>;
+  /** Runs a plan for the chat, with the checks and callbacks the chat chose. Errors are thrown, not shown. */
+  start(runId: string, hooks: RunHooks): Promise<RunOutcome | undefined>;
   cancel(runId: string): void;
 }
 
@@ -45,8 +48,10 @@ async function showDiff(request: MergeRequest): Promise<void> {
 }
 
 async function approveMerge(request: MergeRequest): Promise<boolean> {
+  // Only reached for work whose checks passed; the user's own branch is never touched here.
+  if (readPermissions().merges) return true;
   const files = request.changedFiles.join(", ");
-  const checks = request.checks.length ? request.checks.map((c) => `${c.name} passed`).join(", ") : "no checks configured";
+  const checks = request.checks.length ? request.checks.map((c) => `${c.name} ${c.skipped ? "skipped" : "passed"}`).join(", ") : "no checks configured";
   for (;;) {
     const choice = await vscode.window.showInformationMessage(
       `Merge "${request.task.title}"?`,
@@ -63,21 +68,42 @@ async function approveMerge(request: MergeRequest): Promise<boolean> {
   }
 }
 
-async function approveTool(task: Task, reason: string, call: ToolCall): Promise<boolean> {
-  const target = "path" in call ? call.path : call.tool;
+async function approveTool(task: Task, reason: string, call: ToolCall, preview?: string): Promise<boolean> {
+  if (autoApproved(call)) return true;
+  const target = "path" in call ? `change ${call.path}` : call.tool === "request_check" ? `run \`${call.command}\`` : call.tool;
   const choice = await vscode.window.showWarningMessage(
-    `"${task.title}" wants to change ${target}`,
-    { modal: true, detail: reason },
+    `"${task.title}" wants to ${target}`,
+    { modal: true, detail: preview ? `${reason}\n\n${preview.slice(0, 1500)}` : reason },
     "Allow once",
   );
   return choice === "Allow once";
+}
+
+/** Asks before each check command runs, unless commands are auto-approved. "Allow for this run" is kept per run. */
+function commandApprover(): (task: Task, check: CheckConfig) => Promise<boolean> {
+  const allowed = new Set<string>();
+  return async (task, check) => {
+    if (readPermissions().commands || allowed.has(check.command)) return true;
+    const choice = await vscode.window.showWarningMessage(
+      `"${task.title}" wants to run \`${check.command}\``,
+      { modal: true, detail: `Check "${check.name}". It runs inside the project folder only.` },
+      "Allow once",
+      "Allow for this run",
+    );
+    if (choice === "Allow for this run") allowed.add(check.command);
+    return choice !== undefined;
+  };
+}
+
+export function autoApproved(call: ToolCall): boolean {
+  return isAutoApproved(call, readPermissions());
 }
 
 /** Offers to resume runs that stopped mid-way, for example when VS Code was closed. */
 export async function offerResume(store: TaskStore): Promise<void> {
   const unfinished = new Set<string>(["running", "verifying", "awaiting_approval"]);
   for (const run of await store.listRuns()) {
-    if (!run.tasks.some((t) => unfinished.has(t.status))) continue;
+    if (run.kind === "research" || !run.tasks.some((t) => unfinished.has(t.status))) continue;
     if (!(await confinedFolder(run).catch(() => undefined))) continue;
     const choice = await vscode.window.showInformationMessage(`"${run.request}" was interrupted.`, "Resume", "Later");
     if (choice === "Resume") await vscode.commands.executeCommand("agentic.runPlan", { kind: "run", run });
@@ -97,11 +123,14 @@ export function registerRunCommands(
    * Runs a plan with sub-agents. Resolves undefined if the user chose not to
    * start it. With `fromChat`, errors are thrown to the chat instead of shown.
    */
-  async function execute(run: Run, fromChat: boolean): Promise<RunOutcome | undefined> {
+  async function execute(run: Run, fromChat: boolean, hooks?: RunHooks): Promise<RunOutcome | undefined> {
     if (active.has(run.id)) throw new Error("This run is already in progress.");
+    if (run.kind === "research") throw new Error("This is a research run. It only read files, so there is nothing to run or apply.");
     const folder = await confinedFolder(run);
     const config = readRunConfig(folder.uri);
-    if (config.checks.length === 0) {
+    // The chat has already asked the user which checks to use.
+    if (hooks) config.checks = hooks.checks;
+    else if (config.checks.length === 0) {
       const go = await vscode.window.showWarningMessage(
         "No checks are configured, so nothing will verify the workers' changes.",
         { modal: true, detail: "Add tests, lint or type checks under agentic.checks in your settings." },
@@ -122,7 +151,11 @@ export function registerRunCommands(
       linkDirs: config.linkDirs,
       signal: abort.signal,
       approveMerge,
-      approveTool,
+      approveTool: hooks?.approveTool ?? approveTool,
+      approveCommand: hooks?.approveCommand ?? commandApprover(),
+      askUser: hooks?.askUser,
+      inbox: hooks?.inbox,
+      askBeforeWrites: () => !readPermissions().editFiles,
       onChange: () => tree.refresh(),
     });
     active.set(run.id, { abort, orchestrator });
@@ -238,6 +271,18 @@ export function registerRunCommands(
         vscode.window.showErrorMessage((err as Error).message);
       }
     }),
+    vscode.commands.registerCommand("agentic.showRunChanges", async (node: RunNode) => {
+      const run = await pickRun(store, node);
+      if (!run) return;
+      try {
+        const folder = await confinedFolder(run);
+        const diff = await runChanges(folder.uri.fsPath, integrationBranchFor(run.id));
+        const doc = await vscode.workspace.openTextDocument({ language: "diff", content: diff || "No changes compared with your current branch." });
+        await vscode.window.showTextDocument(doc, { preview: true });
+      } catch (err) {
+        vscode.window.showErrorMessage((err as Error).message);
+      }
+    }),
     vscode.commands.registerCommand("agentic.applyRun", async (node: RunNode) => {
       const run = await pickRun(store, node);
       if (!run) return;
@@ -245,11 +290,19 @@ export function registerRunCommands(
         const folder = await confinedFolder(run);
         const branch = integrationBranchFor(run.id);
         const ok = await vscode.window.showWarningMessage(
-          `Merge ${branch} into your current branch?`,
-          { modal: true, detail: "This changes your working tree. Your branch must have no uncommitted changes." },
-          "Merge",
+          "Bring the sub-agents' changes into your current branch?",
+          {
+            modal: true,
+            detail: `This merges ${branch} into the branch you have checked out and changes your files. Commit or stash your own changes first.`,
+          },
+          "Apply",
+          "Show changes first",
         );
-        if (ok !== "Merge") return;
+        if (ok === "Show changes first") {
+          await vscode.commands.executeCommand("agentic.showRunChanges", { kind: "run", run });
+          return;
+        }
+        if (ok !== "Apply") return;
         const conflicts = await applyRun(folder.uri.fsPath, branch);
         if (conflicts.length) {
           vscode.window.showErrorMessage(`Merge stopped on conflicts in ${conflicts.join(", ")}. Nothing was changed.`);
@@ -264,7 +317,7 @@ export function registerRunCommands(
   );
 
   return {
-    start: async (runId) => execute(await store.load(runId), true),
+    start: async (runId, hooks) => execute(await store.load(runId), true, hooks),
     cancel: (runId) => {
       active.get(runId)?.abort.abort();
     },

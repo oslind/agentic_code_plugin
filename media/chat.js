@@ -39,7 +39,7 @@
 
   function saveDraft(value) {
     draft = value;
-    vscode.setState({ draft });
+    persist();
   }
 
   function timeLabel(iso) {
@@ -154,17 +154,23 @@
           el(
             "div",
             { class: "task-meta" },
-            t.fileScope.join(", "),
+            t.fileScope.length ? t.fileScope.join(", ") : "read-only",
             t.dependsOn.length ? ` · after ${t.dependsOn.join(", ")}` : "",
           ),
         ),
       ),
     );
-    const canRun = !plan.started && !state.busy;
+    const canRun = plan.kind !== "research" && !plan.started && !state.busy;
     return el(
       "div",
       { class: "plan" },
-      el("div", { class: "plan-head" }, `${plan.tasks.length} sub-agent task(s) in ${plan.waves} wave(s)`),
+      el(
+        "div",
+        { class: "plan-head" },
+        plan.kind === "research"
+          ? `${plan.tasks.length} read-only research question(s)`
+          : `${plan.tasks.length} sub-agent task(s) in ${plan.waves} wave(s)`,
+      ),
       el("ol", { class: "tasks" }, rows),
       canRun
         ? el(
@@ -181,15 +187,46 @@
   }
 
   function outcomeActions(entry) {
-    const cmd = (command, label, cls) =>
-      el("button", { class: cls || "secondary", onclick: () => post({ type: "runCommand", command, runId: entry.runId }) }, label);
+    const cmd = (command, label, cls, title) =>
+      el("button", { class: cls || "secondary", title, onclick: () => post({ type: "runCommand", command, runId: entry.runId }) }, label);
+    // Older summaries have no outcome details; show the full set for them.
+    const o = entry.outcome || { changedFiles: [null], failed: 1 };
     return el(
       "div",
       { class: "row" },
-      cmd("applyRun", "Apply to my branch", "primary"),
-      cmd("retryFailed", "Retry failed"),
-      cmd("showTaskLog", "Log"),
+      o.changedFiles.length ? cmd("showRunChanges", "Show changes", "secondary", "Open the combined diff of everything the sub-agents changed") : null,
+      o.changedFiles.length ? cmd("applyRun", "Apply to my branch", "primary", "Merge the changes into the branch you have checked out. Asks first.") : null,
+      o.failed ? cmd("retryFailed", "Retry failed tasks", "secondary", "Start the failed tasks again; they are told why they failed") : null,
+      cmd("showTaskLog", "Details", "secondary", "Every step the sub-agents took"),
     );
+  }
+
+  // Which collapsible parts are open, so re-rendering does not close them.
+  const open = new Set(Array.isArray(saved.open) ? saved.open : []);
+  let agentsCollapsed = !!saved.agentsCollapsed;
+
+  function persist() {
+    vscode.setState({ draft, open: [...open].slice(-50), agentsCollapsed, permsOpen });
+  }
+
+  function details(key, label, body, cls) {
+    const d = el("details", { class: cls || "thinking", open: open.has(key) }, el("summary", {}, label), body);
+    d.addEventListener("toggle", () => {
+      if (d.open) open.add(key);
+      else open.delete(key);
+      persist();
+    });
+    return d;
+  }
+
+  function thinkingBlock(entry) {
+    if (!entry.thinking) return null;
+    return details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking));
+  }
+
+  function thoughtLine(entry) {
+    if (!entry.thought || entry.thought === entry.text) return null;
+    return el("div", { class: "thought" }, el("span", { class: "thought-icon" }, "💭 "), entry.thought);
   }
 
   function message(entry) {
@@ -199,21 +236,265 @@
       agent: entry.agentName || "Sub-agent",
       system: "Agentic",
     }[entry.author];
+    const kind = entry.kind || "message";
+    let label = entry.author === "agent" ? "↳ " + who : who;
+    if (kind === "spawn") label = "Coordinator ⇢ new sub-agent";
+    if (kind === "report") label = "↩ " + who + " reports to the coordinator";
+    if (kind === "direct") label = "You → " + (entry.agentName || "sub-agent");
+    if (kind === "question") label = "? " + who + " asks you";
+    if (kind === "approval") label = "⚑ " + who + " asks for permission";
+    if (kind === "checks") label = "Coordinator · checks";
     const head = el(
       "div",
       { class: "msg-head" },
-      el("span", { class: "who" }, entry.author === "agent" ? "↳ " + who : who),
-      entry.tag ? el("span", { class: "tag" }, entry.tag) : null,
+      el("span", { class: "who" }, label),
+      entry.tag && kind !== "spawn" && kind !== "report" ? el("span", { class: "tag" }, entry.tag) : null,
       el("span", { class: "time" }, timeLabel(entry.time)),
     );
     return el(
       "div",
-      { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${entry.kind || "message"}` },
+      { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${kind}` },
       head,
+      thoughtLine(entry),
       el("div", { class: "msg-text" }, entry.text),
-      entry.kind === "plan" ? planCard(entry) : null,
-      entry.kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
+      entry.preview ? el("pre", { class: "change-preview" }, entry.preview) : null,
+      thinkingBlock(entry),
+      kind === "plan" || kind === "research" ? planCard(entry) : null,
+      kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
+      kind === "checks" ? checksCard(entry) : null,
+      kind === "approval" ? approvalCard(entry) : null,
+      kind === "question" ? questionCard(entry) : null,
     );
+  }
+
+  // ---- live agents panel: who is working and what each one last thought ----
+
+  function lastWhere(entries, pred) {
+    for (let i = entries.length - 1; i >= 0; i--) if (pred(entries[i])) return entries[i];
+    return undefined;
+  }
+
+  function agentRow(key, icon, iconCls, name, status, latest, extra) {
+    const said = latest ? latest.thought || latest.text : "";
+    const row = el(
+      "div",
+      { class: "agent-row" },
+      el("span", { class: "agent-icon " + iconCls }, icon),
+      el("span", { class: "agent-name" }, name),
+      el("span", { class: "agent-status" }, status),
+    );
+    const body = el(
+      "div",
+      { class: "agent-latest" },
+      said ? el("div", { class: "agent-thought" }, said) : el("div", { class: "muted" }, "Nothing yet."),
+      latest && latest.thinking ? details("a:" + key + ":" + latest.id, "Latest thinking", el("pre", { class: "thinking-text" }, latest.thinking)) : null,
+      extra || null,
+    );
+    return el("div", { class: "agent" }, row, body);
+  }
+
+  function agentsPanel() {
+    const c = state.current;
+    const planEntry = lastWhere(c.entries, (e) => e.kind === "plan" || e.kind === "research");
+    const plan = planEntry && state.plans[planEntry.runId];
+    const coordinatorBusy = !!state.busy && !state.runningRunId;
+    const lastCoordinator =
+      lastWhere(c.entries, (e) => e.author === "coordinator" && (e.thought || e.thinking)) ||
+      lastWhere(c.entries, (e) => e.author === "coordinator" && e.kind !== "spawn");
+    const rows = [
+      agentRow(
+        "coordinator",
+        coordinatorBusy ? "" : "●",
+        coordinatorBusy ? "spinner" : "coordinator-dot",
+        "Coordinator",
+        coordinatorBusy ? "thinking…" : state.runningRunId ? "waiting for sub-agents" : "idle",
+        lastCoordinator,
+      ),
+    ];
+    let working = 0;
+    if (plan) {
+      for (const t of plan.tasks) {
+        const active = t.status === "running" || t.status === "verifying";
+        if (active) working++;
+        const latest = lastWhere(c.entries, (e) => e.taskId === t.id && e.runId === planEntry.runId && e.author === "agent");
+        rows.push(
+          agentRow(
+            t.id,
+            active ? "" : STATUS_ICON[t.status] || "○",
+            active ? "spinner" : "status-" + t.status,
+            t.title,
+            t.status === "pending" ? (plan.started ? "waiting" : "not started") : t.status.replace("_", " "),
+            latest,
+            active ? agentMessageBox(planEntry.runId, t.id) : null,
+          ),
+        );
+      }
+    }
+    const summary = plan ? `Agents · ${working} of ${plan.tasks.length} sub-agent(s) working` : "Agents";
+    const panel = el(
+      "div",
+      { class: "agents " + (agentsCollapsed ? "collapsed" : "") },
+      el(
+        "button",
+        {
+          class: "agents-head",
+          "aria-expanded": agentsCollapsed ? "false" : "true",
+          onclick: () => {
+            agentsCollapsed = !agentsCollapsed;
+            persist();
+            render();
+          },
+        },
+        (agentsCollapsed ? "▸ " : "▾ ") + summary,
+      ),
+      agentsCollapsed ? null : el("div", { class: "agents-body" }, rows),
+    );
+    return panel;
+  }
+
+  // ---- cards that wait for the user ----
+
+  const drafts = {}; // unsent text in card inputs, by input id
+
+  function isWaiting(entry) {
+    return state.waiting && state.waiting.includes(entry.id);
+  }
+
+  function decide(entry, decision) {
+    post({ type: "decide", entryId: entry.id, decision });
+  }
+
+  function decidedLine(entry) {
+    return entry.decided ? el("div", { class: "decided" }, "✓ " + entry.decided) : null;
+  }
+
+  const checkDrafts = {}; // editable check lists, by entry id
+
+  function checksCard(entry) {
+    if (!isWaiting(entry)) {
+      return el(
+        "div",
+        { class: "card" },
+        (entry.checks || []).length
+          ? el("ul", { class: "check-list" }, entry.checks.map((c) => el("li", {}, el("b", {}, c.name), " ", el("code", {}, c.command))))
+          : el("div", { class: "muted" }, "No checks."),
+        decidedLine(entry),
+        entry.decided === "Saved for this folder"
+          ? el("div", { class: "row" }, el("button", { class: "secondary", disabled: !!state.busy, onclick: () => post({ type: "editChecks" }) }, "Change checks"))
+          : null,
+      );
+    }
+    const list = (checkDrafts[entry.id] ||= {
+      rows: (entry.checks || []).map((c) => ({ on: true, name: c.name, command: c.command, source: c.source })),
+      remember: true,
+    });
+    const rows = list.rows.map((r, i) =>
+      el(
+        "div",
+        { class: "check-row" },
+        el("input", { type: "checkbox", checked: r.on, title: "Use this check", onchange: (e) => (r.on = e.target.checked) }),
+        el("input", { id: `cn-${entry.id}-${i}`, class: "check-name", value: r.name, placeholder: "name", oninput: (e) => (r.name = e.target.value) }),
+        el("input", { id: `cc-${entry.id}-${i}`, class: "check-cmd", value: r.command, placeholder: "command", title: r.source ? "Suggested from " + r.source : "", oninput: (e) => (r.command = e.target.value) }),
+        el("button", { class: "icon-btn", title: "Remove", onclick: () => { list.rows.splice(i, 1); render(); } }, "✕"),
+      ),
+    );
+    return el(
+      "div",
+      { class: "card" },
+      rows,
+      el("div", { class: "row" },
+        el("button", { class: "secondary", onclick: () => { list.rows.push({ on: true, name: "", command: "" }); render(); } }, "+ Add check"),
+        el("label", { class: "remember" },
+          el("input", { type: "checkbox", checked: list.remember, onchange: (e) => (list.remember = e.target.checked) }),
+          " Remember for this folder"),
+      ),
+      el("div", { class: "row" },
+        el("button", {
+          class: "primary",
+          onclick: () => decide(entry, { kind: "checks", remember: list.remember, checks: list.rows.filter((r) => r.on && r.name.trim() && r.command.trim()).map((r) => ({ name: r.name, command: r.command })) }),
+        }, "Approve checks"),
+        el("button", { class: "secondary", onclick: () => decide(entry, { kind: "skip" }) }, "Run without checks"),
+      ),
+    );
+  }
+
+  function approvalCard(entry) {
+    if (!isWaiting(entry)) return decidedLine(entry);
+    return el("div", { class: "row" },
+      el("button", { class: "primary", onclick: () => decide(entry, { kind: "allow" }) }, "Allow"),
+      entry.rememberable ? el("button", { class: "secondary", onclick: () => decide(entry, { kind: "allow", remember: true }) }, entry.rememberLabel || "Allow and remember for this folder") : null,
+      el("button", { class: "secondary", onclick: () => decide(entry, { kind: "deny" }) }, "Deny"),
+    );
+  }
+
+  function questionCard(entry) {
+    if (!isWaiting(entry)) return decidedLine(entry);
+    const id = "q-" + entry.id;
+    const ta = el("textarea", { id, rows: "2", class: "card-input", placeholder: "Your answer (Enter to send)" });
+    ta.value = drafts[id] || "";
+    const send = () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      delete drafts[id];
+      decide(entry, { kind: "answer", text });
+    };
+    ta.addEventListener("input", () => (drafts[id] = ta.value));
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        send();
+      }
+    });
+    return el("div", { class: "card" }, ta, el("div", { class: "row" }, el("button", { class: "primary", onclick: send }, "Answer")));
+  }
+
+  // ---- auto-approve switches ----
+
+  let permsOpen = !!saved.permsOpen;
+  const PERMS = [
+    ["editFiles", "Edit files", "Sub-agents edit files in their own task's scope without asking. When off, each change is shown to you first and only written if you allow it."],
+    ["sensitiveFiles", "Sensitive files", "package.json, lockfiles and CI files."],
+    ["commands", "Run commands", "Check commands (tests, lint, ...) run without asking. When off, each command is shown to you first and only runs if you allow it. Commands always run inside the project folder."],
+    ["merges", "Merges", "Verified work into the run's integration branch. Your own branch always asks."],
+  ];
+
+  function permissionsBar() {
+    const p = state.permissions || {};
+    const on = PERMS.filter(([k]) => p[k]).map(([, label]) => label);
+    const head = el(
+      "button",
+      { class: "perms-head", "aria-expanded": permsOpen ? "true" : "false", onclick: () => { permsOpen = !permsOpen; persist(); render(); } },
+      (permsOpen ? "▾ " : "▸ ") + "Auto-approve: " + (on.length ? on.join(", ") : "nothing"),
+    );
+    if (!permsOpen) return el("div", { class: "perms" }, head);
+    return el(
+      "div",
+      { class: "perms" },
+      head,
+      PERMS.map(([key, label, help]) =>
+        el("label", { class: "perm", title: help },
+          el("input", { type: "checkbox", checked: !!p[key], onchange: (e) => post({ type: "setPermission", key, value: e.target.checked }) }),
+          " " + label, el("span", { class: "muted" }, " · " + help)),
+      ),
+      el("div", { class: "muted perm-note" }, "Agents can never reach files outside this folder, .git or secrets, whatever is ticked."),
+    );
+  }
+
+  // ---- messaging a sub-agent ----
+
+  function agentMessageBox(runId, taskId) {
+    const id = `m-${runId}-${taskId}`;
+    const input = el("input", { id, class: "card-input", placeholder: "Message this sub-agent (Enter to send)" });
+    input.value = drafts[id] || "";
+    input.addEventListener("input", () => (drafts[id] = input.value));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && input.value.trim()) {
+        post({ type: "messageAgent", runId, taskId, text: input.value.trim() });
+        delete drafts[id];
+        input.value = "";
+      }
+    });
+    return input;
   }
 
   function welcome() {
@@ -265,6 +546,7 @@
       "div",
       { class: "conversation" },
       el("div", { class: "conv-title", title: c.workspaceRoot }, c.title, el("span", { class: "muted" }, ` · ${folderName(c.workspaceRoot)}`)),
+      agentsPanel(),
       list,
     );
   }
@@ -275,12 +557,13 @@
     const nearBottom = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 60;
     const oldScroll = old ? old.scrollTop : 0;
     const active = document.activeElement;
-    const focused = active && active.id === "input";
-    const caret = focused ? [active.selectionStart, active.selectionEnd] : null;
+    const focusedId = active && active.id ? active.id : null;
+    const caret = focusedId && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
 
     const parts = [
       header(),
       inputBox(),
+      permissionsBar(),
       state.busy ? el("div", { class: "busy" }, el("span", { class: "spinner" }), state.busy) : null,
       state.current ? conversation() : welcome(),
     ];
@@ -288,10 +571,10 @@
 
     const list = document.getElementById("messages");
     if (list) list.scrollTop = nearBottom ? list.scrollHeight : oldScroll;
-    const input = document.getElementById("input");
-    if (focused && input && !input.disabled) {
-      input.focus();
-      input.setSelectionRange(caret[0], caret[1]);
+    const again = focusedId && document.getElementById(focusedId);
+    if (again && !again.disabled) {
+      again.focus();
+      if (caret && typeof again.setSelectionRange === "function") again.setSelectionRange(caret[0], caret[1]);
     }
   }
 

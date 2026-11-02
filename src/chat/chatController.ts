@@ -4,10 +4,18 @@ import { RunOutcome } from "../coordinator/orchestrator";
 import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
-import { Run, RunEvent, TaskStatus } from "../state/types";
+import { Run, RunEvent, Task, TaskStatus } from "../state/types";
+import { CheckConfig } from "../checks/runner";
+import { DetectedCheck } from "../checks/detect";
+import { ToolCall } from "../tools/protocol";
+import { AutoApprove, isAutoApproved } from "../tools/policy";
+import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
-import { coordinatorTurn } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, researchQuestions } from "./coordinatorChat";
+import { WorkspaceSandbox } from "../tools/sandbox";
+import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
+import { changedFilesOf, describeOutcome } from "./outcome";
 import { ChatEntry, ChatMode, Conversation, ConversationSummary } from "./types";
 
 /** What the chat needs from VS Code. Kept small so the controller can be tested without it. */
@@ -20,14 +28,49 @@ export interface ChatHost {
   pickWorkspace(): Promise<string | undefined>;
   fileTree(workspaceRoot: string, signal: AbortSignal): Promise<string | undefined>;
   /** Runs a plan with sub-agents. Resolves undefined if the user declined to start it. */
-  runPlan(runId: string): Promise<RunOutcome | undefined>;
+  runPlan(runId: string, hooks: RunHooks): Promise<RunOutcome | undefined>;
+  /**
+   * Checks for a folder: the ones the user approved for it before (if any),
+   * the defaults from settings, and suggestions from the project's files.
+   */
+  checksFor(workspaceRoot: string): Promise<{ saved?: CheckConfig[]; defaults: CheckConfig[]; detected: DetectedCheck[] }>;
+  saveChecks(workspaceRoot: string, checks: CheckConfig[]): Promise<void>;
+  /** The auto-approve switches. */
+  permissions(): AutoApprove;
+  setPermission(key: keyof AutoApprove, value: boolean): Promise<void>;
   cancelRun(runId: string): void;
   defaultMode(): ChatMode;
   setDefaultMode(mode: ChatMode): void;
   log(level: "info" | "warn" | "error", message: string): void;
+  /** The real path of the folder if it is open in VS Code right now, else undefined. Research may only read there. */
+  openFolder(workspaceRoot: string): Promise<string | undefined>;
+  /** Limits for read-only research sub-agents. */
+  researchLimits(): { maxTurns: number; maxParallel: number };
+  /** How heavily the coordinator may delegate. */
+  delegationLimits(): { maxTasks: number; maxResearchers: number };
 }
 
+/** How a run started from the chat talks back to the user. */
+export interface RunHooks {
+  /** The checks approved for this run. They replace the settings for it. */
+  checks: CheckConfig[];
+  approveTool: (task: Task, reason: string, call: ToolCall, preview?: string) => Promise<boolean>;
+  /** Asked before every check command runs, unless commands are auto-approved. */
+  approveCommand: (task: Task, check: CheckConfig) => Promise<boolean>;
+  askUser: (task: Task, question: string) => Promise<string>;
+  inbox: (taskId: string) => string[];
+}
+
+/** What the user chose on a card that waited for them. */
+export type Decision =
+  | { kind: "checks"; checks: CheckConfig[]; remember: boolean }
+  | { kind: "skip" }
+  | { kind: "allow"; remember?: boolean }
+  | { kind: "deny" }
+  | { kind: "answer"; text: string };
+
 export interface PlanView {
+  kind: "change" | "research";
   tasks: { id: string; title: string; status: TaskStatus; fileScope: string[]; dependsOn: string[] }[];
   /** True once any task has started, so the plan can no longer be run from the chat. */
   started: boolean;
@@ -44,6 +87,15 @@ export interface ChatViewState {
   current?: { id: string; title: string; workspaceRoot: string; entries: ChatEntry[] };
   plans: Record<string, PlanView>;
   runningRunId?: string;
+  permissions: AutoApprove;
+  /** Ids of cards still waiting for the user. */
+  waiting: string[];
+}
+
+/** Thinking can be long; keep enough to follow along. */
+function clip(text: string | undefined, max = 4000): string | undefined {
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max)}\n[… cut]` : text;
 }
 
 function title(text: string): string {
@@ -76,6 +128,12 @@ export class ChatController {
   private readonly stopEvents: () => void;
   private readonly ready: Promise<void>;
   private readonly eventQueue = new Mutex();
+  /** Cards waiting for the user, by entry id. */
+  private readonly pending = new Map<string, { conversationId: string; resolve: (d: Decision | undefined) => void }>();
+  /** Messages the user sent to a sub-agent, waiting for its next step. Keyed by run and task. */
+  private readonly inboxes = new Map<string, string[]>();
+  /** Commands the user allowed for the rest of a run, keyed by run id. */
+  private readonly allowedCommands = new Map<string, Set<string>>();
 
   constructor(
     private readonly conversations: ConversationStore,
@@ -110,7 +168,14 @@ export class ChatController {
   private async indexRuns(): Promise<void> {
     for (const s of await this.conversations.list()) {
       const c = await this.conversations.load(s.id).catch(() => undefined);
-      for (const runId of c?.runIds ?? []) this.runOwner.set(runId, s.id);
+      for (const runId of c?.runIds ?? []) {
+        this.runOwner.set(runId, s.id);
+        // Research that was cut off by a restart has no live sub-agent; mark it failed.
+        const run = await this.tasks.load(runId).catch(() => undefined);
+        for (const t of run?.kind === "research" ? run.tasks.filter((x) => x.status === "running") : []) {
+          await this.tasks.setStatus(runId, t.id, "failed", "Interrupted by restart").catch(() => undefined);
+        }
+      }
     }
     this.currentId ??= (await this.conversations.list())[0]?.id;
     const current = this.currentId ? await this.conversations.load(this.currentId).catch(() => undefined) : undefined;
@@ -127,6 +192,7 @@ export class ChatController {
       const run = await this.tasks.load(runId).catch(() => undefined);
       if (!run) continue;
       plans[runId] = {
+        kind: run.kind ?? "change",
         tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
         started: !isUnstarted(run),
         waves: parallelWaves(run.tasks).length,
@@ -140,6 +206,8 @@ export class ChatController {
       current: current && { id: current.id, title: current.title, workspaceRoot: current.workspaceRoot, entries: current.entries },
       plans,
       runningRunId: this.runningRunId,
+      permissions: this.host.permissions(),
+      waiting: [...this.pending.keys()],
     };
   }
 
@@ -167,6 +235,11 @@ export class ChatController {
     this.changed();
   }
 
+  async setPermission(key: keyof AutoApprove, value: boolean): Promise<void> {
+    await this.host.setPermission(key, value);
+    this.changed();
+  }
+
   async setMode(mode: ChatMode): Promise<void> {
     this.mode = mode;
     this.host.setDefaultMode(mode);
@@ -177,11 +250,219 @@ export class ChatController {
   cancel(): void {
     this.abort?.abort();
     if (this.runningRunId) this.host.cancelRun(this.runningRunId);
+    for (const [id, p] of [...this.pending]) {
+      this.pending.delete(id);
+      void this.markDecided(p.conversationId, id, "Stopped");
+      p.resolve(undefined);
+    }
   }
 
-  private async append(id: string, entry: Omit<ChatEntry, "id" | "time">): Promise<void> {
-    await this.conversations.append(id, entry);
+  private async append(id: string, entry: Omit<ChatEntry, "id" | "time">): Promise<ChatEntry> {
+    const full = await this.conversations.append(id, entry);
     this.changed();
+    return full;
+  }
+
+  private async markDecided(conversationId: string, entryId: string, decided: string, checks?: CheckConfig[]): Promise<void> {
+    await this.conversations
+      .update(conversationId, (c) => {
+        const e = c.entries.find((x) => x.id === entryId);
+        if (e) {
+          e.decided = decided;
+          if (checks) e.checks = checks;
+        }
+      })
+      .catch(() => undefined);
+    this.changed();
+  }
+
+  /** Posts a card and waits until the user decides on it (or stops everything). */
+  private async waitFor(conversationId: string, entry: Omit<ChatEntry, "id" | "time">): Promise<{ entry: ChatEntry; decision?: Decision }> {
+    const full = await this.append(conversationId, entry);
+    const decision = await new Promise<Decision | undefined>((resolve) => this.pending.set(full.id, { conversationId, resolve }));
+    return { entry: full, decision };
+  }
+
+  /** The user's answer to a card. Ignored if the card is no longer waiting. */
+  async decide(entryId: string, decision: Decision): Promise<void> {
+    const p = this.pending.get(entryId);
+    if (!p) return;
+    this.pending.delete(entryId);
+    const label =
+      decision.kind === "checks"
+        ? `Approved ${decision.checks.length} check(s)${decision.remember ? ", saved for this folder" : ""}`
+        : decision.kind === "skip"
+          ? "Run without checks"
+          : decision.kind === "allow"
+            ? decision.remember
+              ? "Allowed and remembered"
+              : "Allowed"
+            : decision.kind === "deny"
+              ? "Denied"
+              : `You answered: ${decision.text}`;
+    await this.markDecided(p.conversationId, entryId, label, decision.kind === "checks" ? decision.checks : undefined);
+    p.resolve(decision);
+  }
+
+  /** Sends a message straight to a running sub-agent. It reads it before its next step. */
+  async messageAgent(runId: string, taskId: string, text: string): Promise<void> {
+    const conversationId = this.runOwner.get(runId);
+    if (!conversationId || !text.trim()) return;
+    const run = await this.tasks.load(runId);
+    const task = run.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    if (task.status !== "running" && task.status !== "verifying") {
+      await this.append(conversationId, { author: "system", text: `"${task.title}" is not working right now, so it cannot get messages. Retry it to start it again.`, tone: "warning" });
+      return;
+    }
+    const key = `${runId}:${taskId}`;
+    this.inboxes.set(key, [...(this.inboxes.get(key) ?? []), text.trim()]);
+    await this.append(conversationId, { author: "user", kind: "direct", runId, taskId, agentName: task.title, text: text.trim() });
+  }
+
+  private drainInbox(runId: string, taskId: string): string[] {
+    const key = `${runId}:${taskId}`;
+    const messages = this.inboxes.get(key) ?? [];
+    this.inboxes.delete(key);
+    return messages;
+  }
+
+  private allowedFor(runId: string): Set<string> {
+    let set = this.allowedCommands.get(runId);
+    if (!set) this.allowedCommands.set(runId, (set = new Set()));
+    return set;
+  }
+
+  private hooksFor(conversationId: string, runId: string, checks: CheckConfig[], workspaceRoot: string): RunHooks {
+    return {
+      checks,
+      inbox: (taskId) => this.drainInbox(runId, taskId),
+      askUser: async (task, question) => {
+        const { decision } = await this.waitFor(conversationId, {
+          author: "agent",
+          kind: "question",
+          runId,
+          taskId: task.id,
+          agentName: task.title,
+          text: question,
+        });
+        return decision?.kind === "answer" ? decision.text : "The user did not answer. Make a reasonable choice and say which in your summary.";
+      },
+      approveTool: async (task, reason, call, preview) => {
+        if (isAutoApproved(call, this.host.permissions())) {
+          await this.append(conversationId, {
+            author: "system",
+            runId,
+            taskId: task.id,
+            text: `Auto-approved for "${task.title}": ${call.tool === "request_check" ? `run \`${call.command}\`` : reason}`,
+          });
+          return true;
+        }
+        const isCommand = call.tool === "request_check";
+        const { decision } = await this.waitFor(conversationId, {
+          author: "agent",
+          kind: "approval",
+          runId,
+          taskId: task.id,
+          agentName: task.title,
+          rememberable: isCommand,
+          rememberLabel: isCommand ? "Allow, and keep it for this folder" : undefined,
+          preview,
+          text: isCommand
+            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} It runs inside the project folder only, and nothing runs until you allow it.`
+            : `${reason}. Nothing is written until you allow it.`,
+        });
+        if (decision?.kind !== "allow") return false;
+        if (decision.remember && isCommand) {
+          const info = await this.host.checksFor(workspaceRoot);
+          const base = (info.saved ?? info.defaults).filter((c) => c.name !== call.name);
+          await this.host.saveChecks(workspaceRoot, [...base, { name: call.name, command: call.command }]);
+          this.allowedFor(runId).add(call.command);
+        }
+        return true;
+      },
+      approveCommand: async (task, check) => {
+        if (this.host.permissions().commands || this.allowedFor(runId).has(check.command)) return true;
+        const { decision } = await this.waitFor(conversationId, {
+          author: "agent",
+          kind: "approval",
+          runId,
+          taskId: task.id,
+          agentName: task.title,
+          rememberable: true,
+          rememberLabel: "Allow for the rest of this run",
+          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. It runs inside the project folder only. Turn on "Run commands" to stop being asked.`,
+        });
+        if (decision?.kind !== "allow") return false;
+        if (decision.remember) this.allowedFor(runId).add(check.command);
+        return true;
+      },
+    };
+  }
+
+  /**
+   * The checks for a run. If the user has not chosen checks for this folder
+   * yet, proposes the defaults plus what the project's files suggest and
+   * waits for approval. Resolves undefined if the user stopped.
+   */
+  private async chooseChecks(conversationId: string, workspaceRoot: string, force = false): Promise<CheckConfig[] | undefined> {
+    const info = await this.host.checksFor(workspaceRoot);
+    if (info.saved && !force) {
+      await this.append(conversationId, {
+        author: "coordinator",
+        kind: "checks",
+        checks: info.saved,
+        decided: "Saved for this folder",
+        text: info.saved.length ? "Using the checks saved for this folder to verify the sub-agents' work." : "No checks are saved for this folder, so only the sub-agents' own requested checks will verify their work.",
+      });
+      return info.saved;
+    }
+    const proposed: CheckConfig[] = [...(info.saved ?? info.defaults)];
+    for (const d of info.detected) if (!proposed.some((c) => c.name === d.name)) proposed.push(d);
+    if (proposed.length === 0 && !force) {
+      // Nothing to propose: don't stop the user with an empty form. Sub-agents can still request a check if their work needs one.
+      await this.append(conversationId, {
+        author: "system",
+        text: "No test, lint or type-check commands were found for this project, so the run starts without checks. Use the beaker button to add some.",
+        tone: "warning",
+      });
+      return [];
+    }
+    const { decision } = await this.waitFor(conversationId, {
+      author: "coordinator",
+      kind: "checks",
+      checks: proposed,
+      text: proposed.length
+        ? "These commands will verify the sub-agents' work. Edit, add or remove them, then approve. Sub-agents can also ask you for more checks while they work."
+        : "I found no test, lint or type-check commands for this project. Add the ones you use, or run without checks. Sub-agents can also ask you for checks while they work.",
+    });
+    if (!decision || (decision.kind !== "checks" && decision.kind !== "skip")) return undefined;
+    const entered = decision.kind === "checks" ? decision.checks.filter((c) => c.name.trim() && c.command.trim()) : [];
+    const refused = entered.filter((c) => commandLeavesProject(c.command));
+    const checks = entered.filter((c) => !refused.includes(c));
+    for (const c of refused) {
+      await this.append(conversationId, {
+        author: "system",
+        tone: "warning",
+        text: `The check "${c.name}" (\`${c.command}\`) was left out: ${commandLeavesProject(c.command)} Commands always run inside the project folder.`,
+      });
+    }
+    if (decision.kind === "checks" && decision.remember) await this.host.saveChecks(workspaceRoot, checks);
+    return checks;
+  }
+
+  /** Lets the user review and change the checks saved for the current conversation's folder. */
+  async editChecks(): Promise<void> {
+    if (this.busy || !this.currentId) return;
+    const c = await this.conversations.load(this.currentId);
+    this.busy = "Waiting for you to choose the checks…";
+    this.changed();
+    try {
+      await this.chooseChecks(c.id, c.workspaceRoot, true);
+    } finally {
+      this.busy = undefined;
+      this.changed();
+    }
   }
 
   private async pendingPlan(c: Conversation): Promise<Run | undefined> {
@@ -218,21 +499,27 @@ export class ChatController {
       const pending = await this.pendingPlan(c);
       const turn = await coordinatorTurn(
         provider,
-        { mode: this.mode, entries: c.entries, fileTree, pendingPlan: pending && describePlan(pending) },
+        { mode: this.mode, entries: c.entries, fileTree, pendingPlan: pending && describePlan(pending), maxResearchers: this.host.delegationLimits().maxResearchers },
         { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
       );
-      await this.append(c.id, { author: "coordinator", text: turn.reply });
+      await this.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 
       if (turn.action === "plan") {
         this.busy = "Coordinator is splitting the work into sub-agent tasks…";
         this.changed();
+        let planThinking: string | undefined;
+        const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: turn.request, fileTree },
-          { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`) },
+          { request: turn.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks },
+          {
+            signal: abort.signal,
+            onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
+            onThinking: (t) => (planThinking = t),
+          },
         );
-        const run = await this.tasks.createRun(turn.request, c.workspaceRoot);
+        const run = await this.tasks.createRun(turn.request, c.workspaceRoot, undefined, learned);
         this.runOwner.set(run.id, c.id);
         await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
         await this.tasks.addTasks(run.id, result.plan.tasks);
@@ -244,6 +531,7 @@ export class ChatController {
           author: "coordinator",
           kind: "plan",
           runId: run.id,
+          thinking: clip(planThinking),
           text:
             this.mode === "act"
               ? `Plan: ${n} task(s), each for one sub-agent. Starting now.`
@@ -253,6 +541,18 @@ export class ChatController {
         if (this.mode === "act") startRun = run.id;
       } else if (turn.action === "run" && pending) {
         startRun = pending.id;
+      } else if (turn.action === "research") {
+        await this.research(c, turn, abort.signal);
+        c = await this.conversations.load(c.id);
+        this.busy = "Coordinator is reading the reports…";
+        this.runningRunId = undefined;
+        this.changed();
+        const answer = await coordinatorTurn(
+          provider,
+          { mode: this.mode, entries: c.entries, fileTree, answerFromResearch: true },
+          { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
+        );
+        await this.append(c.id, { author: "coordinator", tag: "from research", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
       }
     } catch (err) {
       const message = abort.signal.aborted ? "Stopped." : (err as Error).message;
@@ -261,6 +561,7 @@ export class ChatController {
     } finally {
       this.abort = undefined;
       this.busy = undefined;
+      this.runningRunId = undefined;
       this.changed();
     }
     if (startRun) await this.runPlan(startRun);
@@ -281,29 +582,38 @@ export class ChatController {
     }
     if (this.mode !== "act") await this.setMode("act");
 
-    this.busy = `Sub-agents are working on ${run.tasks.length} task(s)…`;
+    this.busy = "Waiting for you to approve the checks…";
     this.runningRunId = runId;
     this.changed();
-    await this.append(conversationId, {
-      author: "coordinator",
-      text: `Starting sub-agents for ${run.tasks.length} task(s). Each works on its own branch and may only change its own files.`,
-    });
     try {
-      const outcome = await this.host.runPlan(runId);
+      const workspaceRoot = run.workspaceRoot ?? (await this.conversations.load(conversationId)).workspaceRoot;
+      const checks = await this.chooseChecks(conversationId, workspaceRoot);
+      if (!checks) {
+        await this.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
+        return;
+      }
+      this.busy = `Sub-agents are working on ${run.tasks.length} task(s)…`;
+      this.changed();
+      await this.append(conversationId, {
+        author: "coordinator",
+        text: `Starting sub-agents for ${run.tasks.length} task(s). Each works on its own branch and may only change its own files.`,
+      });
+      const outcome = await this.host.runPlan(runId, this.hooksFor(conversationId, runId, checks, workspaceRoot));
       // Let sub-agent messages that are still queued land before the summary.
       await this.eventQueue.run(async () => {});
       if (!outcome) {
         await this.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
         return;
       }
-      const parts = [`${outcome.done.length} done`, `${outcome.failed.length} failed`, `${outcome.blocked.length} blocked`];
       const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
+      const finished = await this.tasks.load(runId);
       await this.append(conversationId, {
         author: "coordinator",
         kind: "outcome",
         runId,
         tone: ok ? "success" : "warning",
-        text: `Run finished: ${parts.join(", ")}. The work is on ${outcome.integrationBranch}. Your branch is unchanged until you apply it.`,
+        text: describeOutcome(finished, outcome),
+        outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
       });
     } catch (err) {
       this.host.log("error", (err as Error).message);
@@ -313,6 +623,87 @@ export class ChatController {
       this.busy = undefined;
       this.changed();
     }
+  }
+
+  /**
+   * Sends read-only sub-agents to answer the coordinator's questions about the
+   * project. They read the open folder directly (no branches, nothing to
+   * merge) and their file scope is empty, so the policy refuses every write.
+   */
+  private async research(c: Conversation, turn: CoordinatorResult, signal: AbortSignal): Promise<void> {
+    const root = await this.host.openFolder(c.workspaceRoot);
+    if (!root) throw new Error(`${c.workspaceRoot} is not open in VS Code, so the sub-agents cannot read it.`);
+    const questions = researchQuestions(turn, this.host.delegationLimits().maxResearchers);
+    const run = await this.tasks.createRun(turn.request.trim() || questions.join(" "), c.workspaceRoot, "research");
+    this.runOwner.set(run.id, c.id);
+    await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
+    const added = await this.tasks.addTasks(
+      run.id,
+      questions.map((q, i) => ({ id: `research-${i + 1}`, title: title(q), instructions: q, fileScope: [] })),
+    );
+    await this.append(c.id, {
+      author: "coordinator",
+      kind: "research",
+      runId: run.id,
+      text: `Sending ${added.length} read-only sub-agent(s) to look into the project. They can read files but not change anything.`,
+    });
+    this.busy = `${added.length} read-only sub-agent(s) are researching…`;
+    this.runningRunId = run.id;
+    this.changed();
+
+    const sandbox = await WorkspaceSandbox.create(root);
+    const { maxTurns, maxParallel } = this.host.researchLimits();
+    const provider = this.host.provider(c.workspaceRoot);
+    const queue = [...added];
+    const workerLoop = async () => {
+      for (let task = queue.shift(); task; task = queue.shift()) {
+        if (signal.aborted) {
+          await this.tasks.setStatus(run.id, task.id, "cancelled", "Stopped");
+          continue;
+        }
+        await this.tasks.setStatus(run.id, task.id, "running");
+        try {
+          const worker = new Worker({
+            provider,
+            sandbox,
+            task,
+            checks: [],
+            maxTurns,
+            signal,
+            readOnly: true,
+            approve: async () => false,
+            inbox: () => this.drainInbox(run.id, task!.id),
+            log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
+          });
+          const result = await worker.run();
+          await this.tasks.updateTask(run.id, task.id, { summary: result.summary, changedFiles: [] });
+          await this.tasks.setStatus(run.id, task.id, "done");
+        } catch (err) {
+          const stopped = signal.aborted;
+          await this.tasks.setStatus(run.id, task.id, stopped ? "cancelled" : "failed", stopped ? "Stopped" : (err as Error).message);
+          if (!stopped) await this.tasks.log({ runId: run.id, taskId: task.id, type: "task_failed", message: (err as Error).message });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(maxParallel, added.length)) }, workerLoop));
+    // Let queued sub-agent messages land before the summary.
+    await this.eventQueue.run(async () => {});
+    signal.throwIfAborted();
+    await this.append(c.id, { author: "coordinator", runId: run.id, text: `Research finished.${await this.reports(run.id)}` });
+  }
+
+  /**
+   * What each sub-agent reported back, added to the run summary. The summary
+   * is a coordinator message, so the coordinator sees the reports next turn.
+   */
+  private async reports(runId: string): Promise<string> {
+    const run = await this.tasks.load(runId).catch(() => undefined);
+    if (!run) return "";
+    const lines = run.tasks.map((t) => {
+      const said = t.summary ?? t.error ?? "no report";
+      return `- ${t.title} (${t.status.replace("_", " ")}): ${said.replace(/\s+/g, " ").slice(0, 300)}`;
+    });
+    return `\n\nReports from the sub-agents:\n${lines.join("\n")}`;
   }
 
   private async onRunEvent(event: RunEvent): Promise<void> {
@@ -331,3 +722,28 @@ export class ChatController {
     }
   }
 }
+
+/**
+ * What the coordinator has learned in this conversation, for planning and for
+ * every sub-agent of the next run: sub-agent reports (research answers and
+ * finished work) and its own answers after research, newest first, kept small
+ * for local models.
+ */
+export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | undefined {
+  const lines: string[] = [];
+  let used = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    let line: string | undefined;
+    if (e.kind === "report") line = `- ${e.agentName ?? "A sub-agent"} reported: ${e.text}`;
+    // The coordinator's answer right after research reports sums them up.
+    else if (e.author === "coordinator" && e.tag === "from research") line = `- Coordinator concluded: ${e.text}`;
+    if (!line) continue;
+    line = line.replace(/\s+/g, " ").slice(0, 800);
+    if (used + line.length > maxChars) break;
+    lines.unshift(line);
+    used += line.length;
+  }
+  return lines.length ? lines.join("\n") : undefined;
+}
+

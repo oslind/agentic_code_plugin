@@ -42,6 +42,13 @@ export function extractJson(raw: string): unknown {
   return JSON.parse(text.slice(start, end + 1));
 }
 
+/** The model's thinking: what the server returned separately, or the text of <think> blocks in the reply. */
+export function extractThinking(content: string, reasoning?: string): string | undefined {
+  if (reasoning?.trim()) return reasoning.trim();
+  const blocks = [...content.matchAll(/<think>([\s\S]*?)(?:<\/think>|$)/gi)].map((m) => m[1]!.trim()).filter(Boolean);
+  return blocks.length ? blocks.join("\n\n") : undefined;
+}
+
 export interface StructuredCallOptions<T> {
   provider: ModelProvider;
   messages: ChatMessage[];
@@ -51,6 +58,8 @@ export interface StructuredCallOptions<T> {
   maxRetries?: number;
   signal?: AbortSignal;
   onAttempt?: (attempt: number, error?: string) => void;
+  /** Called with the model's thinking for each reply that has any. */
+  onThinking?: (thinking: string) => void;
 }
 
 export class StructuredOutputError extends Error {
@@ -81,6 +90,8 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
     options.onAttempt?.(attempt, attempt > 0 ? lastError : undefined);
     const reply = await provider.chat({ messages, jsonSchema: { name: schemaName, schema: jsonSchema }, signal });
     lastReply = reply.content;
+    const thinking = extractThinking(reply.content, reply.reasoning);
+    if (thinking) options.onThinking?.(thinking);
 
     try {
       const parsed = schema.safeParse(extractJson(reply.content));

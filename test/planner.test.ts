@@ -31,6 +31,17 @@ describe("planRequest", () => {
   });
 });
 
+describe("task limit", () => {
+  it("asks the model to merge tasks when it goes over the configured limit", async () => {
+    const tasks = (n: number) => JSON.stringify({ tasks: Array.from({ length: n }, (_, i) => task(`t${i}`, [], `src/f${i}.ts`)) });
+    const p = scripted([tasks(5), tasks(3)]);
+    const result = await planRequest(p, { request: "do it", maxTasks: 3 });
+    expect(p.requests[0]!.messages[0]!.content).toMatch(/Up to 3 tasks/);
+    expect(p.requests[1]!.messages.at(-1)!.content).toMatch(/Too many tasks: at most 3/);
+    expect(result.plan.tasks).toHaveLength(3);
+  });
+});
+
 describe("buildPlannerMessages", () => {
   it("drops the file tree when the context window is tiny", () => {
     const tree = Array.from({ length: 5000 }, (_, i) => `file${i}.ts`).join("\n");

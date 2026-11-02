@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { normalizeWorkspacePath, scopesOverlap } from "../tools/paths";
 
-export const MAX_TASKS = 8;
+/** Hard cap on tasks per plan. The setting agentic.delegation.maxTasks picks a lower limit. */
+export const MAX_TASKS = 30;
+/** Used when no limit is passed. */
+export const DEFAULT_MAX_TASKS = 12;
 
 const taskSchema = z.object({
   id: z

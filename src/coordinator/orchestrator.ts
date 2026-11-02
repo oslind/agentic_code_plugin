@@ -39,7 +39,16 @@ export interface OrchestratorOptions {
   signal?: AbortSignal;
   /** The user's go-ahead before a task's work is merged. Resolves true to merge. */
   approveMerge: (request: MergeRequest) => Promise<boolean>;
-  approveTool: (task: Task, reason: string, call: ToolCall) => Promise<boolean>;
+  /** The user's go-ahead for a call the policy flagged. `preview` shows a file change before it is made. */
+  approveTool: (task: Task, reason: string, call: ToolCall, preview?: string) => Promise<boolean>;
+  /** Asked before every check command runs, including verification. Without it, approved checks run freely. */
+  approveCommand?: (task: Task, check: CheckConfig) => Promise<boolean>;
+  /** Lets a sub-agent ask the user a question. Without it, sub-agents decide on their own. */
+  askUser?: (task: Task, question: string) => Promise<string>;
+  /** Messages the user sent directly to a sub-agent. Each call drains them. */
+  inbox?: (taskId: string) => string[];
+  /** Ask the user before each file edit. Read when each task starts, so a toggle applies to the next task. */
+  askBeforeWrites?: () => boolean;
   onChange?: () => void;
 }
 
@@ -75,7 +84,8 @@ export function integrationBranchFor(runId: string): string {
 export class Orchestrator {
   private readonly git: Git;
   private readonly mergeLock = new Mutex();
-  private readonly o: Required<Omit<OrchestratorOptions, "signal" | "onChange">> & Pick<OrchestratorOptions, "signal" | "onChange">;
+  private readonly o: Required<Omit<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites" | "approveCommand">> &
+    Pick<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites" | "approveCommand">;
   private readonly taskControllers = new Map<string, AbortController>();
   private root = "";
   private integrationDir = "";
@@ -181,6 +191,23 @@ export class Orchestrator {
   }
 
   /** What the last attempt left behind, so a retry can build on it instead of starting blind. */
+  /**
+   * What this sub-agent should know besides its own instructions: what the
+   * coordinator learned before planning, and what the tasks it depends on
+   * reported when they finished.
+   */
+  private async briefingFor(task: Task): Promise<string | undefined> {
+    const run = await this.o.store.load(this.o.runId);
+    const parts: string[] = [];
+    if (run.briefing) parts.push(`What the coordinator knows about this project:\n${run.briefing}`);
+    const reports = task.dependsOn
+      .map((id) => run.tasks.find((t) => t.id === id))
+      .filter((t): t is Task => !!t && t.status === "done" && !!t.summary)
+      .map((t) => `- ${t.title}: ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
+    if (reports.length) parts.push(`The tasks you build on are done. Their reports:\n${reports.join("\n")}`);
+    return parts.length ? parts.join("\n\n") : undefined;
+  }
+
   private async previousAttemptNote(task: Task): Promise<string | undefined> {
     const error = task.error ?? task.lastError;
     if (!task.branch || !error || task.attempts === 0) return undefined;
@@ -202,7 +229,7 @@ export class Orchestrator {
     this.taskControllers.set(task.id, controller);
     const signal = this.o.signal ? AbortSignal.any([this.o.signal, controller.signal]) : controller.signal;
     try {
-      const note = await this.previousAttemptNote(task);
+      const note = [await this.briefingFor(task), await this.previousAttemptNote(task)].filter(Boolean).join("\n\n") || undefined;
       await this.setStatus(task, "running");
       const attempt = (await this.current(task.id))?.attempts ?? 1;
       // A retry gets a new branch, so earlier attempts stay available for recovery.
@@ -226,7 +253,11 @@ export class Orchestrator {
         checks: this.o.checks,
         maxTurns: this.o.maxTurns,
         signal,
-        approve: (reason, call) => this.o.approveTool(task, reason, call),
+        approve: (reason, call, preview) => this.o.approveTool(task, reason, call, preview),
+        approveCommand: this.o.approveCommand && ((check) => this.o.approveCommand!(task, check)),
+        askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
+        inbox: this.o.inbox && (() => this.o.inbox!(task.id)),
+        askBeforeWrites: this.o.askBeforeWrites?.() ?? false,
         log: (type, message, data) => void this.log(type, message, task.id, data),
       });
 
@@ -235,7 +266,8 @@ export class Orchestrator {
       for (let round = 0; ; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the configured checks decide.
-        checks = await runAllChecks(this.o.checks, dir, signal);
+        // The configured checks plus any the user approved for this task.
+        checks = await runAllChecks(worker.checks, dir, signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)));
         signal.throwIfAborted();
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
@@ -345,7 +377,7 @@ export class Orchestrator {
         throw new OrchestratorError(`Merge conflict in ${conflicts.join(", ")}. The branch ${branch} is kept for recovery.`);
       }
       // Each task passed on its own; the combination must pass too.
-      const checks = await runAllChecks(this.o.checks, this.integrationDir, this.o.signal);
+      const checks = await runAllChecks(this.o.checks, this.integrationDir, this.o.signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)));
       const failed = checks.filter((c) => !c.passed);
       if (failed.length) {
         await git.resetHard(before);
@@ -367,6 +399,13 @@ export async function applyRun(workspaceRoot: string, integrationBranch: string)
     throw new OrchestratorError("Your working tree has uncommitted changes. Commit or stash them first.");
   }
   return git.merge(integrationBranch, `Merge ${integrationBranch}`);
+}
+
+/** Everything a run's integration branch would bring into the checked-out branch, as a diff. */
+export async function runChanges(workspaceRoot: string, integrationBranch: string): Promise<string> {
+  const git = new Git(workspaceRoot);
+  if (!(await git.branchExists(integrationBranch))) throw new OrchestratorError(`The branch ${integrationBranch} no longer exists.`);
+  return git.diff("HEAD", integrationBranch);
 }
 
 function isTransient(err: unknown): boolean {

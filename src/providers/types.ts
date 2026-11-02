@@ -19,6 +19,8 @@ export interface ChatRequest {
 
 export interface ChatResponse {
   content: string;
+  /** The model's thinking, when the server returns it separately (Ollama, vLLM and others call it reasoning). */
+  reasoning?: string;
   promptTokens?: number;
   completionTokens?: number;
 }

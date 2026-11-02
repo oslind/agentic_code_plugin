@@ -176,6 +176,8 @@ textarea::placeholder {
 }
 
 .hint {
+  white-space: nowrap;
+  flex: none;
   font-size: 0.9em;
   padding: 1px 6px;
   border-radius: 8px;
@@ -434,4 +436,256 @@ ol.tasks {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+
+/* thinking, thoughts, spawn and report cards */
+
+.thought {
+  font-style: italic;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 2px;
+}
+
+details.thinking {
+  margin-top: 4px;
+}
+
+details.thinking summary {
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+pre.thinking-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border-left: 2px solid var(--vscode-widget-border, #444);
+}
+
+.msg.kind-spawn {
+  border-left-color: var(--agent);
+  background: color-mix(in srgb, var(--agent) 14%, transparent);
+  border-radius: var(--radius);
+}
+
+.msg.kind-spawn .who {
+  color: var(--agent);
+}
+
+.msg.kind-report {
+  border: 1px solid var(--agent);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--coordinator) 8%, transparent);
+}
+
+/* live agents panel */
+
+.agents {
+  border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #444));
+  max-height: 45%;
+  overflow-y: auto;
+  flex: none;
+}
+
+.agents-head {
+  width: 100%;
+  text-align: left;
+  background: none;
+  color: var(--vscode-foreground);
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 0;
+}
+
+.agents-head:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.agents-body {
+  padding: 0 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-icon {
+  width: 12px;
+  text-align: center;
+  flex: none;
+}
+
+.agent-icon.coordinator-dot {
+  color: var(--coordinator);
+}
+
+.agent-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.agent-status {
+  margin-left: auto;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.agent-latest {
+  margin-left: 18px;
+  font-size: 0.9em;
+}
+
+.agent-thought {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.agent-icon.status-done {
+  color: var(--success);
+}
+
+.agent-icon.status-failed,
+.agent-icon.status-cancelled {
+  color: var(--error);
+}
+
+.agent-icon.status-awaiting_approval {
+  color: var(--warning);
+}
+
+/* cards that wait for the user */
+
+.card {
+  margin-top: 6px;
+  border: 1px solid var(--vscode-widget-border, #444);
+  border-radius: var(--radius);
+  padding: 6px;
+}
+
+.msg.kind-approval,
+.msg.kind-question {
+  border-left-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border-radius: var(--radius);
+}
+
+.msg.kind-direct {
+  border-left-color: var(--user);
+  margin-left: 10px;
+}
+
+.decided {
+  margin-top: 4px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.check-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.check-list code,
+.check-cmd {
+  font-family: var(--vscode-editor-font-family);
+}
+
+.check-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.check-row input[type="text"],
+.check-row input:not([type]),
+.card-input {
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, #444));
+  border-radius: 2px;
+  padding: 2px 4px;
+  font: inherit;
+  min-width: 0;
+}
+
+.check-name {
+  width: 30%;
+}
+
+.check-cmd {
+  flex: 1;
+}
+
+.card-input {
+  width: 100%;
+  margin-top: 4px;
+  resize: vertical;
+}
+
+.remember {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.9em;
+}
+
+/* auto-approve bar */
+
+.perms {
+  flex: none;
+  font-size: 0.9em;
+}
+
+.perms-head {
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  padding: 0 2px;
+  text-align: left;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.perm {
+  display: block;
+  padding: 2px 0 2px 12px;
+}
+
+.perm-note {
+  padding: 2px 0 0 12px;
+}
+
+pre.change-preview {
+  margin: 6px 0;
+  padding: 6px 8px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+  white-space: pre;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
 }

@@ -28,9 +28,9 @@ export class TaskStore {
     return path.join(this.root, "runs", runId);
   }
 
-  async createRun(request: string, workspaceRoot?: string): Promise<Run> {
+  async createRun(request: string, workspaceRoot?: string, kind?: Run["kind"], briefing?: string): Promise<Run> {
     const time = this.now().toISOString();
-    const run: Run = { id: randomUUID(), request, workspaceRoot, createdAt: time, updatedAt: time, tasks: [] };
+    const run: Run = { id: randomUUID(), request, kind, workspaceRoot, briefing, createdAt: time, updatedAt: time, tasks: [] };
     await this.save(run);
     await this.log({ runId: run.id, type: "run_created", message: request });
     return run;

@@ -30,8 +30,8 @@ describe("planSchema", () => {
   it("rejects scopes outside the workspace", () => {
     expect(issues({ tasks: [t("a", [], ["../x.ts"])] }).join()).toMatch(/inside the workspace/);
   });
-  it("rejects too many tasks", () => {
-    const many = Array.from({ length: 9 }, (_, i) => t(`t${i}`));
+  it("rejects more tasks than the hard cap", () => {
+    const many = Array.from({ length: 31 }, (_, i) => t(`t${i}`));
     expect(issues({ tasks: many }).length).toBeGreaterThan(0);
   });
 });
