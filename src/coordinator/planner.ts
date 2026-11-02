@@ -15,9 +15,10 @@ Rules:
 - Tasks that change the same files must not run at the same time: make one depend on the other.
 - dependsOn lists ids of tasks whose results this task needs.
 - Do not add tasks for running tests or reviewing; that happens automatically.
+- Set "changes": true when a task creates or edits files, and false when it only reads and reports.
 
 Reply with JSON only, in this shape:
-{"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"]},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"]}]}`;
+{"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"],"changes":true},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"],"changes":true}]}`;
 
 function taskLimit(input: PlanInput): number {
   return Math.max(1, Math.min(MAX_TASKS, Math.floor(input.maxTasks ?? DEFAULT_MAX_TASKS)));

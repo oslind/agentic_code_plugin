@@ -540,7 +540,10 @@ export class ChatController {
             tone: "warning",
             text: "These tasks only read the project, so they run now as read-only sub-agents instead of a plan. Nothing will be changed, and Plan mode is fine.",
           });
-          await doResearch({ ...turn, action: "research", request: "", questions: result.plan.tasks.map((t) => `${t.title}: ${t.instructions}`.slice(0, 500)) });
+          // Tasks that only combine others' findings are left out: the coordinator combines the reports itself.
+          const own = result.plan.tasks.filter((t) => t.dependsOn.length === 0);
+          const questions = (own.length ? own : result.plan.tasks).map((t) => `${t.title}: ${t.instructions} (Start with: ${t.fileScope.join(", ")})`.slice(0, 500));
+          await doResearch({ ...turn, action: "research", request: "", questions });
           return;
         }
         const run = await this.tasks.createRun(turn.request, c.workspaceRoot, undefined, learned);
