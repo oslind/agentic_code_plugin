@@ -10,6 +10,7 @@ const systemPrompt = (maxTasks: number) => `You are the coordinator of a team of
 Rules:
 - Up to ${maxTasks} tasks. Prefer more, smaller tasks over a few large ones: one task per file or module. Independent tasks run in parallel, and small tasks are easier for each agent to get right.
 - Each task must be doable alone by a worker who sees only that task and its files.
+- If "What we know so far" is given, copy the facts a task needs (file names, how things work, decisions) into that task's instructions.
 - fileScope lists every file or glob the task may create or change, relative to the workspace root.
 - Tasks that change the same files must not run at the same time: make one depend on the other.
 - dependsOn lists ids of tasks whose results this task needs.
@@ -28,6 +29,8 @@ export interface PlanInput {
   fileTree?: string;
   /** Extra context such as README or package.json excerpts, lowest priority. */
   notes?: string;
+  /** What the coordinator learned earlier in the conversation: research answers and sub-agent reports. */
+  learned?: string;
   /** Most tasks the plan may have (agentic.delegation.maxTasks). */
   maxTasks?: number;
 }
@@ -51,6 +54,9 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   }
   if (input.notes) {
     sections.push({ name: "notes", text: `Project notes:\n${input.notes}`, priority: 10 });
+  }
+  if (input.learned) {
+    sections.push({ name: "learned", text: `What we know so far (from earlier research and sub-agent reports):\n${input.learned}`, priority: 40 });
   }
   const system = systemPrompt(taskLimit(input));
   const user = fitToBudget(sections, budget - estimateTokens(system));

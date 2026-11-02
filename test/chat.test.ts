@@ -217,8 +217,30 @@ describe("ChatController", () => {
         permissions[key] = value;
       },
     };
-    return { controller: new ChatController(conversations, tasks, host), started, provider, usedChecks, savedChecks };
+    return { controller: new ChatController(conversations, tasks, host), started, provider, usedChecks, savedChecks, tasks };
   }
+
+  it("passes what research found to the planner and to every sub-agent of the next run", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    await fs.writeFile(path.join(dir, "ws", "README.md"), "# Flight sim\n");
+    const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+    const { controller, provider, tasks } = setup(
+      [
+        JSON.stringify({ reply: "Reading.", action: "research", request: "", questions: ["What does this project do?"] }),
+        worker("Done.", { tool: "finish", summary: "It is a flight simulator; physics lives in src/physics.ts." }),
+        JSON.stringify({ reply: "It is a flight simulator.", action: "none", request: "" }),
+        turn("Plan below.", "plan", "Add wind to the physics."),
+        plan,
+      ],
+      "plan",
+    );
+    await controller.send("What is this?");
+    await controller.send("Add wind");
+    const plannerCall = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
+    expect(plannerCall).toMatch(/What we know so far[\s\S]*physics lives in src\/physics\.ts/);
+    const runId = (await controller.state()).current!.entries.find((e) => e.kind === "plan")!.runId!;
+    expect((await tasks.load(runId)).briefing).toMatch(/physics lives in src\/physics\.ts[\s\S]*Coordinator concluded: It is a flight simulator/);
+  });
 
   it("answers a question about the project with read-only research, even in Plan mode", async () => {
     await fs.mkdir(path.join(dir, "ws"), { recursive: true });

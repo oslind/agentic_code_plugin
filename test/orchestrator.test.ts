@@ -109,6 +109,32 @@ describe("Orchestrator", () => {
     expect(readFileSync(path.join(repo, "src", "c.txt"), "utf8")).toBe("C");
   });
 
+  it("tells each sub-agent what the coordinator learned and what the tasks it builds on reported", async () => {
+    const run = await store.createRun("test", repo, undefined, "- Physics lives in src/physics.ts.");
+    await store.addTasks(run.id, [task("a", ["src/a.txt"]), task("b", ["src/b.txt"], ["a"])]);
+    const firstMessages: Record<string, string> = {};
+    const scripts: Record<string, Turn[]> = {
+      a: [write("src/a.txt", "A"), { thought: "done", call: { tool: "finish", summary: "Added A; it exports wind()." } }],
+      b: [write("src/b.txt", "B"), finish],
+    };
+    const provider: ModelProvider = {
+      model: "fake",
+      contextWindow: 32768,
+      async chat(req) {
+        const first = req.messages[1]?.content ?? "";
+        const title = /^Task: (.*)$/m.exec(first)?.[1] ?? "";
+        firstMessages[title] ??= first;
+        return { content: JSON.stringify(scripts[title]!.shift()) };
+      },
+    };
+    const { o } = orchestrator(run.id, provider);
+    expect((await o.run()).done.sort()).toEqual(["a", "b"]);
+    expect(firstMessages.a).toMatch(/Physics lives in src\/physics\.ts/);
+    expect(firstMessages.a).not.toMatch(/Their reports/);
+    expect(firstMessages.b).toMatch(/Physics lives in src\/physics\.ts/);
+    expect(firstMessages.b).toMatch(/Their reports:\n- a: Added A; it exports wind\(\)\./);
+  });
+
   it("sends failing checks back to the worker until they pass", async () => {
     const checks: CheckConfig[] = [{ name: "test", command: node("process.exit(require('fs').readFileSync('v.txt','utf8')==='ok'?0:1)") }];
     const runId = await setup([task("fix", ["v.txt"])]);

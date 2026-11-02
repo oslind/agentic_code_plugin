@@ -509,16 +509,17 @@ export class ChatController {
         this.busy = "Coordinator is splitting the work into sub-agent tasks…";
         this.changed();
         let planThinking: string | undefined;
+        const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: turn.request, fileTree, maxTasks: this.host.delegationLimits().maxTasks },
+          { request: turn.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks },
           {
             signal: abort.signal,
             onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
             onThinking: (t) => (planThinking = t),
           },
         );
-        const run = await this.tasks.createRun(turn.request, c.workspaceRoot);
+        const run = await this.tasks.createRun(turn.request, c.workspaceRoot, undefined, learned);
         this.runOwner.set(run.id, c.id);
         await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
         await this.tasks.addTasks(run.id, result.plan.tasks);
@@ -551,7 +552,7 @@ export class ChatController {
           { mode: this.mode, entries: c.entries, fileTree, answerFromResearch: true },
           { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
         );
-        await this.append(c.id, { author: "coordinator", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
+        await this.append(c.id, { author: "coordinator", tag: "from research", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
       }
     } catch (err) {
       const message = abort.signal.aborted ? "Stopped." : (err as Error).message;
@@ -721,3 +722,28 @@ export class ChatController {
     }
   }
 }
+
+/**
+ * What the coordinator has learned in this conversation, for planning and for
+ * every sub-agent of the next run: sub-agent reports (research answers and
+ * finished work) and its own answers after research, newest first, kept small
+ * for local models.
+ */
+export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | undefined {
+  const lines: string[] = [];
+  let used = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    let line: string | undefined;
+    if (e.kind === "report") line = `- ${e.agentName ?? "A sub-agent"} reported: ${e.text}`;
+    // The coordinator's answer right after research reports sums them up.
+    else if (e.author === "coordinator" && e.tag === "from research") line = `- Coordinator concluded: ${e.text}`;
+    if (!line) continue;
+    line = line.replace(/\s+/g, " ").slice(0, 800);
+    if (used + line.length > maxChars) break;
+    lines.unshift(line);
+    used += line.length;
+  }
+  return lines.length ? lines.join("\n") : undefined;
+}
+

@@ -36,6 +36,8 @@ export interface Run {
   kind?: "change" | "research";
   /** The only folder this run's agents may touch. */
   workspaceRoot?: string;
+  /** What the coordinator had learned when the run was planned. Every sub-agent of the run gets it. */
+  briefing?: string;
   createdAt: string;
   updatedAt: string;
   tasks: Task[];

@@ -191,6 +191,23 @@ export class Orchestrator {
   }
 
   /** What the last attempt left behind, so a retry can build on it instead of starting blind. */
+  /**
+   * What this sub-agent should know besides its own instructions: what the
+   * coordinator learned before planning, and what the tasks it depends on
+   * reported when they finished.
+   */
+  private async briefingFor(task: Task): Promise<string | undefined> {
+    const run = await this.o.store.load(this.o.runId);
+    const parts: string[] = [];
+    if (run.briefing) parts.push(`What the coordinator knows about this project:\n${run.briefing}`);
+    const reports = task.dependsOn
+      .map((id) => run.tasks.find((t) => t.id === id))
+      .filter((t): t is Task => !!t && t.status === "done" && !!t.summary)
+      .map((t) => `- ${t.title}: ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
+    if (reports.length) parts.push(`The tasks you build on are done. Their reports:\n${reports.join("\n")}`);
+    return parts.length ? parts.join("\n\n") : undefined;
+  }
+
   private async previousAttemptNote(task: Task): Promise<string | undefined> {
     const error = task.error ?? task.lastError;
     if (!task.branch || !error || task.attempts === 0) return undefined;
@@ -212,7 +229,7 @@ export class Orchestrator {
     this.taskControllers.set(task.id, controller);
     const signal = this.o.signal ? AbortSignal.any([this.o.signal, controller.signal]) : controller.signal;
     try {
-      const note = await this.previousAttemptNote(task);
+      const note = [await this.briefingFor(task), await this.previousAttemptNote(task)].filter(Boolean).join("\n\n") || undefined;
       await this.setStatus(task, "running");
       const attempt = (await this.current(task.id))?.attempts ?? 1;
       // A retry gets a new branch, so earlier attempts stay available for recovery.
