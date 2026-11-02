@@ -77,7 +77,7 @@ async function approveTool(task: Task, reason: string, call: ToolCall): Promise<
 export async function offerResume(store: TaskStore): Promise<void> {
   const unfinished = new Set<string>(["running", "verifying", "awaiting_approval"]);
   for (const run of await store.listRuns()) {
-    if (!run.tasks.some((t) => unfinished.has(t.status))) continue;
+    if (run.kind === "research" || !run.tasks.some((t) => unfinished.has(t.status))) continue;
     if (!(await confinedFolder(run).catch(() => undefined))) continue;
     const choice = await vscode.window.showInformationMessage(`"${run.request}" was interrupted.`, "Resume", "Later");
     if (choice === "Resume") await vscode.commands.executeCommand("agentic.runPlan", { kind: "run", run });
@@ -99,6 +99,7 @@ export function registerRunCommands(
    */
   async function execute(run: Run, fromChat: boolean): Promise<RunOutcome | undefined> {
     if (active.has(run.id)) throw new Error("This run is already in progress.");
+    if (run.kind === "research") throw new Error("This is a research run. It only read files, so there is nothing to run or apply.");
     const folder = await confinedFolder(run);
     const config = readRunConfig(folder.uri);
     if (config.checks.length === 0) {

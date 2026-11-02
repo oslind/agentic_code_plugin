@@ -6,7 +6,9 @@ import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
 import { Run, RunEvent, TaskStatus } from "../state/types";
 import { ConversationStore } from "./conversationStore";
-import { coordinatorTurn } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, researchQuestions } from "./coordinatorChat";
+import { WorkspaceSandbox } from "../tools/sandbox";
+import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
 import { ChatEntry, ChatMode, Conversation, ConversationSummary } from "./types";
 
@@ -25,9 +27,14 @@ export interface ChatHost {
   defaultMode(): ChatMode;
   setDefaultMode(mode: ChatMode): void;
   log(level: "info" | "warn" | "error", message: string): void;
+  /** The real path of the folder if it is open in VS Code right now, else undefined. Research may only read there. */
+  openFolder(workspaceRoot: string): Promise<string | undefined>;
+  /** Limits for read-only research sub-agents. */
+  researchLimits(): { maxTurns: number; maxParallel: number };
 }
 
 export interface PlanView {
+  kind: "change" | "research";
   tasks: { id: string; title: string; status: TaskStatus; fileScope: string[]; dependsOn: string[] }[];
   /** True once any task has started, so the plan can no longer be run from the chat. */
   started: boolean;
@@ -116,7 +123,14 @@ export class ChatController {
   private async indexRuns(): Promise<void> {
     for (const s of await this.conversations.list()) {
       const c = await this.conversations.load(s.id).catch(() => undefined);
-      for (const runId of c?.runIds ?? []) this.runOwner.set(runId, s.id);
+      for (const runId of c?.runIds ?? []) {
+        this.runOwner.set(runId, s.id);
+        // Research that was cut off by a restart has no live sub-agent; mark it failed.
+        const run = await this.tasks.load(runId).catch(() => undefined);
+        for (const t of run?.kind === "research" ? run.tasks.filter((x) => x.status === "running") : []) {
+          await this.tasks.setStatus(runId, t.id, "failed", "Interrupted by restart").catch(() => undefined);
+        }
+      }
     }
     this.currentId ??= (await this.conversations.list())[0]?.id;
     const current = this.currentId ? await this.conversations.load(this.currentId).catch(() => undefined) : undefined;
@@ -133,6 +147,7 @@ export class ChatController {
       const run = await this.tasks.load(runId).catch(() => undefined);
       if (!run) continue;
       plans[runId] = {
+        kind: run.kind ?? "change",
         tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
         started: !isUnstarted(run),
         waves: parallelWaves(run.tasks).length,
@@ -265,6 +280,18 @@ export class ChatController {
         if (this.mode === "act") startRun = run.id;
       } else if (turn.action === "run" && pending) {
         startRun = pending.id;
+      } else if (turn.action === "research") {
+        await this.research(c, turn, abort.signal);
+        c = await this.conversations.load(c.id);
+        this.busy = "Coordinator is reading the reports…";
+        this.runningRunId = undefined;
+        this.changed();
+        const answer = await coordinatorTurn(
+          provider,
+          { mode: this.mode, entries: c.entries, fileTree, answerFromResearch: true },
+          { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
+        );
+        await this.append(c.id, { author: "coordinator", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
       }
     } catch (err) {
       const message = abort.signal.aborted ? "Stopped." : (err as Error).message;
@@ -273,6 +300,7 @@ export class ChatController {
     } finally {
       this.abort = undefined;
       this.busy = undefined;
+      this.runningRunId = undefined;
       this.changed();
     }
     if (startRun) await this.runPlan(startRun);
@@ -325,6 +353,72 @@ export class ChatController {
       this.busy = undefined;
       this.changed();
     }
+  }
+
+  /**
+   * Sends read-only sub-agents to answer the coordinator's questions about the
+   * project. They read the open folder directly (no branches, nothing to
+   * merge) and their file scope is empty, so the policy refuses every write.
+   */
+  private async research(c: Conversation, turn: CoordinatorResult, signal: AbortSignal): Promise<void> {
+    const root = await this.host.openFolder(c.workspaceRoot);
+    if (!root) throw new Error(`${c.workspaceRoot} is not open in VS Code, so the sub-agents cannot read it.`);
+    const questions = researchQuestions(turn);
+    const run = await this.tasks.createRun(turn.request.trim() || questions.join(" "), c.workspaceRoot, "research");
+    this.runOwner.set(run.id, c.id);
+    await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
+    const added = await this.tasks.addTasks(
+      run.id,
+      questions.map((q, i) => ({ id: `research-${i + 1}`, title: title(q), instructions: q, fileScope: [] })),
+    );
+    await this.append(c.id, {
+      author: "coordinator",
+      kind: "research",
+      runId: run.id,
+      text: `Sending ${added.length} read-only sub-agent(s) to look into the project. They can read files but not change anything.`,
+    });
+    this.busy = `${added.length} read-only sub-agent(s) are researching…`;
+    this.runningRunId = run.id;
+    this.changed();
+
+    const sandbox = await WorkspaceSandbox.create(root);
+    const { maxTurns, maxParallel } = this.host.researchLimits();
+    const provider = this.host.provider(c.workspaceRoot);
+    const queue = [...added];
+    const workerLoop = async () => {
+      for (let task = queue.shift(); task; task = queue.shift()) {
+        if (signal.aborted) {
+          await this.tasks.setStatus(run.id, task.id, "cancelled", "Stopped");
+          continue;
+        }
+        await this.tasks.setStatus(run.id, task.id, "running");
+        try {
+          const worker = new Worker({
+            provider,
+            sandbox,
+            task,
+            checks: [],
+            maxTurns,
+            signal,
+            readOnly: true,
+            approve: async () => false,
+            log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
+          });
+          const result = await worker.run();
+          await this.tasks.updateTask(run.id, task.id, { summary: result.summary, changedFiles: [] });
+          await this.tasks.setStatus(run.id, task.id, "done");
+        } catch (err) {
+          const stopped = signal.aborted;
+          await this.tasks.setStatus(run.id, task.id, stopped ? "cancelled" : "failed", stopped ? "Stopped" : (err as Error).message);
+          if (!stopped) await this.tasks.log({ runId: run.id, taskId: task.id, type: "task_failed", message: (err as Error).message });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(maxParallel, added.length)) }, workerLoop));
+    // Let queued sub-agent messages land before the summary.
+    await this.eventQueue.run(async () => {});
+    signal.throwIfAborted();
+    await this.append(c.id, { author: "coordinator", runId: run.id, text: `Research finished.${await this.reports(run.id)}` });
   }
 
   /**

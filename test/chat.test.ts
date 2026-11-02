@@ -181,9 +181,41 @@ describe("ChatController", () => {
       defaultMode: () => current,
       setDefaultMode: (m) => (current = m),
       log: () => {},
+      openFolder: async () => path.join(dir, "ws"),
+      researchLimits: () => ({ maxTurns: 10, maxParallel: 1 }),
     };
     return { controller: new ChatController(conversations, tasks, host), started, provider };
   }
+
+  it("answers a question about the project with read-only research, even in Plan mode", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    await fs.writeFile(path.join(dir, "ws", "README.md"), "# Flight sim\nA flight simulator.\n");
+    const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+    const { controller, started } = setup(
+      [
+        JSON.stringify({ thought: "Need to read the code.", reply: "I'll have a sub-agent read the project.", action: "research", request: "", questions: ["What does this project do?"] }),
+        worker("Read the README.", { tool: "read_file", path: "README.md" }),
+        worker("Try to edit, which must be refused.", { tool: "write_file", path: "README.md", content: "hacked" }),
+        worker("Done.", { tool: "finish", summary: "It is a flight simulator, described in README.md." }),
+        JSON.stringify({ thought: "Answer from the report.", reply: "This project is a flight simulator (see README.md).", action: "plan", request: "Do more things to the project" }),
+      ],
+      "plan",
+    );
+    await controller.send("Analyze this project and report back");
+    await new Promise((r) => setTimeout(r, 50));
+    const state = await controller.state();
+    const entries = state.current!.entries;
+    expect(started).toEqual([]);
+    expect(await fs.readFile(path.join(dir, "ws", "README.md"), "utf8")).toMatch(/Flight sim/);
+    const research = entries.find((e) => e.kind === "research")!;
+    expect(state.plans[research.runId!]).toMatchObject({ kind: "research", tasks: [{ status: "done", fileScope: [] }] });
+    expect(entries.some((e) => e.kind === "spawn" && /Read-only/.test(e.text))).toBe(true);
+    expect(entries.some((e) => e.author === "agent" && /Blocked/.test(e.text))).toBe(true);
+    expect(entries.some((e) => e.kind === "report" && /flight simulator/.test(e.text))).toBe(true);
+    // The final answer comes from the reports, and cannot start more work.
+    expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "This project is a flight simulator (see README.md)." });
+    expect(entries.filter((e) => e.kind === "plan")).toHaveLength(0);
+  });
 
   it("Plan mode proposes a plan and does not start sub-agents", async () => {
     const { controller, started } = setup([turn("I'll split this up.", "plan", "Add a User model and an API that uses it."), plan], "plan");

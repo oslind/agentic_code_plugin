@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { z } from "zod";
-import { createProvider, readModelConfig } from "./config";
+import { createProvider, readModelConfig, readRunConfig } from "./config";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -63,6 +63,11 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.workspace.getConfiguration("agentic.chat").get<ChatMode>("defaultMode", "plan"),
     setDefaultMode: (mode) => void context.globalState.update("agentic.chatMode", mode),
     log: (level, message) => output[level](message),
+    openFolder: async (root) => (await confinedFolder({ workspaceRoot: root }).catch(() => undefined))?.uri.fsPath,
+    researchLimits: () => {
+      const c = readRunConfig();
+      return { maxTurns: Math.min(c.maxTurns, 30), maxParallel: c.maxParallel };
+    },
   });
   const chatView = new ChatViewProvider(context.extensionUri, chat, store, output);
   void offerResume(store).catch((err) => output.warn(`Could not check for interrupted runs: ${(err as Error).message}`));

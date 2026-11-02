@@ -154,17 +154,23 @@
           el(
             "div",
             { class: "task-meta" },
-            t.fileScope.join(", "),
+            t.fileScope.length ? t.fileScope.join(", ") : "read-only",
             t.dependsOn.length ? ` · after ${t.dependsOn.join(", ")}` : "",
           ),
         ),
       ),
     );
-    const canRun = !plan.started && !state.busy;
+    const canRun = plan.kind !== "research" && !plan.started && !state.busy;
     return el(
       "div",
       { class: "plan" },
-      el("div", { class: "plan-head" }, `${plan.tasks.length} sub-agent task(s) in ${plan.waves} wave(s)`),
+      el(
+        "div",
+        { class: "plan-head" },
+        plan.kind === "research"
+          ? `${plan.tasks.length} read-only research question(s)`
+          : `${plan.tasks.length} sub-agent task(s) in ${plan.waves} wave(s)`,
+      ),
       el("ol", { class: "tasks" }, rows),
       canRun
         ? el(
@@ -245,7 +251,7 @@
       thoughtLine(entry),
       el("div", { class: "msg-text" }, entry.text),
       thinkingBlock(entry),
-      kind === "plan" ? planCard(entry) : null,
+      kind === "plan" || kind === "research" ? planCard(entry) : null,
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
     );
   }
@@ -277,7 +283,7 @@
 
   function agentsPanel() {
     const c = state.current;
-    const planEntry = lastWhere(c.entries, (e) => e.kind === "plan");
+    const planEntry = lastWhere(c.entries, (e) => e.kind === "plan" || e.kind === "research");
     const plan = planEntry && state.plans[planEntry.runId];
     const coordinatorBusy = !!state.busy && !state.runningRunId;
     const lastCoordinator =

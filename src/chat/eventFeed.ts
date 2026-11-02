@@ -46,7 +46,9 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
             taskId: event.taskId,
             agentName: task?.title ?? event.taskId,
             tag: "sub-agent started",
-            text: `Started sub-agent "${task?.title ?? event.taskId}"${attempt}.\nMay change: ${task?.fileScope.join(", ") ?? "its files"}${
+            text: `Started sub-agent "${task?.title ?? event.taskId}"${attempt}.\n${
+              task && task.fileScope.length === 0 ? "Read-only: it may not change any files." : `May change: ${task?.fileScope.join(", ") ?? "its files"}`
+            }${
               task ? `\nTask: ${short(task.instructions, 300)}` : ""
             }`,
           };

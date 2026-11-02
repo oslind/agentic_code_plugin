@@ -21,6 +21,11 @@ export interface WorkerOptions {
   /** Asks the user about a call the policy flags. Resolves true to allow it. */
   approve: (reason: string, call: ToolCall) => Promise<boolean>;
   log: (type: string, message: string, data?: Record<string, unknown>) => void;
+  /**
+   * A research worker: it may only read, and its finish summary is its report.
+   * Writes are refused by the policy anyway, since its file scope is empty.
+   */
+  readOnly?: boolean;
 }
 
 export interface WorkerResult {
@@ -37,6 +42,24 @@ export class WorkerError extends Error {
 }
 
 const REPLY_RESERVE = 4096;
+
+function researchPrompt(): string {
+  return `You are a research agent. You investigate one question about a project by reading its files. You cannot change files or run commands.
+
+Each reply is one JSON object: {"thought": "...", "call": {"tool": "...", ...}}. Make exactly one tool call per reply.
+
+Tools:
+- {"tool":"list_files","glob":"src/**"}
+- {"tool":"read_file","path":"README.md","startLine":1,"endLine":200}
+- {"tool":"search","query":"functionName","glob":"src/**"}
+- {"tool":"finish","summary":"your report"}
+
+Rules:
+- Start broad (README, package files, the file list), then read what matters for the question.
+- Paths are relative to the project root.
+- Read only what you need. When you can answer, call finish.
+- The finish summary is your report to the coordinator: concrete findings, with file names. A few short paragraphs or a list.`;
+}
 
 function systemPrompt(task: Task, checks: CheckConfig[]): string {
   return `You are a coding agent working on one task in a project. Work step by step.
@@ -70,7 +93,7 @@ export class Worker {
 
   constructor(private readonly opts: WorkerOptions) {
     this.messages = [
-      { role: "system", content: systemPrompt(opts.task, opts.checks) },
+      { role: "system", content: opts.readOnly ? researchPrompt() : systemPrompt(opts.task, opts.checks) },
       { role: "user", content: `Task: ${opts.task.title}\n\n${opts.task.instructions}${opts.context ? `\n\n${opts.context}` : ""}` },
     ];
   }
