@@ -27,8 +27,12 @@ export interface ChatEntry {
   thinking?: string;
   /** For a checks card: the proposed or chosen verification commands. */
   checks?: { name: string; command: string; source?: string }[];
-  /** For an approval card: whether "remember for this folder" is offered. */
+  /** For an approval card: whether a second "allow and remember" button is offered. */
   rememberable?: boolean;
+  /** For an approval card: the label of that button. */
+  rememberLabel?: string;
+  /** For an approval card: the file change waiting for approval, as removed (-) and added (+) lines. */
+  preview?: string;
   /** For a run summary: what can be applied or retried. */
   outcome?: { changedFiles: string[]; failed: number };
   /** For a card that waits on the user: what was decided, once it was. */

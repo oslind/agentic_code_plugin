@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
+import { CheckConfig } from "../checks/runner";
 import { createProvider, readPermissions, readRunConfig } from "../config";
 import { applyRun, runChanges, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
@@ -50,7 +51,7 @@ async function approveMerge(request: MergeRequest): Promise<boolean> {
   // Only reached for work whose checks passed; the user's own branch is never touched here.
   if (readPermissions().merges) return true;
   const files = request.changedFiles.join(", ");
-  const checks = request.checks.length ? request.checks.map((c) => `${c.name} passed`).join(", ") : "no checks configured";
+  const checks = request.checks.length ? request.checks.map((c) => `${c.name} ${c.skipped ? "skipped" : "passed"}`).join(", ") : "no checks configured";
   for (;;) {
     const choice = await vscode.window.showInformationMessage(
       `Merge "${request.task.title}"?`,
@@ -67,15 +68,31 @@ async function approveMerge(request: MergeRequest): Promise<boolean> {
   }
 }
 
-async function approveTool(task: Task, reason: string, call: ToolCall): Promise<boolean> {
+async function approveTool(task: Task, reason: string, call: ToolCall, preview?: string): Promise<boolean> {
   if (autoApproved(call)) return true;
   const target = "path" in call ? `change ${call.path}` : call.tool === "request_check" ? `run \`${call.command}\`` : call.tool;
   const choice = await vscode.window.showWarningMessage(
     `"${task.title}" wants to ${target}`,
-    { modal: true, detail: reason },
+    { modal: true, detail: preview ? `${reason}\n\n${preview.slice(0, 1500)}` : reason },
     "Allow once",
   );
   return choice === "Allow once";
+}
+
+/** Asks before each check command runs, unless commands are auto-approved. "Allow for this run" is kept per run. */
+function commandApprover(): (task: Task, check: CheckConfig) => Promise<boolean> {
+  const allowed = new Set<string>();
+  return async (task, check) => {
+    if (readPermissions().commands || allowed.has(check.command)) return true;
+    const choice = await vscode.window.showWarningMessage(
+      `"${task.title}" wants to run \`${check.command}\``,
+      { modal: true, detail: `Check "${check.name}". It runs inside the project folder only.` },
+      "Allow once",
+      "Allow for this run",
+    );
+    if (choice === "Allow for this run") allowed.add(check.command);
+    return choice !== undefined;
+  };
 }
 
 export function autoApproved(call: ToolCall): boolean {
@@ -135,6 +152,7 @@ export function registerRunCommands(
       signal: abort.signal,
       approveMerge,
       approveTool: hooks?.approveTool ?? approveTool,
+      approveCommand: hooks?.approveCommand ?? commandApprover(),
       askUser: hooks?.askUser,
       inbox: hooks?.inbox,
       askBeforeWrites: () => !readPermissions().editFiles,

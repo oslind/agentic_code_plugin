@@ -6,6 +6,10 @@ import { ChatController, ChatHost, RunHooks } from "../src/chat/chatController";
 import { CheckConfig } from "../src/checks/runner";
 import { DetectedCheck, detectChecks } from "../src/checks/detect";
 import { AutoApprove, checkToolCall } from "../src/tools/policy";
+import { commandLeavesProject } from "../src/tools/commandGuard";
+import { runAllChecks, runCheck } from "../src/checks/runner";
+import { previewChange } from "../src/worker/worker";
+import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
 import { buildCoordinatorMessages, coordinatorTurn, enforceMode } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
@@ -357,6 +361,57 @@ describe("ChatController", () => {
     expect(entries.some((e) => /Auto-approved/.test(e.text))).toBe(true);
   });
 
+  it("shows a file change before it is written, when edits are not auto-approved", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { editFiles: false },
+      during: async (hooks) => {
+        allowed = await hooks.approveTool({ id: "add-model", title: "Add model" } as never, "Edit 'src/a.ts'", { tool: "write_file", path: "src/a.ts", content: "x" }, "- old\n+ x");
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "approval");
+    expect(card).toMatchObject({ preview: "- old\n+ x", rememberable: false });
+    expect(card.text).toMatch(/Nothing is written until you allow it/);
+    await controller.decide(card.id, { kind: "deny" });
+    await sending;
+    expect(allowed).toBe(false);
+  });
+
+  it("asks before each check command runs when commands are not auto-approved, and can allow it for the run", async () => {
+    const results: boolean[] = [];
+    const task = { id: "add-model", title: "Add model" } as never;
+    const check = { name: "test", command: "npm test" };
+    const { controller } = setup(planReplies(), "act", {
+      during: async (hooks) => {
+        results.push(await hooks.approveCommand(task, check));
+        results.push(await hooks.approveCommand(task, check));
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "approval");
+    expect(card.text).toMatch(/npm test/);
+    expect(card.rememberLabel).toBe("Allow for the rest of this run");
+    await controller.decide(card.id, { kind: "allow", remember: true });
+    await sending;
+    // The second run of the same command in this run did not ask again.
+    expect(results).toEqual([true, true]);
+    const cards = (await controller.state()).current!.entries.filter((e) => e.kind === "approval");
+    expect(cards).toHaveLength(1);
+  });
+
+  it("runs check commands without asking when commands are auto-approved", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { commands: true },
+      during: async (hooks) => {
+        allowed = await hooks.approveCommand({ id: "add-model", title: "Add model" } as never, { name: "test", command: "npm test" });
+      },
+    });
+    await controller.send("add users");
+    expect(allowed).toBe(true);
+  });
+
   it("lets a sub-agent ask the user, and delivers direct messages on its next step", async () => {
     let answer = "";
     let inbox: string[] = [];
@@ -408,7 +463,9 @@ describe("permissions in the policy", () => {
     const ctx = { fileScope: ["src/**"], allowedChecks: [] };
     expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, ctx).verdict).toBe("allow");
     expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("ask");
-    expect(checkToolCall({ tool: "request_check", name: "t", command: "rm -rf /", reason: "" }, ctx).verdict).toBe("ask");
+    expect(checkToolCall({ tool: "request_check", name: "t", command: "make t", reason: "" }, ctx).verdict).toBe("ask");
+    // Commands that point outside the project are refused, not asked about.
+    expect(checkToolCall({ tool: "request_check", name: "t", command: "rm -rf /", reason: "" }, ctx).verdict).toBe("deny");
     // Workspace rules hold whatever is auto-approved.
     expect(checkToolCall({ tool: "write_file", path: "../x", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("deny");
   });
@@ -439,5 +496,40 @@ describe("describeOutcome", () => {
     expect(text).toMatch(/1 of 3 task\(s\) are done\. 1 failed\. 1 could not start/);
     expect(text).toMatch(/✕ Task b: Model gave up\./);
     expect(text).toMatch(/nothing to apply/);
+  });
+});
+
+describe("commands stay inside the project", () => {
+  it("allows ordinary project commands", () => {
+    for (const c of ["npm test", "npm run lint -- --fix", "python -m pytest tests/test_api.py -q", "cd web && npm test", "cargo test 2>/dev/null", "make test"]) {
+      expect(commandLeavesProject(c), c).toBeUndefined();
+    }
+  });
+  it("refuses commands that point outside it", () => {
+    for (const c of ["rm -rf /", "cat ../secret", "cd .. && ls", "ls ~", "cat ~/.ssh/id_rsa", "echo $HOME", "cat $(pwd)/../x", "ls `pwd`", "type C:\\x", "cp a /tmp/b", "sudo make install", "ssh host ls", "a\nb"]) {
+      expect(commandLeavesProject(c), c).toBeDefined();
+    }
+  });
+  it("the runner refuses such a command even if it was configured", async () => {
+    const res = await runCheck({ name: "bad", command: "cat ../x" }, dir);
+    expect(res).toMatchObject({ passed: false });
+    expect(res.output).toMatch(/Refused to run/);
+  });
+  it("a check the user does not approve is skipped, not run", async () => {
+    const res = await runAllChecks([{ name: "t", command: "node -e process.exit(1)" }], dir, undefined, async () => false);
+    expect(res).toEqual([expect.objectContaining({ name: "t", skipped: true, passed: true })]);
+  });
+});
+
+describe("previewChange", () => {
+  it("shows new files, replacements and edits as removed and added lines", async () => {
+    await fs.mkdir(path.join(dir, "p", "src"), { recursive: true });
+    await fs.writeFile(path.join(dir, "p", "src", "a.ts"), "one\ntwo\nthree\n");
+    const sandbox = await WorkspaceSandbox.create(path.join(dir, "p"));
+    expect(await previewChange({ tool: "write_file", path: "src/new.ts", content: "hi" }, sandbox)).toBe("New file:\n+ hi");
+    expect(await previewChange({ tool: "replace_in_file", path: "src/a.ts", search: "two", replace: "2" }, sandbox)).toBe("- two\n+ 2");
+    expect(await previewChange({ tool: "write_file", path: "src/a.ts", content: "one\n2\nthree\n" }, sandbox)).toBe("@@ line 2 @@\n- two\n+ 2");
+    // Nothing was written.
+    expect(await fs.readFile(path.join(dir, "p", "src", "a.ts"), "utf8")).toBe("one\ntwo\nthree\n");
   });
 });

@@ -1,4 +1,4 @@
-import { CheckConfig } from "../checks/runner";
+import { ApproveCommand, CheckConfig } from "../checks/runner";
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { Task } from "../state/types";
@@ -19,7 +19,10 @@ export interface WorkerOptions {
   maxTurns?: number;
   signal?: AbortSignal;
   /** Asks the user about a call the policy flags. Resolves true to allow it. */
-  approve: (reason: string, call: ToolCall) => Promise<boolean>;
+  /** Asks the user about a call the policy flagged. `preview` shows a file change before it is made. */
+  approve: (reason: string, call: ToolCall, preview?: string) => Promise<boolean>;
+  /** Asks before a check command runs. Without it, approved checks run freely. */
+  approveCommand?: ApproveCommand;
   log: (type: string, message: string, data?: Record<string, unknown>) => void;
   /**
    * A research worker: it may only read, and its finish summary is its report.
@@ -163,7 +166,9 @@ export class Worker {
         this.messages.push({ role: "user", content: `Not allowed: ${decision.reason}` });
         continue;
       }
-      if (decision.verdict === "ask" && !(await this.opts.approve(decision.reason, turn.call))) {
+      // A file change is shown before it is made; nothing is written until it is approved.
+      const preview = decision.verdict === "ask" ? await previewChange(turn.call, this.opts.sandbox) : undefined;
+      if (decision.verdict === "ask" && !(await this.opts.approve(decision.reason, turn.call, preview))) {
         this.opts.log("denied", `User declined: ${decision.reason}`, { call: turn.call });
         this.messages.push({ role: "user", content: `The user declined this change: ${decision.reason}. Find another way or finish.` });
         continue;
@@ -197,12 +202,54 @@ export class Worker {
         }
       }
       const call = turn.call.tool === "request_check" ? { tool: "run_check" as const, name: turn.call.name } : turn.call;
+      if (call.tool === "run_check" && this.opts.approveCommand) {
+        // A new command was just approved above; any other check run is asked about now, before it runs.
+        const justApproved = turn.call.tool === "request_check" && decision.verdict === "ask";
+        const check = this.checks.find((c) => c.name === call.name);
+        if (check && !justApproved && !(await this.opts.approveCommand(check))) {
+          this.opts.log("denied", `User declined running ${check.command}`, { call: turn.call });
+          this.messages.push({ role: "user", content: `The user did not allow running \`${check.command}\` now. Continue without it, or finish.` });
+          continue;
+        }
+      }
       const outcome = await executeTool(call, { sandbox: this.opts.sandbox, checks: this.checks, signal });
       if (outcome.wrote) this.changed.add(outcome.wrote);
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });
     }
     throw new WorkerError(`Task ${task.id} did not finish within ${maxTurns} turns`);
   }
+}
+
+/** What a file change will do, for the approval card. Small enough to read; long changes are cut. */
+export async function previewChange(call: ToolCall, sandbox: WorkspaceSandbox, max = 6000): Promise<string | undefined> {
+  if (call.tool !== "write_file" && call.tool !== "replace_in_file") return undefined;
+  const before = await sandbox.readFile(call.path).catch(() => undefined);
+  let text: string;
+  if (call.tool === "replace_in_file") {
+    text = [...call.search.split("\n").map((l) => `- ${l}`), ...call.replace.split("\n").map((l) => `+ ${l}`)].join("\n");
+  } else if (before === undefined) {
+    text = `New file:\n${call.content.split("\n").map((l) => `+ ${l}`).join("\n")}`;
+  } else {
+    text = lineDiff(before, call.content);
+  }
+  return text.length > max ? `${text.slice(0, max)}\n[… cut, ${text.length - max} more characters]` : text;
+}
+
+/** A plain line diff: unchanged lines at the start and end are trimmed, the middle is shown as removed then added. */
+function lineDiff(before: string, after: string): string {
+  const a = before.split("\n");
+  const b = after.split("\n");
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  if (start === endA && start === endB) return "No change.";
+  const head = start > 0 ? [`@@ line ${start + 1} @@`] : [];
+  return [...head, ...a.slice(start, endA).map((l) => `- ${l}`), ...b.slice(start, endB).map((l) => `+ ${l}`)].join("\n");
 }
 
 /** Thinking can be long; keep enough to follow along without bloating the log. */

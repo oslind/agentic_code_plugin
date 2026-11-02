@@ -257,6 +257,7 @@
       head,
       thoughtLine(entry),
       el("div", { class: "msg-text" }, entry.text),
+      entry.preview ? el("pre", { class: "change-preview" }, entry.preview) : null,
       thinkingBlock(entry),
       kind === "plan" || kind === "research" ? planCard(entry) : null,
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
@@ -421,7 +422,7 @@
     if (!isWaiting(entry)) return decidedLine(entry);
     return el("div", { class: "row" },
       el("button", { class: "primary", onclick: () => decide(entry, { kind: "allow" }) }, "Allow"),
-      entry.rememberable ? el("button", { class: "secondary", onclick: () => decide(entry, { kind: "allow", remember: true }) }, "Allow and remember for this folder") : null,
+      entry.rememberable ? el("button", { class: "secondary", onclick: () => decide(entry, { kind: "allow", remember: true }) }, entry.rememberLabel || "Allow and remember for this folder") : null,
       el("button", { class: "secondary", onclick: () => decide(entry, { kind: "deny" }) }, "Deny"),
     );
   }
@@ -451,9 +452,9 @@
 
   let permsOpen = !!saved.permsOpen;
   const PERMS = [
-    ["editFiles", "Edit files", "Sub-agents edit files in their own task's scope without asking."],
+    ["editFiles", "Edit files", "Sub-agents edit files in their own task's scope without asking. When off, each change is shown to you first and only written if you allow it."],
     ["sensitiveFiles", "Sensitive files", "package.json, lockfiles and CI files."],
-    ["commands", "Commands", "Checks a sub-agent asks to run."],
+    ["commands", "Run commands", "Check commands (tests, lint, ...) run without asking. When off, each command is shown to you first and only runs if you allow it. Commands always run inside the project folder."],
     ["merges", "Merges", "Verified work into the run's integration branch. Your own branch always asks."],
   ];
 

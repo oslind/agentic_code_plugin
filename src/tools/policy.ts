@@ -1,5 +1,6 @@
 import { matchesAny, normalizeWorkspacePath } from "./paths";
 import { ToolCall } from "./protocol";
+import { commandLeavesProject } from "./commandGuard";
 
 export interface PolicyContext {
   /** Globs the task may write, from its plan entry. */
@@ -31,11 +32,14 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "finish":
     case "ask_user":
       return { verdict: "allow" };
-    case "request_check":
+    case "request_check": {
+      const outside = commandLeavesProject(call.command);
+      if (outside) return { verdict: "deny", reason: `The command \`${call.command}\` is not allowed. ${outside} Commands run in the project folder.` };
       // A new command always needs the user's go-ahead; workers cannot run commands on their own.
       return ctx.allowedChecks.includes(call.name) && ctx.knownCommands?.get(call.name) === call.command
         ? { verdict: "allow" }
         : { verdict: "ask", reason: `Run the command \`${call.command}\` as check "${call.name}": ${call.reason}` };
+    }
     case "run_check":
       return ctx.allowedChecks.includes(call.name)
         ? { verdict: "allow" }

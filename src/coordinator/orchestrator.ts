@@ -39,7 +39,10 @@ export interface OrchestratorOptions {
   signal?: AbortSignal;
   /** The user's go-ahead before a task's work is merged. Resolves true to merge. */
   approveMerge: (request: MergeRequest) => Promise<boolean>;
-  approveTool: (task: Task, reason: string, call: ToolCall) => Promise<boolean>;
+  /** The user's go-ahead for a call the policy flagged. `preview` shows a file change before it is made. */
+  approveTool: (task: Task, reason: string, call: ToolCall, preview?: string) => Promise<boolean>;
+  /** Asked before every check command runs, including verification. Without it, approved checks run freely. */
+  approveCommand?: (task: Task, check: CheckConfig) => Promise<boolean>;
   /** Lets a sub-agent ask the user a question. Without it, sub-agents decide on their own. */
   askUser?: (task: Task, question: string) => Promise<string>;
   /** Messages the user sent directly to a sub-agent. Each call drains them. */
@@ -81,8 +84,8 @@ export function integrationBranchFor(runId: string): string {
 export class Orchestrator {
   private readonly git: Git;
   private readonly mergeLock = new Mutex();
-  private readonly o: Required<Omit<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites">> &
-    Pick<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites">;
+  private readonly o: Required<Omit<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites" | "approveCommand">> &
+    Pick<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites" | "approveCommand">;
   private readonly taskControllers = new Map<string, AbortController>();
   private root = "";
   private integrationDir = "";
@@ -233,7 +236,8 @@ export class Orchestrator {
         checks: this.o.checks,
         maxTurns: this.o.maxTurns,
         signal,
-        approve: (reason, call) => this.o.approveTool(task, reason, call),
+        approve: (reason, call, preview) => this.o.approveTool(task, reason, call, preview),
+        approveCommand: this.o.approveCommand && ((check) => this.o.approveCommand!(task, check)),
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
         inbox: this.o.inbox && (() => this.o.inbox!(task.id)),
         askBeforeWrites: this.o.askBeforeWrites?.() ?? false,
@@ -246,7 +250,7 @@ export class Orchestrator {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the configured checks decide.
         // The configured checks plus any the user approved for this task.
-        checks = await runAllChecks(worker.checks, dir, signal);
+        checks = await runAllChecks(worker.checks, dir, signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)));
         signal.throwIfAborted();
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });
@@ -356,7 +360,7 @@ export class Orchestrator {
         throw new OrchestratorError(`Merge conflict in ${conflicts.join(", ")}. The branch ${branch} is kept for recovery.`);
       }
       // Each task passed on its own; the combination must pass too.
-      const checks = await runAllChecks(this.o.checks, this.integrationDir, this.o.signal);
+      const checks = await runAllChecks(this.o.checks, this.integrationDir, this.o.signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)));
       const failed = checks.filter((c) => !c.passed);
       if (failed.length) {
         await git.resetHard(before);

@@ -677,3 +677,15 @@ pre.thinking-text {
 .perm-note {
   padding: 2px 0 0 12px;
 }
+
+pre.change-preview {
+  margin: 6px 0;
+  padding: 6px 8px;
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+  white-space: pre;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+}

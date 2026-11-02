@@ -235,7 +235,7 @@
         "agentic.autoApprove.editFiles": {
           "type": "boolean",
           "default": true,
-          "description": "Sub-agents edit files in their own task's scope without asking. Turn off to approve every edit. Files outside the workspace, .git, secrets and .agentic are never writable."
+          "description": "Sub-agents edit files in their own task's scope without asking. Turn off to see each change first; nothing is written until you allow it. Files outside the workspace, .git, secrets and .agentic are never writable."
         },
         "agentic.autoApprove.sensitiveFiles": {
           "type": "boolean",
@@ -245,7 +245,7 @@
         "agentic.autoApprove.commands": {
           "type": "boolean",
           "default": false,
-          "description": "Commands a sub-agent requests as a check run without asking. They still run only inside the sub-agent's worktree in the open folder."
+          "description": "Check commands (tests, lint, and ones a sub-agent requests) run without asking. Turn off to see each command first; nothing runs until you allow it. Commands always run inside the open folder, and commands that point outside it are refused."
         },
         "agentic.autoApprove.merges": {
           "type": "boolean",

@@ -9,6 +9,7 @@ import { CheckConfig } from "../checks/runner";
 import { DetectedCheck } from "../checks/detect";
 import { ToolCall } from "../tools/protocol";
 import { AutoApprove, isAutoApproved } from "../tools/policy";
+import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { coordinatorTurn, CoordinatorResult, researchQuestions } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
@@ -53,7 +54,9 @@ export interface ChatHost {
 export interface RunHooks {
   /** The checks approved for this run. They replace the settings for it. */
   checks: CheckConfig[];
-  approveTool: (task: Task, reason: string, call: ToolCall) => Promise<boolean>;
+  approveTool: (task: Task, reason: string, call: ToolCall, preview?: string) => Promise<boolean>;
+  /** Asked before every check command runs, unless commands are auto-approved. */
+  approveCommand: (task: Task, check: CheckConfig) => Promise<boolean>;
   askUser: (task: Task, question: string) => Promise<string>;
   inbox: (taskId: string) => string[];
 }
@@ -129,6 +132,8 @@ export class ChatController {
   private readonly pending = new Map<string, { conversationId: string; resolve: (d: Decision | undefined) => void }>();
   /** Messages the user sent to a sub-agent, waiting for its next step. Keyed by run and task. */
   private readonly inboxes = new Map<string, string[]>();
+  /** Commands the user allowed for the rest of a run, keyed by run id. */
+  private readonly allowedCommands = new Map<string, Set<string>>();
 
   constructor(
     private readonly conversations: ConversationStore,
@@ -290,7 +295,7 @@ export class ChatController {
           ? "Run without checks"
           : decision.kind === "allow"
             ? decision.remember
-              ? "Allowed and saved for this folder"
+              ? "Allowed and remembered"
               : "Allowed"
             : decision.kind === "deny"
               ? "Denied"
@@ -322,6 +327,12 @@ export class ChatController {
     return messages;
   }
 
+  private allowedFor(runId: string): Set<string> {
+    let set = this.allowedCommands.get(runId);
+    if (!set) this.allowedCommands.set(runId, (set = new Set()));
+    return set;
+  }
+
   private hooksFor(conversationId: string, runId: string, checks: CheckConfig[], workspaceRoot: string): RunHooks {
     return {
       checks,
@@ -337,7 +348,7 @@ export class ChatController {
         });
         return decision?.kind === "answer" ? decision.text : "The user did not answer. Make a reasonable choice and say which in your summary.";
       },
-      approveTool: async (task, reason, call) => {
+      approveTool: async (task, reason, call, preview) => {
         if (isAutoApproved(call, this.host.permissions())) {
           await this.append(conversationId, {
             author: "system",
@@ -347,21 +358,43 @@ export class ChatController {
           });
           return true;
         }
+        const isCommand = call.tool === "request_check";
         const { decision } = await this.waitFor(conversationId, {
           author: "agent",
           kind: "approval",
           runId,
           taskId: task.id,
           agentName: task.title,
-          rememberable: call.tool === "request_check",
-          text: call.tool === "request_check" ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason}` : reason,
+          rememberable: isCommand,
+          rememberLabel: isCommand ? "Allow, and keep it for this folder" : undefined,
+          preview,
+          text: isCommand
+            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} It runs inside the project folder only, and nothing runs until you allow it.`
+            : `${reason}. Nothing is written until you allow it.`,
         });
         if (decision?.kind !== "allow") return false;
-        if (decision.remember && call.tool === "request_check") {
+        if (decision.remember && isCommand) {
           const info = await this.host.checksFor(workspaceRoot);
           const base = (info.saved ?? info.defaults).filter((c) => c.name !== call.name);
           await this.host.saveChecks(workspaceRoot, [...base, { name: call.name, command: call.command }]);
+          this.allowedFor(runId).add(call.command);
         }
+        return true;
+      },
+      approveCommand: async (task, check) => {
+        if (this.host.permissions().commands || this.allowedFor(runId).has(check.command)) return true;
+        const { decision } = await this.waitFor(conversationId, {
+          author: "agent",
+          kind: "approval",
+          runId,
+          taskId: task.id,
+          agentName: task.title,
+          rememberable: true,
+          rememberLabel: "Allow for the rest of this run",
+          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. It runs inside the project folder only. Turn on "Run commands" to stop being asked.`,
+        });
+        if (decision?.kind !== "allow") return false;
+        if (decision.remember) this.allowedFor(runId).add(check.command);
         return true;
       },
     };
@@ -404,7 +437,16 @@ export class ChatController {
         : "I found no test, lint or type-check commands for this project. Add the ones you use, or run without checks. Sub-agents can also ask you for checks while they work.",
     });
     if (!decision || (decision.kind !== "checks" && decision.kind !== "skip")) return undefined;
-    const checks = decision.kind === "checks" ? decision.checks.filter((c) => c.name.trim() && c.command.trim()) : [];
+    const entered = decision.kind === "checks" ? decision.checks.filter((c) => c.name.trim() && c.command.trim()) : [];
+    const refused = entered.filter((c) => commandLeavesProject(c.command));
+    const checks = entered.filter((c) => !refused.includes(c));
+    for (const c of refused) {
+      await this.append(conversationId, {
+        author: "system",
+        tone: "warning",
+        text: `The check "${c.name}" (\`${c.command}\`) was left out: ${commandLeavesProject(c.command)} Commands always run inside the project folder.`,
+      });
+    }
     if (decision.kind === "checks" && decision.remember) await this.host.saveChecks(workspaceRoot, checks);
     return checks;
   }
