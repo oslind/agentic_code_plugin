@@ -146,15 +146,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     const json = (await res.json()) as {
-      choices?: { message?: { content?: string | null } }[];
+      choices?: { message?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }[];
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
       throw new ProviderError("Model server returned no message content", res.status, true);
     }
+    const message = json.choices?.[0]?.message;
+    const reasoning = message?.reasoning ?? message?.reasoning_content ?? undefined;
     return {
       content,
+      reasoning: reasoning || undefined,
       promptTokens: json.usage?.prompt_tokens,
       completionTokens: json.usage?.completion_tokens,
     };

@@ -46,6 +46,12 @@ export interface ChatViewState {
   runningRunId?: string;
 }
 
+/** Thinking can be long; keep enough to follow along. */
+function clip(text: string | undefined, max = 4000): string | undefined {
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max)}\n[… cut]` : text;
+}
+
 function title(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat || "New task";
@@ -221,16 +227,21 @@ export class ChatController {
         { mode: this.mode, entries: c.entries, fileTree, pendingPlan: pending && describePlan(pending) },
         { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
       );
-      await this.append(c.id, { author: "coordinator", text: turn.reply });
+      await this.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 
       if (turn.action === "plan") {
         this.busy = "Coordinator is splitting the work into sub-agent tasks…";
         this.changed();
+        let planThinking: string | undefined;
         const result = await planRequest(
           provider,
           { request: turn.request, fileTree },
-          { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`) },
+          {
+            signal: abort.signal,
+            onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
+            onThinking: (t) => (planThinking = t),
+          },
         );
         const run = await this.tasks.createRun(turn.request, c.workspaceRoot);
         this.runOwner.set(run.id, c.id);
@@ -244,6 +255,7 @@ export class ChatController {
           author: "coordinator",
           kind: "plan",
           runId: run.id,
+          thinking: clip(planThinking),
           text:
             this.mode === "act"
               ? `Plan: ${n} task(s), each for one sub-agent. Starting now.`
@@ -303,7 +315,7 @@ export class ChatController {
         kind: "outcome",
         runId,
         tone: ok ? "success" : "warning",
-        text: `Run finished: ${parts.join(", ")}. The work is on ${outcome.integrationBranch}. Your branch is unchanged until you apply it.`,
+        text: `Run finished: ${parts.join(", ")}. The work is on ${outcome.integrationBranch}. Your branch is unchanged until you apply it.${await this.reports(runId)}`,
       });
     } catch (err) {
       this.host.log("error", (err as Error).message);
@@ -313,6 +325,20 @@ export class ChatController {
       this.busy = undefined;
       this.changed();
     }
+  }
+
+  /**
+   * What each sub-agent reported back, added to the run summary. The summary
+   * is a coordinator message, so the coordinator sees the reports next turn.
+   */
+  private async reports(runId: string): Promise<string> {
+    const run = await this.tasks.load(runId).catch(() => undefined);
+    if (!run) return "";
+    const lines = run.tasks.map((t) => {
+      const said = t.summary ?? t.error ?? "no report";
+      return `- ${t.title} (${t.status.replace("_", " ")}): ${said.replace(/\s+/g, " ").slice(0, 300)}`;
+    });
+    return `\n\nReports from the sub-agents:\n${lines.join("\n")}`;
   }
 
   private async onRunEvent(event: RunEvent): Promise<void> {

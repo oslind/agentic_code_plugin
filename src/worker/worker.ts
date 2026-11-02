@@ -87,9 +87,17 @@ export class Worker {
       signal?.throwIfAborted();
       this.turns++;
       const context = compactHistory(this.messages, provider.contextWindow - REPLY_RESERVE);
-      const turn = await callStructured({ provider, messages: context, schema: workerTurnSchema, schemaName: "worker_turn", signal });
+      let thinking: string | undefined;
+      const turn = await callStructured({
+        provider,
+        messages: context,
+        schema: workerTurnSchema,
+        schemaName: "worker_turn",
+        signal,
+        onThinking: (t) => (thinking = t),
+      });
       this.messages.push({ role: "assistant", content: JSON.stringify(turn) });
-      this.opts.log("tool_call", turn.call.tool, { thought: turn.thought, call: turn.call });
+      this.opts.log("tool_call", turn.call.tool, { thought: turn.thought, call: turn.call, thinking: clip(thinking) });
 
       const key = JSON.stringify(turn.call);
       repeats = key === lastCall ? repeats + 1 : 0;
@@ -120,4 +128,10 @@ export class Worker {
     }
     throw new WorkerError(`Task ${task.id} did not finish within ${maxTurns} turns`);
   }
+}
+
+/** Thinking can be long; keep enough to follow along without bloating the log. */
+function clip(text: string | undefined, max = 4000): string | undefined {
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max)}\n[… cut]` : text;
 }

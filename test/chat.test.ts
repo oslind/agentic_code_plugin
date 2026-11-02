@@ -6,6 +6,7 @@ import { ChatController, ChatHost } from "../src/chat/chatController";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
 import { buildCoordinatorMessages, coordinatorTurn, enforceMode } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
+import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
 import { RunOutcome } from "../src/coordinator/orchestrator";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
@@ -114,6 +115,21 @@ describe("coordinator turn", () => {
   });
 });
 
+describe("thinking", () => {
+  it("takes thinking from the server's reasoning field or from <think> blocks", () => {
+    expect(extractThinking('{"a":1}', "I should answer.")).toBe("I should answer.");
+    expect(extractThinking('<think>Plan it first.</think>{"a":1}')).toBe("Plan it first.");
+    expect(extractThinking('{"a":1}')).toBeUndefined();
+  });
+
+  it("returns the coordinator's thought and thinking with its turn", async () => {
+    const p = scripted([`<think>The user wants a rename.</think>${JSON.stringify({ thought: "Clear enough to delegate.", reply: "Delegating.", action: "plan", request: "Rename foo to bar in src/foo.ts" })}`]);
+    const result = await coordinatorTurn(p, { mode: "plan", entries: [{ id: "1", time: "", author: "user", text: "rename" }] });
+    expect(result.thought).toBe("Clear enough to delegate.");
+    expect(result.thinking).toBe("The user wants a rename.");
+  });
+});
+
 describe("eventToEntry", () => {
   const tasks = [{ id: "t1", title: "Add model", instructions: "", dependsOn: [], fileScope: ["src/a.ts"], status: "running" as const, attempts: 1, createdAt: "", updatedAt: "" }];
 
@@ -123,6 +139,20 @@ describe("eventToEntry", () => {
       tasks,
     );
     expect(e).toMatchObject({ author: "agent", agentName: "Add model", text: "Look at the file first.", tag: "read_file src/a.ts" });
+  });
+
+  it("marks a sub-agent start as the coordinator starting a sub-agent", () => {
+    const e = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "status", message: "running" }, tasks);
+    expect(e).toMatchObject({ author: "coordinator", kind: "spawn", taskId: "t1", agentName: "Add model" });
+    expect(e!.text).toMatch(/src\/a\.ts/);
+  });
+
+  it("shows a sub-agent's finish as its report to the coordinator, with its thinking", () => {
+    const e = eventToEntry(
+      { time: "", runId: "r", taskId: "t1", type: "tool_call", message: "finish", data: { thought: "All done.", thinking: "Checked everything.", call: { tool: "finish", summary: "Added the User type." } } },
+      tasks,
+    );
+    expect(e).toMatchObject({ author: "agent", kind: "report", text: "Added the User type.", thinking: "Checked everything." });
   });
 
   it("ignores bookkeeping events", () => {
@@ -185,6 +215,7 @@ describe("ChatController", () => {
     const entries = (await controller.state()).current!.entries;
     expect(entries.some((e) => e.author === "agent" && e.text === "Writing the model." && e.agentName === "Add model")).toBe(true);
     expect(entries.at(-1)).toMatchObject({ kind: "outcome", tone: "success" });
+    expect(entries.at(-1)!.text).toMatch(/Reports from the sub-agents:\n- Add model/);
   });
 
   it("a coordinator asking to run in Plan mode runs nothing", async () => {

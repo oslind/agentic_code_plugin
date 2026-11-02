@@ -39,7 +39,7 @@
 
   function saveDraft(value) {
     draft = value;
-    vscode.setState({ draft });
+    persist();
   }
 
   function timeLabel(iso) {
@@ -192,6 +192,34 @@
     );
   }
 
+  // Which collapsible parts are open, so re-rendering does not close them.
+  const open = new Set(Array.isArray(saved.open) ? saved.open : []);
+  let agentsCollapsed = !!saved.agentsCollapsed;
+
+  function persist() {
+    vscode.setState({ draft, open: [...open].slice(-50), agentsCollapsed });
+  }
+
+  function details(key, label, body, cls) {
+    const d = el("details", { class: cls || "thinking", open: open.has(key) }, el("summary", {}, label), body);
+    d.addEventListener("toggle", () => {
+      if (d.open) open.add(key);
+      else open.delete(key);
+      persist();
+    });
+    return d;
+  }
+
+  function thinkingBlock(entry) {
+    if (!entry.thinking) return null;
+    return details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking));
+  }
+
+  function thoughtLine(entry) {
+    if (!entry.thought || entry.thought === entry.text) return null;
+    return el("div", { class: "thought" }, el("span", { class: "thought-icon" }, "💭 "), entry.thought);
+  }
+
   function message(entry) {
     const who = {
       user: "You",
@@ -199,21 +227,110 @@
       agent: entry.agentName || "Sub-agent",
       system: "Agentic",
     }[entry.author];
+    const kind = entry.kind || "message";
+    let label = entry.author === "agent" ? "↳ " + who : who;
+    if (kind === "spawn") label = "Coordinator ⇢ new sub-agent";
+    if (kind === "report") label = "↩ " + who + " reports to the coordinator";
     const head = el(
       "div",
       { class: "msg-head" },
-      el("span", { class: "who" }, entry.author === "agent" ? "↳ " + who : who),
-      entry.tag ? el("span", { class: "tag" }, entry.tag) : null,
+      el("span", { class: "who" }, label),
+      entry.tag && kind !== "spawn" && kind !== "report" ? el("span", { class: "tag" }, entry.tag) : null,
       el("span", { class: "time" }, timeLabel(entry.time)),
     );
     return el(
       "div",
-      { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${entry.kind || "message"}` },
+      { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${kind}` },
       head,
+      thoughtLine(entry),
       el("div", { class: "msg-text" }, entry.text),
-      entry.kind === "plan" ? planCard(entry) : null,
-      entry.kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
+      thinkingBlock(entry),
+      kind === "plan" ? planCard(entry) : null,
+      kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
     );
+  }
+
+  // ---- live agents panel: who is working and what each one last thought ----
+
+  function lastWhere(entries, pred) {
+    for (let i = entries.length - 1; i >= 0; i--) if (pred(entries[i])) return entries[i];
+    return undefined;
+  }
+
+  function agentRow(key, icon, iconCls, name, status, latest) {
+    const said = latest ? latest.thought || latest.text : "";
+    const row = el(
+      "div",
+      { class: "agent-row" },
+      el("span", { class: "agent-icon " + iconCls }, icon),
+      el("span", { class: "agent-name" }, name),
+      el("span", { class: "agent-status" }, status),
+    );
+    const body = el(
+      "div",
+      { class: "agent-latest" },
+      said ? el("div", { class: "agent-thought" }, said) : el("div", { class: "muted" }, "Nothing yet."),
+      latest && latest.thinking ? details("a:" + key + ":" + latest.id, "Latest thinking", el("pre", { class: "thinking-text" }, latest.thinking)) : null,
+    );
+    return el("div", { class: "agent" }, row, body);
+  }
+
+  function agentsPanel() {
+    const c = state.current;
+    const planEntry = lastWhere(c.entries, (e) => e.kind === "plan");
+    const plan = planEntry && state.plans[planEntry.runId];
+    const coordinatorBusy = !!state.busy && !state.runningRunId;
+    const lastCoordinator =
+      lastWhere(c.entries, (e) => e.author === "coordinator" && (e.thought || e.thinking)) ||
+      lastWhere(c.entries, (e) => e.author === "coordinator" && e.kind !== "spawn");
+    const rows = [
+      agentRow(
+        "coordinator",
+        coordinatorBusy ? "" : "●",
+        coordinatorBusy ? "spinner" : "coordinator-dot",
+        "Coordinator",
+        coordinatorBusy ? "thinking…" : state.runningRunId ? "waiting for sub-agents" : "idle",
+        lastCoordinator,
+      ),
+    ];
+    let working = 0;
+    if (plan) {
+      for (const t of plan.tasks) {
+        const active = t.status === "running" || t.status === "verifying";
+        if (active) working++;
+        const latest = lastWhere(c.entries, (e) => e.taskId === t.id && e.runId === planEntry.runId && e.author === "agent");
+        rows.push(
+          agentRow(
+            t.id,
+            active ? "" : STATUS_ICON[t.status] || "○",
+            active ? "spinner" : "status-" + t.status,
+            t.title,
+            t.status === "pending" ? (plan.started ? "waiting" : "not started") : t.status.replace("_", " "),
+            latest,
+          ),
+        );
+      }
+    }
+    const summary = plan ? `Agents · ${working} of ${plan.tasks.length} sub-agent(s) working` : "Agents";
+    const panel = el(
+      "div",
+      { class: "agents " + (agentsCollapsed ? "collapsed" : "") },
+      el(
+        "button",
+        {
+          class: "agents-head",
+          "aria-expanded": agentsCollapsed ? "false" : "true",
+          onclick: () => {
+            agentsCollapsed = !agentsCollapsed;
+            persist();
+            render();
+          },
+        },
+        (agentsCollapsed ? "▸ " : "▾ ") + summary,
+      ),
+      agentsCollapsed ? null : el("div", { class: "agents-body" }, rows),
+    );
+    return panel;
   }
 
   function welcome() {
@@ -265,6 +382,7 @@
       "div",
       { class: "conversation" },
       el("div", { class: "conv-title", title: c.workspaceRoot }, c.title, el("span", { class: "muted" }, ` · ${folderName(c.workspaceRoot)}`)),
+      agentsPanel(),
       list,
     );
   }

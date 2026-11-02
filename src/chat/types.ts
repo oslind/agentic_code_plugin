@@ -13,7 +13,7 @@ export interface ChatEntry {
   author: ChatAuthor;
   text: string;
   /** What the entry shows besides its text. A plan or outcome entry refers to a run. */
-  kind?: "message" | "plan" | "outcome" | "error";
+  kind?: "message" | "plan" | "outcome" | "error" | "spawn" | "report";
   runId?: string;
   /** For agent entries: the task the sub-agent works on. */
   taskId?: string;
@@ -21,6 +21,10 @@ export interface ChatEntry {
   /** Short label such as the tool a sub-agent called. */
   tag?: string;
   tone?: "info" | "success" | "warning" | "error";
+  /** The agent's own one-line reason for what it did. */
+  thought?: string;
+  /** The model's full thinking for this step, when it produced any. Shown collapsed. */
+  thinking?: string;
 }
 
 export interface Conversation {

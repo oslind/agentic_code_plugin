@@ -242,7 +242,7 @@
         },
         {
           "id": "agentic.tasks",
-          "name": "Tasks",
+          "name": "Run history (advanced)",
           "visibility": "collapsed"
         }
       ]

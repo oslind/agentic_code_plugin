@@ -59,7 +59,7 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
 export async function planRequest(
   provider: ModelProvider,
   input: PlanInput,
-  options: { signal?: AbortSignal; onAttempt?: (n: number, error?: string) => void } = {},
+  options: { signal?: AbortSignal; onAttempt?: (n: number, error?: string) => void; onThinking?: (thinking: string) => void } = {},
 ): Promise<PlanResult> {
   const { messages, dropped } = buildPlannerMessages(input, provider.contextWindow);
   const plan = await callStructured({
@@ -70,6 +70,7 @@ export async function planRequest(
     maxRetries: 3,
     signal: options.signal,
     onAttempt: options.onAttempt,
+    onThinking: options.onThinking,
   });
   const repaired = repairPlan(plan);
   return { ...repaired, droppedContext: dropped };

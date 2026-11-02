@@ -11,6 +11,7 @@ import { ChatEntry, ChatMode } from "./types";
  */
 export const coordinatorTurnSchema = z
   .object({
+    thought: z.string().max(600).optional().describe("One or two sentences on what you are deciding and why. Shown to the user."),
     reply: z
       .string()
       .min(1)
@@ -46,7 +47,7 @@ const MODE_RULES: Record<ChatMode, string> = {
 };
 
 const EXAMPLE = `Reply with JSON only, for example:
-{"reply":"I'll have the sub-agents add the toggle and its setting.","action":"plan","request":"Add a dark mode toggle to the settings page in src/settings.tsx and persist the choice in src/prefs.ts."}`;
+{"thought":"The request is clear and touches two files, so I will delegate it.","reply":"I'll have the sub-agents add the toggle and its setting.","action":"plan","request":"Add a dark mode toggle to the settings page in src/settings.tsx and persist the choice in src/prefs.ts."}`;
 
 export interface CoordinatorContext {
   mode: ChatMode;
@@ -64,7 +65,8 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(system);
 
   const history: ChatMessage[] = [];
-  const turns = ctx.entries.filter((e) => e.author === "user" || e.author === "coordinator");
+  // Sub-agent starts are shown to the user but would only crowd the coordinator's context.
+  const turns = ctx.entries.filter((e) => (e.author === "user" || e.author === "coordinator") && e.kind !== "spawn");
   for (let i = turns.length - 1; i >= 0; i--) {
     const e = turns[i]!;
     const msg: ChatMessage = e.author === "user" ? { role: "user", content: e.text } : { role: "assistant", content: e.text };
@@ -89,6 +91,8 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
 }
 
 export interface CoordinatorResult extends CoordinatorTurn {
+  /** The model's full thinking, when it produced any. */
+  thinking?: string;
   /** Set when the model asked for something the mode does not allow and it was changed. */
   overridden?: string;
 }
@@ -102,8 +106,10 @@ export async function coordinatorTurn(
   ctx: CoordinatorContext,
   options: { signal?: AbortSignal; onAttempt?: (n: number, error?: string) => void } = {},
 ): Promise<CoordinatorResult> {
+  let thinking: string | undefined;
   const turn = await callStructured({
     provider,
+    onThinking: (t) => (thinking = t),
     messages: buildCoordinatorMessages(ctx, provider.contextWindow),
     schema: coordinatorTurnSchema,
     schemaName: "coordinator_turn",
@@ -111,7 +117,7 @@ export async function coordinatorTurn(
     signal: options.signal,
     onAttempt: options.onAttempt,
   });
-  return enforceMode(turn, ctx.mode, ctx.pendingPlan !== undefined);
+  return { ...enforceMode(turn, ctx.mode, ctx.pendingPlan !== undefined), thinking };
 }
 
 export function enforceMode(turn: CoordinatorTurn, mode: ChatMode, hasPendingPlan: boolean): CoordinatorResult {
