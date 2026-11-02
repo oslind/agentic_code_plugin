@@ -727,3 +727,34 @@ pre.change-preview {
   color: var(--vscode-editorWarning-foreground);
   margin: 4px 0;
 }
+
+/* receipt of touched files */
+.files-body {
+  padding: 0 8px 6px;
+}
+.files .file-group-name {
+  font-weight: 600;
+  margin-top: 6px;
+}
+.review .file-status {
+  font-size: 0.9em;
+}
+.review li.status-pending .file-status {
+  color: var(--vscode-editorWarning-foreground);
+}
+.review li.status-accepted .file-status {
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+.review li.status-rejected .file-status {
+  color: var(--vscode-descriptionForeground);
+}
+button.mini {
+  padding: 1px 6px;
+  font-size: 0.85em;
+}
+.agent-files ul.changes {
+  margin: 2px 0 4px;
+}
+.agents.files {
+  max-height: 30%;
+}

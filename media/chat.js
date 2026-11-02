@@ -248,9 +248,11 @@
   // Which collapsible parts are open, so re-rendering does not close them.
   const open = new Set(Array.isArray(saved.open) ? saved.open : []);
   let agentsCollapsed = !!saved.agentsCollapsed;
+  let filesCollapsed = !!saved.filesCollapsed;
+  let filesBy = saved.filesBy === "agent" ? "agent" : "file";
 
   function persist() {
-    vscode.setState({ draft, open: [...open].slice(-50), agentsCollapsed, permsOpen });
+    vscode.setState({ draft, open: [...open].slice(-50), agentsCollapsed, filesCollapsed, filesBy, permsOpen });
   }
 
   function details(key, label, body, cls) {
@@ -339,6 +341,96 @@
     return el("div", { class: "agent" }, row, body);
   }
 
+  // ---- receipt of every file the sub-agents touched in this conversation ----
+
+  /** Every proposed change in this conversation, oldest run first, with the run it belongs to. */
+  function allChanges() {
+    const out = [];
+    for (const [runId, plan] of Object.entries(state.plans || {})) {
+      for (const c of plan.changes || []) out.push({ ...c, runId });
+    }
+    return out;
+  }
+
+  function changeStatusText(c) {
+    return c.status === "accepted" && c.auto ? "written (auto-approved)" : STATUS_LABEL[c.status];
+  }
+
+  /** One file in the receipt: click the name to open it (a new file) or its side-by-side diff (an edit). */
+  function fileRow(c, showAgent) {
+    const review = (action) => post({ type: "review", runId: c.runId, action, path: c.path });
+    return el(
+      "li",
+      { class: "change status-" + c.status },
+      el("div", { class: "change-head" },
+        el("button", { class: "link", title: c.kind === "new" ? "Open the new file" : "Open the side-by-side diff", onclick: () => review("show") }, c.path),
+        el("span", { class: "tag" }, c.kind === "new" ? "new file" : "edit"),
+        el("span", { class: "file-status" }, changeStatusText(c)),
+        showAgent ? el("span", { class: "muted" }, "by " + c.agentName) : null,
+        c.status === "pending" ? el("button", { class: "mini primary", title: "Write this change to the project", onclick: () => review("accept") }, "Accept") : null,
+        c.status === "pending" ? el("button", { class: "mini secondary", title: "Drop this change", onclick: () => review("reject") }, "Reject") : null,
+      ),
+    );
+  }
+
+  function filesPanel() {
+    const changes = allChanges();
+    if (changes.length === 0) return null;
+    const count = (s) => changes.filter((c) => c.status === s).length;
+    const parts = [
+      count("pending") ? `${count("pending")} waiting` : "",
+      count("accepted") ? `${count("accepted")} written` : "",
+      count("rejected") ? `${count("rejected")} rejected` : "",
+    ].filter(Boolean);
+    const files = new Set(changes.map((c) => c.path)).size;
+    let body = null;
+    if (!filesCollapsed) {
+      let list;
+      if (filesBy === "agent") {
+        const groups = new Map();
+        for (const c of changes) {
+          const key = c.runId + ":" + c.taskId;
+          if (!groups.has(key)) groups.set(key, { name: c.agentName, items: [] });
+          groups.get(key).items.push(c);
+        }
+        list = [...groups.values()].map((g) =>
+          el("div", { class: "file-group" }, el("div", { class: "file-group-name" }, "✎ " + g.name), el("ul", { class: "changes" }, g.items.map((c) => fileRow(c, false)))),
+        );
+      } else {
+        list = el("ul", { class: "changes" }, changes.map((c) => fileRow(c, true)));
+      }
+      const toggle = (by, label) =>
+        el("button", { class: "mini " + (filesBy === by ? "primary" : "secondary"), onclick: () => { filesBy = by; persist(); render(); } }, label);
+      body = el("div", { class: "files-body review" }, el("div", { class: "row" }, toggle("file", "All files"), toggle("agent", "By sub-agent")), list);
+    }
+    return el(
+      "div",
+      { class: "agents files" },
+      el(
+        "button",
+        {
+          class: "agents-head",
+          "aria-expanded": filesCollapsed ? "false" : "true",
+          onclick: () => {
+            filesCollapsed = !filesCollapsed;
+            persist();
+            render();
+          },
+        },
+        (filesCollapsed ? "▸ " : "▾ ") + `Files changed · ${files} file(s)${parts.length ? " · " + parts.join(", ") : ""}`,
+      ),
+      body,
+    );
+  }
+
+  /** The files one sub-agent changed, shown under it in the Agents panel. */
+  function agentFiles(runId, taskId) {
+    const plan = state.plans[runId];
+    const mine = plan ? plan.changes.filter((c) => c.taskId === taskId).map((c) => ({ ...c, runId })) : [];
+    if (mine.length === 0) return null;
+    return el("div", { class: "agent-files review" }, el("div", { class: "muted" }, "Files:"), el("ul", { class: "changes" }, mine.map((c) => fileRow(c, false))));
+  }
+
   function agentsPanel() {
     const c = state.current;
     const planEntry = lastWhere(c.entries, (e) => e.kind === "plan" || e.kind === "research");
@@ -371,7 +463,7 @@
             t.title,
             t.status === "pending" ? (plan.started ? "waiting" : "not started") : t.status.replace("_", " "),
             latest,
-            active ? agentMessageBox(planEntry.runId, t.id) : null,
+            el("div", {}, agentFiles(planEntry.runId, t.id), active ? agentMessageBox(planEntry.runId, t.id) : null),
           ),
         );
       }
@@ -592,6 +684,7 @@
       { class: "conversation" },
       el("div", { class: "conv-title", title: c.workspaceRoot }, c.title, el("span", { class: "muted" }, ` · ${folderName(c.workspaceRoot)}`)),
       agentsPanel(),
+      filesPanel(),
       list,
     );
   }
