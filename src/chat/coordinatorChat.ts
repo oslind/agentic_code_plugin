@@ -153,7 +153,7 @@ export async function coordinatorTurn(
 
 /** Words that ask to change the project. Any of them means the request is not read-only. */
 const CHANGE_WORDS =
-  /\b(add|adds|adding|implement|fix|fixes|change|changes|create|write|update|remove|delete|rename|refactor|make|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|port|rewrite|apply|run|go ahead|start|do it|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|kör)\b/i;
+  /\b(add|adds|adding|implement|fix|fixes|change|changes|create|write|update|remove|delete|rename|refactor|make|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|port|rewrite|apply|run|go ahead|start|do it|save|store|export|put|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|kör|spara)\b/i;
 /** Words that ask to learn about the project. */
 const READ_WORDS =
   /\b(analy[sz]e|analy[sz]is|understand|explain|describe|summari[sz]e|summary|overview|review|explore|investigate|look (at|into|through)|read|reads|reading|list|inspect|examine|identify|study|map|tell me|what|how (does|do|is|are)|where|which|why|report|find out|figure out|audit|förklara|analysera|beskriv|sammanfatta|vad|hur|varför|var finns)\b/i;
@@ -179,7 +179,7 @@ export function isReadOnlyPlan(tasks: { title: string; instructions: string; cha
 
 /** Verbs that tell a sub-agent to change files. Only counted as an instruction, never inside a description. */
 const EDIT_VERBS =
-  /^(add|implement|fix|change|create|write|update|remove|delete|rename|refactor|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|rewrite|insert|append|extract|split|lägg till|fixa|ändra|skapa|skriv|ta bort|byt)\b/i;
+  /^(add|implement|fix|change|create|write|update|remove|delete|rename|refactor|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|rewrite|insert|append|extract|split|save|store|export|put|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|spara)\b/i;
 /** Words that may come before the verb of an instruction, e.g. "Then add", "Please also create", "You must update". */
 const LEAD_IN = /^((please|also|then|and|next|finally|first|now|you (should|must|need to|will)|make sure (to|you))\s+)+/i;
 
@@ -202,14 +202,20 @@ export function editingReason(task: { title: string; instructions: string; chang
   return undefined;
 }
 
+/** What follows a report phrase when it names a file to write: "to a file", "in docs/x.md", "as NOTES.md", "till en fil". */
+const WRITES_TO_FILE =
+  /\b(write|make|create|produce|put|prepare|compile|draft|dump|skriv|gör|lägg)\b[^.;!?\n]*?\b(to|into|in|as|on|till|i|på)\b[^.;!?\n]*?(\b(file|files|document|doc|markdown|fil|filen|filer|dokument|disk)\b|\b[\w/-]+\.(md|txt|json|html|rst|csv|ya?ml)\b)/i;
+
 /**
  * Drops "write a summary", "make me a report", "combine the findings" and the
  * like: they ask for an answer, not a file. A phrase that names a file (for
  * example "write a report to docs/report.md") is kept, because that is a change.
  */
 export function withoutReportPhrases(text: string): string {
+  // "Write the summary to a file" or "… into NOTES.md" writes a file: keep it, so it counts as a change.
+  if (WRITES_TO_FILE.test(text)) return text;
   return text.replace(
-    /\b(write|make|create|produce|give|prepare|compile|put together|combine|merge|build|draft|skriv|gör|ge)( me| us| up)?( (a|an|the|your|our|one|en|ett))?( [\w-]+){0,3}? (summary|summaries|report|reports|overview|explanation|description|findings|analysis|answer|notes|sammanfattning|rapport|översikt)\b(?! (to|into|in|as|till|i) [\w./-]+\.\w+)(?! file)/gi,
+    /\b(write|make|create|produce|give|prepare|compile|put together|combine|merge|build|draft|skriv|gör|ge)( me| us| up)?( (a|an|the|your|our|one|en|ett))?( [\w-]+){0,3}? (summary|summaries|report|reports|overview|explanation|description|findings|analysis|answer|notes|sammanfattning|rapport|översikt)\b/gi,
     " summary ",
   );
 }

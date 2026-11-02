@@ -317,6 +317,36 @@ describe("ChatController", () => {
     expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "There is one module, src/index.ts." });
   });
 
+  it("first reads the code base, then plans a refactor that knows what research found", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    const refactorPlan = JSON.stringify({ tasks: [
+      { id: "split-server", title: "Refactor server", instructions: "Refactor webapp/pyserver.py: move the route handlers into webapp/routes.py.", dependsOn: [], fileScope: ["webapp/pyserver.py", "webapp/routes.py"], changes: true },
+    ] });
+    const { controller, provider, tasks } = setup(
+      [
+        // 1st message: the model wrongly plans; it becomes research.
+        turn("Plan below.", "plan", "Read all files and summarise them."),
+        JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "The server is webapp/pyserver.py; routes are inline." } }),
+        JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
+        JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
+        JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
+        JSON.stringify({ reply: "It is a small Python web app.", action: "none", request: "" }),
+        // 2nd message: a change, which stays a plan.
+        turn("Plan below.", "plan", "Refactor the server so routes live in their own module."),
+        refactorPlan,
+      ],
+      "plan",
+    );
+    await controller.send("read and understand the code base for this project");
+    await controller.send("refactor the project according to my instructions: put the routes in their own module");
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.filter((e) => e.kind === "research")).toHaveLength(1);
+    const planEntry = entries.find((e) => e.kind === "plan")!;
+    expect(planEntry.text).toMatch(/Switch to Act mode/);
+    expect((await tasks.load(planEntry.runId!)).briefing).toMatch(/routes are inline/);
+    expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/What we know so far[\s\S]*routes are inline/);
+  });
+
   it("Act mode runs the plan right away and shows sub-agent messages in the chat", async () => {
     const { controller, started } = setup([turn("On it.", "plan", "Add a User model and an API that uses it."), plan], "act");
     await controller.send("add users");
@@ -640,6 +670,17 @@ describe("questions about the project become research", () => {
     ].map(([title, instructions], i) => ({ id: `t${i}`, title, instructions, dependsOn: [], fileScope: ["webapp/**"], changes: true }));
     expect(tasks.map(editingReason)).toEqual(tasks.map(() => undefined));
     expect(isReadOnlyPlan(tasks)).toBe(true);
+  });
+
+  it("writing a summary to a file is a change, not a question", () => {
+    for (const t of ["write the summary to a file", "Write the summary into SUMMARY.md", "save the overview", "put the report in docs/overview.md", "skriv sammanfattningen till en fil", "make a report and save it as notes.md"]) {
+      expect(isReadOnlyRequest(t), t).toBe(false);
+    }
+    expect(steerToResearch({ reply: "A sub-agent will write it.", action: "plan", request: "Write the project summary to SUMMARY.md." }, "write the summary to a file").action).toBe("plan");
+    expect(editingReason({ title: "Write summary file", instructions: "Write the project summary from the research into SUMMARY.md." })).toBeDefined();
+    // Reading files and summarising them in the answer is still reading.
+    expect(isReadOnlyPlan([{ title: "Read docs", instructions: "Read README.md and docs/setup.md and write a short summary of what they say." }])).toBe(true);
+    expect(isReadOnlyRequest("read README.md and give me a summary")).toBe(true);
   });
 
   it("still sees real change plans as changes", () => {
