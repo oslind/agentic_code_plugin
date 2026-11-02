@@ -179,7 +179,7 @@
             el(
               "button",
               { class: "primary", onclick: () => post({ type: "runPlan", runId: entry.runId }) },
-              state.mode === "act" ? "Run plan" : "Switch to Act and run",
+              "Run it",
             ),
           )
         : null,
