@@ -2,7 +2,10 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ChatController, ChatHost } from "../src/chat/chatController";
+import { ChatController, ChatHost, RunHooks } from "../src/chat/chatController";
+import { CheckConfig } from "../src/checks/runner";
+import { DetectedCheck, detectChecks } from "../src/checks/detect";
+import { AutoApprove, checkToolCall } from "../src/tools/policy";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
 import { buildCoordinatorMessages, coordinatorTurn, enforceMode } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
@@ -161,20 +164,34 @@ describe("eventToEntry", () => {
 });
 
 describe("ChatController", () => {
-  function setup(replies: string[], mode: ChatMode) {
+  interface SetupOptions {
+    detected?: DetectedCheck[];
+    saved?: CheckConfig[];
+    permissions?: Partial<AutoApprove>;
+    /** Runs inside the fake run, with the hooks the chat passed. */
+    during?: (hooks: RunHooks, runId: string, tasks: TaskStore) => Promise<void>;
+  }
+
+  function setup(replies: string[], mode: ChatMode, opts: SetupOptions = {}) {
     const conversations = new ConversationStore(path.join(dir, "state"));
     const tasks = new TaskStore(path.join(dir, "state"));
     const provider = scripted(replies);
     const started: string[] = [];
+    const usedChecks: CheckConfig[][] = [];
+    const savedChecks: CheckConfig[][] = [];
+    let saved = opts.saved;
     let current = mode;
+    const permissions: AutoApprove = { editFiles: true, sensitiveFiles: false, commands: false, merges: false, ...opts.permissions };
     const host: ChatHost = {
       provider: () => provider,
       modelLabel: () => "test at http://localhost",
       pickWorkspace: async () => "/ws",
       fileTree: async () => "src/\n  index.ts",
-      runPlan: async (runId): Promise<RunOutcome> => {
+      runPlan: async (runId, hooks): Promise<RunOutcome> => {
         started.push(runId);
+        usedChecks.push(hooks.checks);
         await tasks.log({ runId, taskId: "add-model", type: "tool_call", message: "write_file", data: { thought: "Writing the model.", call: { tool: "write_file", path: "src/model.ts" } } });
+        await opts.during?.(hooks, runId, tasks);
         return { integrationBranch: "agentic/x/integration", done: ["add-model", "add-api"], failed: [], blocked: [] };
       },
       cancelRun: () => {},
@@ -183,8 +200,18 @@ describe("ChatController", () => {
       log: () => {},
       openFolder: async () => path.join(dir, "ws"),
       researchLimits: () => ({ maxTurns: 10, maxParallel: 1 }),
+      delegationLimits: () => ({ maxTasks: 12, maxResearchers: 5 }),
+      checksFor: async () => ({ saved, defaults: [], detected: opts.detected ?? [] }),
+      saveChecks: async (_root, checks) => {
+        saved = checks;
+        savedChecks.push(checks);
+      },
+      permissions: () => permissions,
+      setPermission: async (key, value) => {
+        permissions[key] = value;
+      },
     };
-    return { controller: new ChatController(conversations, tasks, host), started, provider };
+    return { controller: new ChatController(conversations, tasks, host), started, provider, usedChecks, savedChecks };
   }
 
   it("answers a question about the project with read-only research, even in Plan mode", async () => {
@@ -260,5 +287,125 @@ describe("ChatController", () => {
     expect(started).toEqual([]);
     const entries = (await controller.state()).current!.entries;
     expect(entries.at(-1)).toMatchObject({ author: "system", tone: "warning" });
+  });
+  /** Waits until a card of this kind is waiting for the user, then returns it. */
+  async function waitForCard(controller: ChatController, kind: string) {
+    for (let i = 0; i < 100; i++) {
+      const st = await controller.state();
+      const e = st.current?.entries.find((x) => x.kind === kind && st.waiting.includes(x.id));
+      if (e) return e;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`No waiting ${kind} card`);
+  }
+
+  const planReplies = () => [turn("On it.", "plan", "Add a User model and an API that uses it."), plan];
+
+  it("proposes detected checks before the first run in a folder, and remembers the choice", async () => {
+    const { controller, usedChecks, savedChecks } = setup(planReplies(), "act", { detected: [{ name: "test", command: "npm test", source: "package.json script" }] });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "checks");
+    expect(card.checks).toEqual([{ name: "test", command: "npm test", source: "package.json script" }]);
+    await controller.decide(card.id, { kind: "checks", remember: true, checks: [{ name: "test", command: "npm test -- --run" }] });
+    await sending;
+    expect(usedChecks).toEqual([[{ name: "test", command: "npm test -- --run" }]]);
+    expect(savedChecks).toEqual([[{ name: "test", command: "npm test -- --run" }]]);
+  });
+
+  it("does not ask about checks when nothing is found, or when the folder already has saved checks", async () => {
+    const a = setup(planReplies(), "act");
+    await a.controller.send("add users");
+    expect(a.usedChecks).toEqual([[]]);
+    const b = setup(planReplies(), "act", { saved: [{ name: "lint", command: "ruff check ." }], detected: [{ name: "test", command: "pytest", source: "x" }] });
+    await b.controller.send("add users");
+    expect(b.usedChecks).toEqual([[{ name: "lint", command: "ruff check ." }]]);
+  });
+
+  it("asks before a sub-agent runs a new command, and can remember it for the folder", async () => {
+    let allowed: boolean | undefined;
+    const task = { id: "add-model", title: "Add model" } as never;
+    const { controller, savedChecks } = setup(planReplies(), "act", {
+      during: async (hooks) => {
+        allowed = await hooks.approveTool(task, "x", { tool: "request_check", name: "pytest", command: "pytest -q", reason: "tests my change" });
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "approval");
+    expect(card).toMatchObject({ rememberable: true, agentName: "Add model" });
+    expect(card.text).toMatch(/pytest -q/);
+    await controller.decide(card.id, { kind: "allow", remember: true });
+    await sending;
+    expect(allowed).toBe(true);
+    expect(savedChecks.at(-1)).toEqual([{ name: "pytest", command: "pytest -q" }]);
+  });
+
+  it("auto-approves commands when that switch is on", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { commands: true },
+      during: async (hooks) => {
+        allowed = await hooks.approveTool({ id: "add-model", title: "Add model" } as never, "x", { tool: "request_check", name: "t", command: "make t", reason: "r" });
+      },
+    });
+    await controller.send("add users");
+    expect(allowed).toBe(true);
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => /Auto-approved/.test(e.text))).toBe(true);
+  });
+
+  it("lets a sub-agent ask the user, and delivers direct messages on its next step", async () => {
+    let answer = "";
+    let inbox: string[] = [];
+    const { controller } = setup(planReplies(), "act", {
+      during: async (hooks, runId, tasks) => {
+        await tasks.setStatus(runId, "add-model", "running");
+        answer = await hooks.askUser({ id: "add-model", title: "Add model" } as never, "Should ids be numbers or strings?");
+        inbox = hooks.inbox("add-model");
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "question");
+    const runId = card.runId!;
+    await controller.messageAgent(runId, "add-model", "Use UUID strings.");
+    await controller.decide(card.id, { kind: "answer", text: "Strings" });
+    await sending;
+    expect(answer).toBe("Strings");
+    expect(inbox).toEqual(["Use UUID strings."]);
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => e.kind === "direct" && e.agentName === "Add model")).toBe(true);
+  });
+});
+
+describe("detectChecks", () => {
+  it("suggests checks from package.json scripts, Python and Go projects", async () => {
+    const files: Record<string, string> = {
+      "package.json": JSON.stringify({ scripts: { test: "vitest run", lint: "eslint ." } }),
+      "pnpm-lock.yaml": "",
+      "tsconfig.json": "{}",
+    };
+    const node = await detectChecks(Object.keys(files), async (p) => files[p]);
+    expect(node.map((c) => c.command)).toEqual(["pnpm test", "pnpm lint", "npx tsc --noEmit"]);
+
+    const py = await detectChecks(["pyproject.toml", "tests/test_x.py"], async () => "[tool.ruff]\n");
+    expect(py.map((c) => c.command)).toEqual(["python -m pytest -q", "ruff check ."]);
+
+    const go = await detectChecks(["go.mod", "main.go"], async () => "");
+    expect(go.map((c) => c.command)).toEqual(["go test ./...", "go vet ./..."]);
+  });
+
+  it("ignores npm's placeholder test script", async () => {
+    const out = await detectChecks(["package.json"], async () => JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
+    expect(out).toEqual([]);
+  });
+});
+
+describe("permissions in the policy", () => {
+  it("asks before every edit when edits are not auto-approved, and always asks for new commands", () => {
+    const ctx = { fileScope: ["src/**"], allowedChecks: [] };
+    expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, ctx).verdict).toBe("allow");
+    expect(checkToolCall({ tool: "write_file", path: "src/a.ts", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("ask");
+    expect(checkToolCall({ tool: "request_check", name: "t", command: "rm -rf /", reason: "" }, ctx).verdict).toBe("ask");
+    // Workspace rules hold whatever is auto-approved.
+    expect(checkToolCall({ tool: "write_file", path: "../x", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("deny");
   });
 });

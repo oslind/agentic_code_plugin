@@ -21,6 +21,13 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
     replace: z.string(),
   }),
   z.object({ tool: z.literal("run_check"), name: z.string().describe("Name of a configured check, e.g. test or lint") }),
+  z.object({
+    tool: z.literal("request_check"),
+    name: z.string().min(1).max(40).describe("Short name, e.g. pytest"),
+    command: z.string().min(1).max(500).describe("Shell command run from the project root"),
+    reason: z.string().max(300).describe("Why this check verifies your task"),
+  }),
+  z.object({ tool: z.literal("ask_user"), question: z.string().min(5).max(1000) }),
   z.object({ tool: z.literal("finish"), summary: z.string().min(1) }),
 ]);
 

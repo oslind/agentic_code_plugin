@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { OpenAICompatibleConfig, OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { StructuredOutputMode } from "./providers/types";
 import { CheckConfig } from "./checks/runner";
+import { AutoApprove } from "./tools/policy";
 
 /**
  * Reads the model settings fresh on every call, so changes apply to the next
@@ -61,5 +62,33 @@ export function readRunConfig(scope?: vscode.Uri): RunConfig {
     maxTurns: c.get<number>("worker.maxTurns", 40),
     maxFixRounds: c.get<number>("worker.maxFixRounds", 2),
     linkDirs: c.get<string[]>("worktree.linkDirs", ["node_modules"]),
+  };
+}
+
+/**
+ * What runs without asking. Workspace confinement, protected files (.git,
+ * secrets, .agentic) and applying a run to your own branch are never
+ * affected by these.
+ */
+export interface Permissions extends AutoApprove {
+  /** Sub-agents may write files in their task's scope without asking. */
+  editFiles: boolean;
+  /** Sub-agents may also change package.json, lockfiles and CI files without asking. */
+  sensitiveFiles: boolean;
+  /** Commands sub-agents request as checks run without asking. */
+  commands: boolean;
+  /** Verified work merges into the run's integration branch without asking. */
+  merges: boolean;
+}
+
+export const PERMISSION_KEYS = ["editFiles", "sensitiveFiles", "commands", "merges"] as const;
+
+export function readPermissions(): Permissions {
+  const c = vscode.workspace.getConfiguration("agentic.autoApprove");
+  return {
+    editFiles: c.get<boolean>("editFiles", true),
+    sensitiveFiles: c.get<boolean>("sensitiveFiles", false),
+    commands: c.get<boolean>("commands", false),
+    merges: c.get<boolean>("merges", false),
   };
 }

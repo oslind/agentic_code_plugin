@@ -9,8 +9,9 @@ import { ChatEntry, ChatMode } from "./types";
  * start an existing plan ("run"), or send read-only sub-agents to look into
  * the project ("research"). All of these lead to sub-agents doing the work.
  */
-/** Read-only sub-agents one research step may start. */
-export const MAX_RESEARCHERS = 3;
+/** Hard cap on read-only sub-agents per research step. agentic.delegation.maxResearchers picks the real limit. */
+export const MAX_RESEARCHERS = 10;
+export const DEFAULT_RESEARCHERS = 5;
 
 export const coordinatorTurnSchema = z
   .object({
@@ -29,7 +30,7 @@ export const coordinatorTurnSchema = z
       .array(z.string().min(5).max(500))
       .max(MAX_RESEARCHERS)
       .optional()
-      .describe(`For action "research": 1 to ${MAX_RESEARCHERS} separate questions, one per read-only sub-agent.`),
+      .describe('For action "research": separate questions, one per read-only sub-agent.'),
   })
   .refine((t) => t.action !== "plan" || t.request.trim().length >= 10, {
     message: 'With action "plan", request must describe the work in full.',
@@ -42,10 +43,10 @@ export const coordinatorTurnSchema = z
 
 export type CoordinatorTurn = z.infer<typeof coordinatorTurnSchema>;
 
-const BASE = `You are the coordinator of a team of coding sub-agents working in the user's project.
+const base = (researchers: number) => `You are the coordinator of a team of coding sub-agents working in the user's project.
 You cannot read or change files yourself, and you never write code. Sub-agents do both for you:
-- To learn about the project (explain it, analyse it, find where something is, review code), use action "research" with 1 to ${MAX_RESEARCHERS} questions. Read-only sub-agents read the files and report back, and then you answer the user. Research never changes anything.
-- To change the project, use action "plan" with a complete, standalone description of the work in request. A planner splits it into small tasks, each done by one sub-agent limited to its own files.
+- To learn about the project (explain it, analyse it, find where something is, review code), use action "research" with up to ${researchers} questions. Split broad questions into several focused ones (for example structure, main features, build and tests, dependencies), one per read-only sub-agent; they work in parallel, read the files and report back, and then you answer the user. Research never changes anything.
+- To change the project, use action "plan" with a complete, standalone description of the work in request. A planner splits it into many small tasks, each done by one sub-agent limited to its own files. Delegate generously.
 - Use action "none" only when you can answer from the conversation and the file list alone, or to ask the user a question.
 Keep replies short and plain. No code blocks.`;
 const MODE_RULES: Record<ChatMode, string> = {
@@ -75,13 +76,15 @@ export interface CoordinatorContext {
   pendingPlan?: string;
   /** True right after research: the coordinator must answer, not start more work. */
   answerFromResearch?: boolean;
+  /** Most read-only sub-agents one research step may start. */
+  maxResearchers?: number;
 }
 
 const REPLY_RESERVE = 2048;
 
 /** Builds the coordinator prompt: rules, project files, then as much recent conversation as fits. */
 export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow: number): ChatMessage[] {
-  const system = [BASE, MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? ANSWER_RULE : ""].filter(Boolean).join("\n\n");
+  const system = [base(researcherLimit(ctx.maxResearchers)), MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? ANSWER_RULE : ""].filter(Boolean).join("\n\n");
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(system);
 
   const history: ChatMessage[] = [];
@@ -144,10 +147,14 @@ export async function coordinatorTurn(
   return { ...enforceMode(turn, ctx.mode, ctx.pendingPlan !== undefined), thinking };
 }
 
+export function researcherLimit(n?: number): number {
+  return Math.max(1, Math.min(MAX_RESEARCHERS, Math.floor(n ?? DEFAULT_RESEARCHERS)));
+}
+
 /** The questions a research action asks, one per read-only sub-agent. */
-export function researchQuestions(turn: CoordinatorTurn): string[] {
+export function researchQuestions(turn: CoordinatorTurn, max?: number): string[] {
   const qs = (turn.questions ?? []).map((q) => q.trim()).filter((q) => q.length > 0);
-  return (qs.length ? qs : [turn.request.trim()]).slice(0, MAX_RESEARCHERS);
+  return (qs.length ? qs : [turn.request.trim()]).slice(0, researcherLimit(max));
 }
 
 export function enforceMode(turn: CoordinatorTurn, mode: ChatMode, hasPendingPlan: boolean): CoordinatorResult {

@@ -26,6 +26,12 @@ export interface WorkerOptions {
    * Writes are refused by the policy anyway, since its file scope is empty.
    */
   readOnly?: boolean;
+  /** Messages the user sent to this sub-agent since its last step. Each call drains them. */
+  inbox?: () => string[];
+  /** Asks the user a question in the chat and resolves with the answer. Without it, ask_user is refused. */
+  askUser?: (question: string) => Promise<string>;
+  /** Ask the user before each file edit (auto-approve for edits is off). */
+  askBeforeWrites?: boolean;
 }
 
 export interface WorkerResult {
@@ -73,12 +79,16 @@ Tools:
 - {"tool":"write_file","path":"src/a.ts","content":"full file content"}
 - {"tool":"replace_in_file","path":"src/a.ts","search":"exact old text","replace":"new text"}
 - {"tool":"run_check","name":"${checks[0]?.name ?? "test"}"}  (available: ${checks.map((c) => c.name).join(", ") || "none"})
+- {"tool":"request_check","name":"pytest","command":"python -m pytest tests/test_api.py -q","reason":"runs the tests for the code I changed"}  (asks the user to approve a new verification command)
+- {"tool":"ask_user","question":"..."}  (only when you cannot continue without the user's answer)
 - {"tool":"finish","summary":"what you changed"}
 
 Rules:
 - You may only change files matching: ${task.fileScope.join(", ")}
 - Read a file before changing it. Prefer replace_in_file for small edits.
 - Paths are relative to the project root.
+- Only use request_check if you changed code and none of the available checks covers it. Never for documentation, config text or other changes that have nothing to test. Approved checks also run when your task is verified.
+- Only use ask_user if you truly cannot continue without the user's decision.
 - When the task is done and checks pass, call finish.`;
 }
 
@@ -88,6 +98,8 @@ Rules:
  */
 export class Worker {
   private readonly messages: ChatMessage[];
+  /** Checks the user approved for this task through request_check. They also run at verification. */
+  readonly extraChecks: CheckConfig[] = [];
   private readonly changed = new Set<string>();
   private turns = 0;
 
@@ -96,6 +108,12 @@ export class Worker {
       { role: "system", content: opts.readOnly ? researchPrompt() : systemPrompt(opts.task, opts.checks) },
       { role: "user", content: `Task: ${opts.task.title}\n\n${opts.task.instructions}${opts.context ? `\n\n${opts.context}` : ""}` },
     ];
+  }
+
+  /** Configured checks plus any the user approved for this task. A later approval replaces one with the same name. */
+  get checks(): CheckConfig[] {
+    const extraNames = new Set(this.extraChecks.map((c) => c.name));
+    return [...this.opts.checks.filter((c) => !extraNames.has(c.name)), ...this.extraChecks];
   }
 
   /** Runs until the model calls finish. `followUp` continues an earlier run, e.g. with check failures. */
@@ -109,6 +127,9 @@ export class Worker {
     while (this.turns < maxTurns) {
       signal?.throwIfAborted();
       this.turns++;
+      for (const m of this.opts.inbox?.() ?? []) {
+        this.messages.push({ role: "user", content: `Message from the user: ${m}\n\nTake this into account, then continue with your task.` });
+      }
       const context = compactHistory(this.messages, provider.contextWindow - REPLY_RESERVE);
       let thinking: string | undefined;
       const turn = await callStructured({
@@ -130,7 +151,13 @@ export class Worker {
         continue;
       }
 
-      const decision = checkToolCall(turn.call, { fileScope: task.fileScope, allowedChecks: this.opts.checks.map((c) => c.name) });
+      const checks = this.checks;
+      const decision = checkToolCall(turn.call, {
+        fileScope: task.fileScope,
+        allowedChecks: this.opts.readOnly ? [] : checks.map((c) => c.name),
+        knownCommands: new Map(checks.map((c) => [c.name, c.command])),
+        askBeforeWrites: this.opts.askBeforeWrites,
+      });
       if (decision.verdict === "deny") {
         this.opts.log("denied", decision.reason, { call: turn.call });
         this.messages.push({ role: "user", content: `Not allowed: ${decision.reason}` });
@@ -145,7 +172,32 @@ export class Worker {
       if (turn.call.tool === "finish") {
         return { summary: turn.call.summary, changedFiles: [...this.changed], turns: this.turns };
       }
-      const outcome = await executeTool(turn.call, { sandbox: this.opts.sandbox, checks: this.opts.checks, signal });
+      if (turn.call.tool === "ask_user") {
+        if (!this.opts.askUser) {
+          this.messages.push({ role: "user", content: "The user cannot be asked right now. Make a reasonable choice, say which in your summary, and continue." });
+          continue;
+        }
+        const answer = await this.opts.askUser(turn.call.question);
+        this.opts.log("user_answer", answer);
+        this.messages.push({ role: "user", content: `The user answered: ${answer}` });
+        continue;
+      }
+      if (turn.call.tool === "request_check") {
+        if (this.opts.readOnly) {
+          this.messages.push({ role: "user", content: "Research agents cannot run commands." });
+          continue;
+        }
+        // Approved above. Remember it so it can be rerun by name and runs at verification.
+        const check = { name: turn.call.name, command: turn.call.command };
+        if (!checks.some((c) => c.name === check.name && c.command === check.command)) {
+          const i = this.extraChecks.findIndex((c) => c.name === check.name);
+          if (i >= 0) this.extraChecks.splice(i, 1);
+          this.extraChecks.push(check);
+          this.opts.log("check_added", `${check.name}: ${check.command}`, { check });
+        }
+      }
+      const call = turn.call.tool === "request_check" ? { tool: "run_check" as const, name: turn.call.name } : turn.call;
+      const outcome = await executeTool(call, { sandbox: this.opts.sandbox, checks: this.checks, signal });
       if (outcome.wrote) this.changed.add(outcome.wrote);
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });
     }

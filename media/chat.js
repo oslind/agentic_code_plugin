@@ -203,7 +203,7 @@
   let agentsCollapsed = !!saved.agentsCollapsed;
 
   function persist() {
-    vscode.setState({ draft, open: [...open].slice(-50), agentsCollapsed });
+    vscode.setState({ draft, open: [...open].slice(-50), agentsCollapsed, permsOpen });
   }
 
   function details(key, label, body, cls) {
@@ -237,6 +237,10 @@
     let label = entry.author === "agent" ? "↳ " + who : who;
     if (kind === "spawn") label = "Coordinator ⇢ new sub-agent";
     if (kind === "report") label = "↩ " + who + " reports to the coordinator";
+    if (kind === "direct") label = "You → " + (entry.agentName || "sub-agent");
+    if (kind === "question") label = "? " + who + " asks you";
+    if (kind === "approval") label = "⚑ " + who + " asks for permission";
+    if (kind === "checks") label = "Coordinator · checks";
     const head = el(
       "div",
       { class: "msg-head" },
@@ -253,6 +257,9 @@
       thinkingBlock(entry),
       kind === "plan" || kind === "research" ? planCard(entry) : null,
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
+      kind === "checks" ? checksCard(entry) : null,
+      kind === "approval" ? approvalCard(entry) : null,
+      kind === "question" ? questionCard(entry) : null,
     );
   }
 
@@ -263,7 +270,7 @@
     return undefined;
   }
 
-  function agentRow(key, icon, iconCls, name, status, latest) {
+  function agentRow(key, icon, iconCls, name, status, latest, extra) {
     const said = latest ? latest.thought || latest.text : "";
     const row = el(
       "div",
@@ -277,6 +284,7 @@
       { class: "agent-latest" },
       said ? el("div", { class: "agent-thought" }, said) : el("div", { class: "muted" }, "Nothing yet."),
       latest && latest.thinking ? details("a:" + key + ":" + latest.id, "Latest thinking", el("pre", { class: "thinking-text" }, latest.thinking)) : null,
+      extra || null,
     );
     return el("div", { class: "agent" }, row, body);
   }
@@ -313,6 +321,7 @@
             t.title,
             t.status === "pending" ? (plan.started ? "waiting" : "not started") : t.status.replace("_", " "),
             latest,
+            active ? agentMessageBox(planEntry.runId, t.id) : null,
           ),
         );
       }
@@ -337,6 +346,151 @@
       agentsCollapsed ? null : el("div", { class: "agents-body" }, rows),
     );
     return panel;
+  }
+
+  // ---- cards that wait for the user ----
+
+  const drafts = {}; // unsent text in card inputs, by input id
+
+  function isWaiting(entry) {
+    return state.waiting && state.waiting.includes(entry.id);
+  }
+
+  function decide(entry, decision) {
+    post({ type: "decide", entryId: entry.id, decision });
+  }
+
+  function decidedLine(entry) {
+    return entry.decided ? el("div", { class: "decided" }, "✓ " + entry.decided) : null;
+  }
+
+  const checkDrafts = {}; // editable check lists, by entry id
+
+  function checksCard(entry) {
+    if (!isWaiting(entry)) {
+      return el(
+        "div",
+        { class: "card" },
+        (entry.checks || []).length
+          ? el("ul", { class: "check-list" }, entry.checks.map((c) => el("li", {}, el("b", {}, c.name), " ", el("code", {}, c.command))))
+          : el("div", { class: "muted" }, "No checks."),
+        decidedLine(entry),
+        entry.decided === "Saved for this folder"
+          ? el("div", { class: "row" }, el("button", { class: "secondary", disabled: !!state.busy, onclick: () => post({ type: "editChecks" }) }, "Change checks"))
+          : null,
+      );
+    }
+    const list = (checkDrafts[entry.id] ||= {
+      rows: (entry.checks || []).map((c) => ({ on: true, name: c.name, command: c.command, source: c.source })),
+      remember: true,
+    });
+    const rows = list.rows.map((r, i) =>
+      el(
+        "div",
+        { class: "check-row" },
+        el("input", { type: "checkbox", checked: r.on, title: "Use this check", onchange: (e) => (r.on = e.target.checked) }),
+        el("input", { id: `cn-${entry.id}-${i}`, class: "check-name", value: r.name, placeholder: "name", oninput: (e) => (r.name = e.target.value) }),
+        el("input", { id: `cc-${entry.id}-${i}`, class: "check-cmd", value: r.command, placeholder: "command", title: r.source ? "Suggested from " + r.source : "", oninput: (e) => (r.command = e.target.value) }),
+        el("button", { class: "icon-btn", title: "Remove", onclick: () => { list.rows.splice(i, 1); render(); } }, "✕"),
+      ),
+    );
+    return el(
+      "div",
+      { class: "card" },
+      rows,
+      el("div", { class: "row" },
+        el("button", { class: "secondary", onclick: () => { list.rows.push({ on: true, name: "", command: "" }); render(); } }, "+ Add check"),
+        el("label", { class: "remember" },
+          el("input", { type: "checkbox", checked: list.remember, onchange: (e) => (list.remember = e.target.checked) }),
+          " Remember for this folder"),
+      ),
+      el("div", { class: "row" },
+        el("button", {
+          class: "primary",
+          onclick: () => decide(entry, { kind: "checks", remember: list.remember, checks: list.rows.filter((r) => r.on && r.name.trim() && r.command.trim()).map((r) => ({ name: r.name, command: r.command })) }),
+        }, "Approve checks"),
+        el("button", { class: "secondary", onclick: () => decide(entry, { kind: "skip" }) }, "Run without checks"),
+      ),
+    );
+  }
+
+  function approvalCard(entry) {
+    if (!isWaiting(entry)) return decidedLine(entry);
+    return el("div", { class: "row" },
+      el("button", { class: "primary", onclick: () => decide(entry, { kind: "allow" }) }, "Allow"),
+      entry.rememberable ? el("button", { class: "secondary", onclick: () => decide(entry, { kind: "allow", remember: true }) }, "Allow and remember for this folder") : null,
+      el("button", { class: "secondary", onclick: () => decide(entry, { kind: "deny" }) }, "Deny"),
+    );
+  }
+
+  function questionCard(entry) {
+    if (!isWaiting(entry)) return decidedLine(entry);
+    const id = "q-" + entry.id;
+    const ta = el("textarea", { id, rows: "2", class: "card-input", placeholder: "Your answer (Enter to send)" });
+    ta.value = drafts[id] || "";
+    const send = () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      delete drafts[id];
+      decide(entry, { kind: "answer", text });
+    };
+    ta.addEventListener("input", () => (drafts[id] = ta.value));
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        send();
+      }
+    });
+    return el("div", { class: "card" }, ta, el("div", { class: "row" }, el("button", { class: "primary", onclick: send }, "Answer")));
+  }
+
+  // ---- auto-approve switches ----
+
+  let permsOpen = !!saved.permsOpen;
+  const PERMS = [
+    ["editFiles", "Edit files", "Sub-agents edit files in their own task's scope without asking."],
+    ["sensitiveFiles", "Sensitive files", "package.json, lockfiles and CI files."],
+    ["commands", "Commands", "Checks a sub-agent asks to run."],
+    ["merges", "Merges", "Verified work into the run's integration branch. Your own branch always asks."],
+  ];
+
+  function permissionsBar() {
+    const p = state.permissions || {};
+    const on = PERMS.filter(([k]) => p[k]).map(([, label]) => label);
+    const head = el(
+      "button",
+      { class: "perms-head", "aria-expanded": permsOpen ? "true" : "false", onclick: () => { permsOpen = !permsOpen; persist(); render(); } },
+      (permsOpen ? "▾ " : "▸ ") + "Auto-approve: " + (on.length ? on.join(", ") : "nothing"),
+    );
+    if (!permsOpen) return el("div", { class: "perms" }, head);
+    return el(
+      "div",
+      { class: "perms" },
+      head,
+      PERMS.map(([key, label, help]) =>
+        el("label", { class: "perm", title: help },
+          el("input", { type: "checkbox", checked: !!p[key], onchange: (e) => post({ type: "setPermission", key, value: e.target.checked }) }),
+          " " + label, el("span", { class: "muted" }, " · " + help)),
+      ),
+      el("div", { class: "muted perm-note" }, "Agents can never reach files outside this folder, .git or secrets, whatever is ticked."),
+    );
+  }
+
+  // ---- messaging a sub-agent ----
+
+  function agentMessageBox(runId, taskId) {
+    const id = `m-${runId}-${taskId}`;
+    const input = el("input", { id, class: "card-input", placeholder: "Message this sub-agent (Enter to send)" });
+    input.value = drafts[id] || "";
+    input.addEventListener("input", () => (drafts[id] = input.value));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && input.value.trim()) {
+        post({ type: "messageAgent", runId, taskId, text: input.value.trim() });
+        delete drafts[id];
+        input.value = "";
+      }
+    });
+    return input;
   }
 
   function welcome() {
@@ -399,12 +553,13 @@
     const nearBottom = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 60;
     const oldScroll = old ? old.scrollTop : 0;
     const active = document.activeElement;
-    const focused = active && active.id === "input";
-    const caret = focused ? [active.selectionStart, active.selectionEnd] : null;
+    const focusedId = active && active.id ? active.id : null;
+    const caret = focusedId && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
 
     const parts = [
       header(),
       inputBox(),
+      permissionsBar(),
       state.busy ? el("div", { class: "busy" }, el("span", { class: "spinner" }), state.busy) : null,
       state.current ? conversation() : welcome(),
     ];
@@ -412,10 +567,10 @@
 
     const list = document.getElementById("messages");
     if (list) list.scrollTop = nearBottom ? list.scrollHeight : oldScroll;
-    const input = document.getElementById("input");
-    if (focused && input && !input.disabled) {
-      input.focus();
-      input.setSelectionRange(caret[0], caret[1]);
+    const again = focusedId && document.getElementById(focusedId);
+    if (again && !again.disabled) {
+      again.focus();
+      if (caret && typeof again.setSelectionRange === "function") again.setSelectionRange(caret[0], caret[1]);
     }
   }
 

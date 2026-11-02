@@ -1,16 +1,18 @@
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
-import { createProvider, readRunConfig } from "../config";
+import { createProvider, readPermissions, readRunConfig } from "../config";
 import { applyRun, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
 import { Run, Task } from "../state/types";
+import { isAutoApproved } from "../tools/policy";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
+import { RunHooks } from "../chat/chatController";
 
 export interface RunControl {
-  /** Runs a plan for the chat. Errors are thrown, not shown. */
-  start(runId: string): Promise<RunOutcome | undefined>;
+  /** Runs a plan for the chat, with the checks and callbacks the chat chose. Errors are thrown, not shown. */
+  start(runId: string, hooks: RunHooks): Promise<RunOutcome | undefined>;
   cancel(runId: string): void;
 }
 
@@ -45,6 +47,8 @@ async function showDiff(request: MergeRequest): Promise<void> {
 }
 
 async function approveMerge(request: MergeRequest): Promise<boolean> {
+  // Only reached for work whose checks passed; the user's own branch is never touched here.
+  if (readPermissions().merges) return true;
   const files = request.changedFiles.join(", ");
   const checks = request.checks.length ? request.checks.map((c) => `${c.name} passed`).join(", ") : "no checks configured";
   for (;;) {
@@ -64,13 +68,18 @@ async function approveMerge(request: MergeRequest): Promise<boolean> {
 }
 
 async function approveTool(task: Task, reason: string, call: ToolCall): Promise<boolean> {
-  const target = "path" in call ? call.path : call.tool;
+  if (autoApproved(call)) return true;
+  const target = "path" in call ? `change ${call.path}` : call.tool === "request_check" ? `run \`${call.command}\`` : call.tool;
   const choice = await vscode.window.showWarningMessage(
-    `"${task.title}" wants to change ${target}`,
+    `"${task.title}" wants to ${target}`,
     { modal: true, detail: reason },
     "Allow once",
   );
   return choice === "Allow once";
+}
+
+export function autoApproved(call: ToolCall): boolean {
+  return isAutoApproved(call, readPermissions());
 }
 
 /** Offers to resume runs that stopped mid-way, for example when VS Code was closed. */
@@ -97,12 +106,14 @@ export function registerRunCommands(
    * Runs a plan with sub-agents. Resolves undefined if the user chose not to
    * start it. With `fromChat`, errors are thrown to the chat instead of shown.
    */
-  async function execute(run: Run, fromChat: boolean): Promise<RunOutcome | undefined> {
+  async function execute(run: Run, fromChat: boolean, hooks?: RunHooks): Promise<RunOutcome | undefined> {
     if (active.has(run.id)) throw new Error("This run is already in progress.");
     if (run.kind === "research") throw new Error("This is a research run. It only read files, so there is nothing to run or apply.");
     const folder = await confinedFolder(run);
     const config = readRunConfig(folder.uri);
-    if (config.checks.length === 0) {
+    // The chat has already asked the user which checks to use.
+    if (hooks) config.checks = hooks.checks;
+    else if (config.checks.length === 0) {
       const go = await vscode.window.showWarningMessage(
         "No checks are configured, so nothing will verify the workers' changes.",
         { modal: true, detail: "Add tests, lint or type checks under agentic.checks in your settings." },
@@ -123,7 +134,10 @@ export function registerRunCommands(
       linkDirs: config.linkDirs,
       signal: abort.signal,
       approveMerge,
-      approveTool,
+      approveTool: hooks?.approveTool ?? approveTool,
+      askUser: hooks?.askUser,
+      inbox: hooks?.inbox,
+      askBeforeWrites: () => !readPermissions().editFiles,
       onChange: () => tree.refresh(),
     });
     active.set(run.id, { abort, orchestrator });
@@ -265,7 +279,7 @@ export function registerRunCommands(
   );
 
   return {
-    start: async (runId) => execute(await store.load(runId), true),
+    start: async (runId, hooks) => execute(await store.load(runId), true, hooks),
     cancel: (runId) => {
       active.get(runId)?.abort.abort();
     },

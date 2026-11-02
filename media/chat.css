@@ -573,3 +573,107 @@ pre.thinking-text {
 .agent-icon.status-awaiting_approval {
   color: var(--warning);
 }
+
+/* cards that wait for the user */
+
+.card {
+  margin-top: 6px;
+  border: 1px solid var(--vscode-widget-border, #444);
+  border-radius: var(--radius);
+  padding: 6px;
+}
+
+.msg.kind-approval,
+.msg.kind-question {
+  border-left-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border-radius: var(--radius);
+}
+
+.msg.kind-direct {
+  border-left-color: var(--user);
+  margin-left: 10px;
+}
+
+.decided {
+  margin-top: 4px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.check-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.check-list code,
+.check-cmd {
+  font-family: var(--vscode-editor-font-family);
+}
+
+.check-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.check-row input[type="text"],
+.check-row input:not([type]),
+.card-input {
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, #444));
+  border-radius: 2px;
+  padding: 2px 4px;
+  font: inherit;
+  min-width: 0;
+}
+
+.check-name {
+  width: 30%;
+}
+
+.check-cmd {
+  flex: 1;
+}
+
+.card-input {
+  width: 100%;
+  margin-top: 4px;
+  resize: vertical;
+}
+
+.remember {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.9em;
+}
+
+/* auto-approve bar */
+
+.perms {
+  flex: none;
+  font-size: 0.9em;
+}
+
+.perms-head {
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  padding: 0 2px;
+  text-align: left;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.perm {
+  display: block;
+  padding: 2px 0 2px 12px;
+}
+
+.perm-note {
+  padding: 2px 0 0 12px;
+}

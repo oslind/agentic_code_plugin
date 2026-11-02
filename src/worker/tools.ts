@@ -85,6 +85,10 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       }
       case "finish":
         return { ok: true, output: call.summary };
+      case "ask_user":
+      case "request_check":
+        // The worker handles these itself; they never reach here.
+        return { ok: false, output: `${call.tool} is handled by the worker.` };
     }
   } catch (err) {
     return { ok: false, output: (err as Error).message };

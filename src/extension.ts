@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { z } from "zod";
-import { createProvider, readModelConfig, readRunConfig } from "./config";
+import { createProvider, PERMISSION_KEYS, readModelConfig, readPermissions, readRunConfig } from "./config";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -9,6 +9,8 @@ import { OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { TaskStore } from "./state/taskStore";
 import { WorkspaceSandbox } from "./tools/sandbox";
 import { ChatController } from "./chat/chatController";
+import { CheckConfig } from "./checks/runner";
+import { DetectedCheck, detectChecks } from "./checks/detect";
 import { ConversationStore } from "./chat/conversationStore";
 import { ChatMode } from "./chat/types";
 import { ChatViewProvider } from "./ui/chatView";
@@ -16,6 +18,10 @@ import { confinedFolder, offerResume, registerRunCommands } from "./ui/runComman
 import { TaskTreeProvider } from "./ui/taskTree";
 
 const FILE_LIMIT = 2000;
+
+function checksKey(root: string): string {
+  return `agentic.checks:${root}`;
+}
 
 /**
  * Agents may only work inside the folder open in VS Code. With several
@@ -56,7 +62,29 @@ export function activate(context: vscode.ExtensionContext): void {
       const paths = await sandbox.listFiles("**", FILE_LIMIT);
       return paths.length ? fileTree(paths) : undefined;
     },
-    runPlan: (runId) => runs.start(runId),
+    runPlan: (runId, hooks) => runs.start(runId, hooks),
+    // Checks the user approved are kept per folder, so switching projects switches checks.
+    checksFor: async (root) => {
+      const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
+      const defaults = readRunConfig(folder?.uri).checks;
+      const saved = context.workspaceState.get<CheckConfig[]>(checksKey(root));
+      let detected: DetectedCheck[] = [];
+      if (folder) {
+        const sandbox = await WorkspaceSandbox.create(folder.uri.fsPath);
+        const files = await sandbox.listFiles("**", FILE_LIMIT).catch(() => [] as string[]);
+        detected = await detectChecks(files, (p) => sandbox.readFile(p).catch(() => undefined));
+      }
+      return { saved, defaults, detected };
+    },
+    permissions: () => readPermissions(),
+    setPermission: async (key, value) => {
+      if (!PERMISSION_KEYS.includes(key)) return;
+      await vscode.workspace.getConfiguration("agentic.autoApprove").update(key, value, vscode.ConfigurationTarget.Global);
+    },
+    saveChecks: async (root, checks) => {
+      await context.workspaceState.update(checksKey(root), checks);
+      output.info(`Saved ${checks.length} check(s) for ${root}: ${checks.map((c) => `${c.name} = ${c.command}`).join("; ") || "none"}`);
+    },
     cancelRun: (runId) => runs.cancel(runId),
     defaultMode: () =>
       context.globalState.get<ChatMode>("agentic.chatMode") ??
@@ -64,6 +92,10 @@ export function activate(context: vscode.ExtensionContext): void {
     setDefaultMode: (mode) => void context.globalState.update("agentic.chatMode", mode),
     log: (level, message) => output[level](message),
     openFolder: async (root) => (await confinedFolder({ workspaceRoot: root }).catch(() => undefined))?.uri.fsPath,
+    delegationLimits: () => {
+      const c = vscode.workspace.getConfiguration("agentic.delegation");
+      return { maxTasks: c.get<number>("maxTasks", 12), maxResearchers: c.get<number>("maxResearchers", 5) };
+    },
     researchLimits: () => {
       const c = readRunConfig();
       return { maxTurns: Math.min(c.maxTurns, 30), maxParallel: c.maxParallel };
@@ -75,6 +107,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     { dispose: () => chat.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentic.autoApprove")) chat.settingsChanged();
       if (!e.affectsConfiguration("agentic.model")) return;
       // The user may have switched model or server; try the configured format again.
       OpenAICompatibleProvider.resetFallbacks();
@@ -84,6 +117,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, chatView, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.commands.registerCommand("agentic.newTask", () => chatView.focus(true)),
+    vscode.commands.registerCommand("agentic.editChecks", async () => {
+      await chatView.focus();
+      await chat.editChecks();
+    }),
     vscode.commands.registerCommand("agentic.openSettings", () =>
       vscode.commands.executeCommand("workbench.action.openSettings", `@ext:${context.extension.id}`),
     ),
@@ -147,7 +184,11 @@ export function activate(context: vscode.ExtensionContext): void {
             const paths = await sandbox.listFiles("**", FILE_LIMIT);
             return planRequest(
               provider,
-              { request, fileTree: paths.length ? fileTree(paths) : undefined },
+              {
+                request,
+                fileTree: paths.length ? fileTree(paths) : undefined,
+                maxTasks: vscode.workspace.getConfiguration("agentic.delegation").get<number>("maxTasks", 12),
+              },
               { signal: abort.signal, onAttempt: (n, err) => n > 0 && output.warn(`Plan retry ${n}: ${err}`) },
             );
           },

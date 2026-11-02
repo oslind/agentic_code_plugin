@@ -13,7 +13,7 @@ export interface ChatEntry {
   author: ChatAuthor;
   text: string;
   /** What the entry shows besides its text. A plan or outcome entry refers to a run. */
-  kind?: "message" | "plan" | "outcome" | "error" | "spawn" | "report" | "research";
+  kind?: "message" | "plan" | "outcome" | "error" | "spawn" | "report" | "research" | "checks" | "approval" | "question" | "direct";
   runId?: string;
   /** For agent entries: the task the sub-agent works on. */
   taskId?: string;
@@ -25,6 +25,12 @@ export interface ChatEntry {
   thought?: string;
   /** The model's full thinking for this step, when it produced any. Shown collapsed. */
   thinking?: string;
+  /** For a checks card: the proposed or chosen verification commands. */
+  checks?: { name: string; command: string; source?: string }[];
+  /** For an approval card: whether "remember for this folder" is offered. */
+  rememberable?: boolean;
+  /** For a card that waits on the user: what was decided, once it was. */
+  decided?: string;
 }
 
 export interface Conversation {

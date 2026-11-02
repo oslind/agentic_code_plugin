@@ -40,6 +40,12 @@ export interface OrchestratorOptions {
   /** The user's go-ahead before a task's work is merged. Resolves true to merge. */
   approveMerge: (request: MergeRequest) => Promise<boolean>;
   approveTool: (task: Task, reason: string, call: ToolCall) => Promise<boolean>;
+  /** Lets a sub-agent ask the user a question. Without it, sub-agents decide on their own. */
+  askUser?: (task: Task, question: string) => Promise<string>;
+  /** Messages the user sent directly to a sub-agent. Each call drains them. */
+  inbox?: (taskId: string) => string[];
+  /** Ask the user before each file edit. Read when each task starts, so a toggle applies to the next task. */
+  askBeforeWrites?: () => boolean;
   onChange?: () => void;
 }
 
@@ -75,7 +81,8 @@ export function integrationBranchFor(runId: string): string {
 export class Orchestrator {
   private readonly git: Git;
   private readonly mergeLock = new Mutex();
-  private readonly o: Required<Omit<OrchestratorOptions, "signal" | "onChange">> & Pick<OrchestratorOptions, "signal" | "onChange">;
+  private readonly o: Required<Omit<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites">> &
+    Pick<OrchestratorOptions, "signal" | "onChange" | "askUser" | "inbox" | "askBeforeWrites">;
   private readonly taskControllers = new Map<string, AbortController>();
   private root = "";
   private integrationDir = "";
@@ -227,6 +234,9 @@ export class Orchestrator {
         maxTurns: this.o.maxTurns,
         signal,
         approve: (reason, call) => this.o.approveTool(task, reason, call),
+        askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
+        inbox: this.o.inbox && (() => this.o.inbox!(task.id)),
+        askBeforeWrites: this.o.askBeforeWrites?.() ?? false,
         log: (type, message, data) => void this.log(type, message, task.id, data),
       });
 
@@ -235,7 +245,8 @@ export class Orchestrator {
       for (let round = 0; ; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the configured checks decide.
-        checks = await runAllChecks(this.o.checks, dir, signal);
+        // The configured checks plus any the user approved for this task.
+        checks = await runAllChecks(worker.checks, dir, signal);
         signal.throwIfAborted();
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed })) });

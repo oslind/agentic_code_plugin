@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import * as vscode from "vscode";
-import { ChatController } from "../chat/chatController";
+import { ChatController, Decision } from "../chat/chatController";
+import { PERMISSION_KEYS } from "../config";
 import { TaskStore } from "../state/taskStore";
 
 /** Messages the webview may send. Anything else is ignored. */
@@ -14,7 +15,11 @@ type FromView =
   | { type: "runPlan"; runId: string }
   | { type: "cancel" }
   | { type: "settings" }
-  | { type: "runCommand"; command: "applyRun" | "showTaskLog" | "retryFailed" | "cleanupRun"; runId: string };
+  | { type: "runCommand"; command: "applyRun" | "showTaskLog" | "retryFailed" | "cleanupRun"; runId: string }
+  | { type: "decide"; entryId: string; decision: unknown }
+  | { type: "messageAgent"; runId: string; taskId: string; text: string }
+  | { type: "setPermission"; key: string; value: boolean }
+  | { type: "editChecks" };
 
 const RUN_COMMANDS = new Set(["applyRun", "showTaskLog", "retryFailed", "cleanupRun"]);
 
@@ -102,6 +107,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "settings":
           await vscode.commands.executeCommand("agentic.openSettings");
           return;
+        case "decide": {
+          const d = parseDecision(m.decision);
+          if (isId(m.entryId) && d) await this.controller.decide(m.entryId, d);
+          return;
+        }
+        case "messageAgent":
+          if (isId(m.runId) && isId(m.taskId) && typeof m.text === "string") await this.controller.messageAgent(m.runId, m.taskId, m.text.slice(0, 4000));
+          return;
+        case "setPermission":
+          if ((PERMISSION_KEYS as readonly string[]).includes(m.key) && typeof m.value === "boolean") {
+            await this.controller.setPermission(m.key as (typeof PERMISSION_KEYS)[number], m.value);
+          }
+          return;
+        case "editChecks":
+          await this.controller.editChecks();
+          return;
         case "runCommand":
           if (RUN_COMMANDS.has(m.command) && isId(m.runId)) {
             const run = await this.store.load(m.runId);
@@ -140,5 +161,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;
+  }
+}
+
+/** Checks a decision from the page. Commands become checks, so their shape is validated strictly. */
+function parseDecision(x: unknown): Decision | undefined {
+  if (!x || typeof x !== "object") return undefined;
+  const d = x as Record<string, unknown>;
+  switch (d.kind) {
+    case "skip":
+    case "deny":
+      return { kind: d.kind };
+    case "allow":
+      return { kind: "allow", remember: d.remember === true };
+    case "answer":
+      return typeof d.text === "string" && d.text.trim() ? { kind: "answer", text: d.text.slice(0, 4000) } : undefined;
+    case "checks": {
+      if (!Array.isArray(d.checks)) return undefined;
+      const checks = d.checks
+        .filter((c): c is { name: string; command: string } => !!c && typeof c.name === "string" && typeof c.command === "string")
+        .map((c) => ({ name: c.name.trim().slice(0, 40), command: c.command.trim().slice(0, 500) }))
+        .filter((c) => c.name && c.command)
+        .slice(0, 20);
+      return { kind: "checks", checks, remember: d.remember !== false };
+    }
+    default:
+      return undefined;
   }
 }

@@ -6,6 +6,10 @@ export interface PolicyContext {
   fileScope: string[];
   /** Names of checks configured by the user. Workers cannot run arbitrary commands. */
   allowedChecks: string[];
+  /** Commands of the allowed checks by name, so a known check can be requested again without asking. */
+  knownCommands?: Map<string, string>;
+  /** Ask the user before every write, even inside the scope. */
+  askBeforeWrites?: boolean;
 }
 
 export type PolicyDecision =
@@ -25,7 +29,13 @@ const SENSITIVE = ["package.json", "**/package-lock.json", "**/yarn.lock", "**/p
 export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecision {
   switch (call.tool) {
     case "finish":
+    case "ask_user":
       return { verdict: "allow" };
+    case "request_check":
+      // A new command always needs the user's go-ahead; workers cannot run commands on their own.
+      return ctx.allowedChecks.includes(call.name) && ctx.knownCommands?.get(call.name) === call.command
+        ? { verdict: "allow" }
+        : { verdict: "ask", reason: `Run the command \`${call.command}\` as check "${call.name}": ${call.reason}` };
     case "run_check":
       return ctx.allowedChecks.includes(call.name)
         ? { verdict: "allow" }
@@ -60,8 +70,30 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       if (matchesAny(p, SENSITIVE)) {
         return { verdict: "ask", reason: `Changing '${p}' needs approval`, path: p };
       }
+      if (ctx.askBeforeWrites) return { verdict: "ask", reason: `Edit '${p}'`, path: p };
       return { verdict: "allow", path: p };
     }
   }
 }
 
+
+/** package.json, lockfiles and CI files: writable only with approval (or the matching auto-approve setting). */
+export function isSensitivePath(path: string): boolean {
+  const p = normalizeWorkspacePath(path);
+  return p !== undefined && p !== null && matchesAny(p, SENSITIVE);
+}
+
+/** The auto-approve switches, mirrored from settings. */
+export interface AutoApprove {
+  editFiles: boolean;
+  sensitiveFiles: boolean;
+  commands: boolean;
+  merges: boolean;
+}
+
+/** Whether the user's auto-approve switches already allow a call the policy flagged. */
+export function isAutoApproved(call: ToolCall, auto: AutoApprove): boolean {
+  if (call.tool === "request_check") return auto.commands;
+  if (call.tool === "write_file" || call.tool === "replace_in_file") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
+  return false;
+}

@@ -107,6 +107,11 @@
         "command": "agentic.showHistory",
         "title": "Agentic: Switch conversation",
         "icon": "$(history)"
+      },
+      {
+        "command": "agentic.editChecks",
+        "title": "Agentic: Choose checks for this folder",
+        "icon": "$(beaker)"
       }
     ],
     "configuration": {
@@ -155,7 +160,7 @@
         "agentic.checks": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Checks that decide whether a task is done, run in each worker's worktree and again after each merge. Example: `[{\"name\": \"test\", \"command\": \"npm test\"}, {\"name\": \"lint\", \"command\": \"npm run lint\"}]`. Workers can run these by name but cannot run any other command.",
+          "markdownDescription": "Default checks that decide whether a task is done. Before the first run in a folder, the chat proposes these plus commands it finds in the project (package.json scripts, pytest, cargo, go, dotnet, gradle, make) for you to edit and approve; your choice is saved per folder. Sub-agents can also ask to run extra checks, which you approve one by one. Example: `[{\"name\": \"test\", \"command\": \"npm test\"}]`.",
           "items": {
             "type": "object",
             "required": [
@@ -221,6 +226,40 @@
             "Sub-agents carry out plans as soon as they are made."
           ],
           "description": "Mode for new conversations when none was used before."
+        },
+        "agentic.autoApprove.editFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sub-agents edit files in their own task's scope without asking. Turn off to approve every edit. Files outside the workspace, .git, secrets and .agentic are never writable."
+        },
+        "agentic.autoApprove.sensitiveFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Sub-agents may change package.json, lockfiles and .github files without asking."
+        },
+        "agentic.autoApprove.commands": {
+          "type": "boolean",
+          "default": false,
+          "description": "Commands a sub-agent requests as a check run without asking. They still run only inside the sub-agent's worktree in the open folder."
+        },
+        "agentic.autoApprove.merges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Work that passed its checks merges into the run's integration branch without asking. Applying a run to your own branch always asks."
+        },
+        "agentic.delegation.maxTasks": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Most sub-agent tasks one plan may have. The coordinator is told to prefer many small tasks. How many run at the same time is agentic.maxParallelWorkers."
+        },
+        "agentic.delegation.maxResearchers": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Most read-only sub-agents the coordinator may send to answer one question about the project."
         }
       }
     },
@@ -256,6 +295,11 @@
         },
         {
           "command": "agentic.newTask",
+          "when": "view == agentic.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentic.editChecks",
           "when": "view == agentic.chat",
           "group": "navigation@2"
         },
