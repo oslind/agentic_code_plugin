@@ -613,6 +613,21 @@ describe("questions about the project become research", () => {
     ])).toBe(false);
   });
 
+  it("catches Oskar's reading plan, including the task that combines the findings", () => {
+    expect(isReadOnlyPlan([
+      { title: "Summarize root documentation files", instructions: "Read README.md, tryapp_readme.md and .gitmodules and write a short summary of what they say." },
+      { title: "Explain shell scripts and dead-code report", instructions: "Read the shell scripts and DEAD_CODE_REPORT.md and explain what each one does." },
+      { title: "Summarize webapp Python server and test data", instructions: "Read webapp/*.py and describe the server, its routes and the test data." },
+      { title: "Combine findings into final project summary", instructions: "Combine the findings of the other tasks into one project overview for the user." },
+    ])).toBe(true);
+    // The planner's own flag decides when it is given.
+    expect(isReadOnlyPlan([{ title: "Tidy", instructions: "Update the README wording.", changes: false }])).toBe(true);
+    expect(isReadOnlyPlan([{ title: "Summarize", instructions: "Read src and summarise it.", changes: true }])).toBe(false);
+    // A report written to a file is a change.
+    expect(isReadOnlyPlan([{ title: "Report", instructions: "Read src and write a report to docs/report.md." }])).toBe(false);
+    expect(isReadOnlyRequest("Go through the project and make me a summary of what it does")).toBe(true);
+  });
+
   it("leaves change requests and plain answers alone", () => {
     const plan = { reply: "Plan below.", action: "plan" as const, request: "Add a dark mode toggle to settings." };
     expect(steerToResearch(plan, "Add a dark mode toggle")).toBe(plan);

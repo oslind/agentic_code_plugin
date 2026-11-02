@@ -23,6 +23,10 @@ const taskSchema = z.object({
     .min(1)
     .max(10)
     .describe("Workspace-relative files or globs this task may write, for example src/auth/**"),
+  changes: z
+    .boolean()
+    .optional()
+    .describe("false if the task only reads files and reports back; true if it creates or edits files"),
 });
 
 export type PlannedTask = z.infer<typeof taskSchema>;

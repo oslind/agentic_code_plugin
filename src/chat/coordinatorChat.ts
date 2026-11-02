@@ -162,7 +162,8 @@ export function isReadOnlyRequest(text: string): boolean {
   if (!t) return false;
   // "How do I add a test?" is still a question; "Can you add a test?" is not.
   if (/^(what|how|where|which|why|who|when|does|is|are|vad|hur|var|vilk\w*|varför|finns)\b/i.test(t)) return true;
-  if (CHANGE_WORDS.test(t)) return false;
+  const plain = withoutReportPhrases(t);
+  if (CHANGE_WORDS.test(plain)) return false;
   return READ_WORDS.test(t) || /\?\s*$/.test(t);
 }
 
@@ -170,11 +171,28 @@ export function isReadOnlyRequest(text: string): boolean {
  * Whether every planned task only reads: no change words in its title or
  * instructions, and reading words in each. Such a "plan" is research.
  */
-export function isReadOnlyPlan(tasks: { title: string; instructions: string }[]): boolean {
-  return tasks.length > 0 && tasks.every((t) => {
+export function isReadOnlyPlan(tasks: { title: string; instructions: string; changes?: boolean }[]): boolean {
+  if (tasks.length === 0) return false;
+  // The planner says so for every task.
+  if (tasks.every((t) => t.changes === false)) return true;
+  // Or no task asks for a change and each one reads or reports. A task the planner marked as changing is trusted.
+  return tasks.every((t) => {
+    if (t.changes === true) return false;
     const text = `${t.title}. ${t.instructions}`;
-    return !CHANGE_WORDS.test(text) && READ_WORDS.test(text);
+    return !CHANGE_WORDS.test(withoutReportPhrases(text)) && READ_WORDS.test(text);
   });
+}
+
+/**
+ * Drops "write a summary", "make me a report", "combine the findings" and the
+ * like: they ask for an answer, not a file. A phrase that names a file (for
+ * example "write a report to docs/report.md") is kept, because that is a change.
+ */
+export function withoutReportPhrases(text: string): string {
+  return text.replace(
+    /\b(write|make|create|produce|give|prepare|compile|put together|combine|merge|build|draft|skriv|gör|ge)( me| us| up)?( (a|an|the|your|our|one|en|ett))?( [\w-]+){0,3}? (summary|summaries|report|reports|overview|explanation|description|findings|analysis|answer|notes|sammanfattning|rapport|översikt)\b(?! (to|into|in|as|till|i) [\w./-]+\.\w+)(?! file)/gi,
+    " summary ",
+  );
 }
 
 /** Focused questions for a broad "understand this project" request, so small models each get one clear job. */
