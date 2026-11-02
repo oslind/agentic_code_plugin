@@ -118,6 +118,8 @@ export interface CoordinatorResult extends CoordinatorTurn {
   thinking?: string;
   /** Set when the model asked for something the mode does not allow and it was changed. */
   overridden?: string;
+  /** What the model asked for, before any fallback changed it. For the log. */
+  modelAction?: CoordinatorTurn["action"];
 }
 
 /**
@@ -146,7 +148,7 @@ export async function coordinatorTurn(
   }
   const lastUser = [...ctx.entries].reverse().find((e) => e.author === "user")?.text ?? "";
   const steered = steerToResearch(turn, lastUser, ctx.maxResearchers, ctx.pendingPlan !== undefined);
-  return { ...enforceMode(steered, ctx.mode, ctx.pendingPlan !== undefined), thinking };
+  return { ...enforceMode(steered, ctx.mode, ctx.pendingPlan !== undefined), thinking, modelAction: turn.action };
 }
 
 /** Words that ask to change the project. Any of them means the request is not read-only. */
