@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {

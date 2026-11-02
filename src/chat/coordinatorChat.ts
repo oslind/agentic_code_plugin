@@ -66,7 +66,10 @@ const EXAMPLE = `Reply with JSON only. Examples:
 {"thought":"I need to read the code to explain it, so I will send researchers.","reply":"I'll have sub-agents read the project and report back.","action":"research","request":"","questions":["What does this project do and how is it structured? Read the README and main entry points.","How are tests and builds set up?"]}`;
 
 /** Added after research, so the coordinator answers from the reports instead of starting more work. */
-const ANSWER_RULE = `The read-only sub-agents have reported back; their reports are in the conversation. Now answer the user's question from them, clearly and concretely, naming files where useful. Use action "none".`;
+const ANSWER_RULE = `The read-only sub-agents have reported back; their reports are in the conversation.
+- If the user asked a question, answer it from the reports, clearly and concretely, naming files where useful. Use action "none".
+- If the user asked for something to be changed or written (for example a file, or an edit to one), use action "plan" now, with a request that includes what the reports found. Do not just say you will.
+Never start more research.`;
 
 export interface CoordinatorContext {
   mode: ChatMode;
@@ -142,18 +145,41 @@ export async function coordinatorTurn(
     signal: options.signal,
     onAttempt: options.onAttempt,
   });
-  if (ctx.answerFromResearch && turn.action !== "none") {
-    // One research round per message; the coordinator answers with what it has.
-    return { ...turn, action: "none", thinking };
-  }
   const lastUser = [...ctx.entries].reverse().find((e) => e.author === "user")?.text ?? "";
-  const steered = steerToResearch(turn, lastUser, ctx.maxResearchers, ctx.pendingPlan !== undefined);
+  if (ctx.answerFromResearch) {
+    // One research round per message. After it, the coordinator answers, or plans the change the user asked for.
+    const after = turn.action === "research" || turn.action === "run" ? { ...turn, action: "none" as const } : turn;
+    return { ...keepPromise(after, lastUser, true), thinking, modelAction: turn.action };
+  }
+  const steered = steerToResearch(keepPromise(turn, lastUser, false), lastUser, ctx.maxResearchers, ctx.pendingPlan !== undefined);
   return { ...enforceMode(steered, ctx.mode, ctx.pendingPlan !== undefined), thinking, modelAction: turn.action };
+}
+
+/** "I'll have a sub-agent update it", "Let me get the sub-agents to…": a reply that promises work. */
+const PROMISES_WORK =
+  /\b(i'?ll|i will|i'?m going to|i am going to|let me|going to)\b[^.!?\n]{0,40}\b(sub-?agents?|agents?|planner|delegate)\b|\b(sub-?agents?|agents?) (will|are going to|can now)\b/i;
+const PROMISES_READING = /\b(read-only|research|look into|look at|investigate|report back)\b/i;
+
+/**
+ * Small models often say "I'll have a sub-agent do it" with action "none",
+ * which leaves the user waiting for work that never starts. A reply that
+ * promises work gets the action it promised: research when it promises
+ * reading (and research is still allowed), otherwise a plan built from the
+ * user's message and the reply.
+ */
+export function keepPromise(turn: CoordinatorTurn, userText: string, afterResearch: boolean): CoordinatorResult {
+  if (turn.action !== "none" || !PROMISES_WORK.test(turn.reply) || !userText.trim()) return turn;
+  if (PROMISES_READING.test(turn.reply) && !afterResearch && isReadOnlyRequest(userText)) {
+    return { ...turn, action: "research", request: "", questions: [userText.trim().slice(0, 500)] };
+  }
+  if (afterResearch && isReadOnlyRequest(userText)) return turn;
+  const request = `${userText.trim()}\n\n${turn.reply.trim()}`.slice(0, 3000);
+  return { ...turn, action: "plan", request: request.length >= 10 ? request : `${request} (as the user asked)` };
 }
 
 /** Words that ask to change the project. Any of them means the request is not read-only. */
 const CHANGE_WORDS =
-  /\b(add|adds|adding|implement|fix|fixes|change|changes|create|write|update|remove|delete|rename|refactor|make|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|port|rewrite|apply|run|go ahead|start|do it|save|store|export|put|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|kör|spara)\b/i;
+  /\b(add|adds|adding|implement|fix|fixes|change|changes|create|write|update|remove|delete|rename|refactor|make|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|port|rewrite|apply|run|go ahead|start|do it|save|store|export|put|alter|tweak|rephrase|reword|shorten|simplify|adjust|reformat|format|clean up|expand|polish|correct|revise|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|kör|spara|förkorta|förenkla)\b/i;
 /** Words that ask to learn about the project. */
 const READ_WORDS =
   /\b(analy[sz]e|analy[sz]is|understand|explain|describe|summari[sz]e|summary|overview|review|explore|investigate|look (at|into|through)|read|reads|reading|list|inspect|examine|identify|study|map|tell me|what|how (does|do|is|are)|where|which|why|report|find out|figure out|audit|förklara|analysera|beskriv|sammanfatta|vad|hur|varför|var finns)\b/i;
@@ -164,6 +190,8 @@ export function isReadOnlyRequest(text: string): boolean {
   if (!t) return false;
   // "How do I add a test?" is still a question; "Can you add a test?" is not.
   if (/^(what|how|where|which|why|who|when|does|is|are|vad|hur|var|vilk\w*|varför|finns)\b/i.test(t)) return true;
+  // "Summarize this in a file", "write the overview to NOTES.md": the answer goes into a file, so it is a change.
+  if (WRITES_TO_FILE.test(t)) return false;
   const plain = withoutReportPhrases(t);
   if (CHANGE_WORDS.test(plain)) return false;
   return READ_WORDS.test(t) || /\?\s*$/.test(t);
@@ -179,7 +207,7 @@ export function isReadOnlyPlan(tasks: { title: string; instructions: string; cha
 
 /** Verbs that tell a sub-agent to change files. Only counted as an instruction, never inside a description. */
 const EDIT_VERBS =
-  /^(add|implement|fix|change|create|write|update|remove|delete|rename|refactor|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|rewrite|insert|append|extract|split|save|store|export|put|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|spara)\b/i;
+  /^(add|implement|fix|change|create|write|update|remove|delete|rename|refactor|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|rewrite|insert|append|extract|split|save|store|export|put|alter|tweak|rephrase|reword|shorten|simplify|adjust|reformat|clean up|expand|polish|revise|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|spara|förkorta|förenkla)\b/i;
 /** Words that may come before the verb of an instruction, e.g. "Then add", "Please also create", "You must update". */
 const LEAD_IN = /^((please|also|then|and|next|finally|first|now|you (should|must|need to|will)|make sure (to|you))\s+)+/i;
 
@@ -203,8 +231,15 @@ export function editingReason(task: { title: string; instructions: string; chang
 }
 
 /** What follows a report phrase when it names a file to write: "to a file", "in docs/x.md", "as NOTES.md", "till en fil". */
-const WRITES_TO_FILE =
-  /\b(write|make|create|produce|put|prepare|compile|draft|dump|skriv|gör|lägg)\b[^.;!?\n]*?\b(to|into|in|as|on|till|i|på)\b[^.;!?\n]*?(\b(file|files|document|doc|markdown|fil|filen|filer|dokument|disk)\b|\b[\w/-]+\.(md|txt|json|html|rst|csv|ya?ml)\b)/i;
+const WRITES_TO_FILE = new RegExp(
+  [
+    // "write the summary to a file", "put the report in docs/overview.md"
+    String.raw`\b(write|make|create|produce|put|prepare|compile|draft|dump|summari[sz]e|document|note|record|skriv|gör|lägg|sammanfatta)\b[^.;!?\n]*?\b(to|into|in|as|on|till|i|på)\b[^.;!?\n]*?(\b(file|files|document|doc|markdown|fil|filen|filer|dokument|disk)\b|\b[\w/-]+\.(md|txt|json|html|rst|csv|ya?ml)\b)`,
+    // "Create SUMMARY.md …", "write docs/notes.txt": a verb followed closely by a file name.
+    String.raw`\b(write|create|make|produce|save|skriv|skapa|spara)\b\s+(?:[\w-]+\s+){0,3}?[\w/-]+\.(md|txt|json|html|rst|csv|ya?ml)\b`,
+  ].join("|"),
+  "i",
+);
 
 /**
  * Drops "write a summary", "make me a report", "combine the findings" and the
@@ -215,7 +250,7 @@ export function withoutReportPhrases(text: string): string {
   // "Write the summary to a file" or "… into NOTES.md" writes a file: keep it, so it counts as a change.
   if (WRITES_TO_FILE.test(text)) return text;
   return text.replace(
-    /\b(write|make|create|produce|give|prepare|compile|put together|combine|merge|build|draft|skriv|gör|ge)( me| us| up)?( (a|an|the|your|our|one|en|ett))?( [\w-]+){0,3}? (summary|summaries|report|reports|overview|explanation|description|findings|analysis|answer|notes|sammanfattning|rapport|översikt)\b/gi,
+    /\b(write|make|create|produce|give|prepare|compile|put together|combine|merge|build|draft|skriv|gör|ge)( me| us| up)?( (a|an|the|your|our|one|en|ett))?( [\w-]+){0,3}? (summary|summaries|report|reports|overview|explanation|description|findings|analysis|answer|notes|sammanfattning|rapport|översikt)\b(?![.\w-]*\.\w)/gi,
     " summary ",
   );
 }
@@ -235,7 +270,9 @@ const BROAD_QUESTIONS = [
  * which runs in either mode and changes nothing.
  */
 export function steerToResearch(turn: CoordinatorTurn, userText: string, maxResearchers?: number, hasPendingPlan = false): CoordinatorResult {
-  if (turn.action === "research" || !isReadOnlyRequest(userText)) return turn;
+  // A plan is never overridden here: the model chose to change something. If every planned
+  // task turns out to only read, the plan check (isReadOnlyPlan) makes it research then.
+  if (turn.action === "research" || turn.action === "plan" || !isReadOnlyRequest(userText)) return turn;
   // Asking about a waiting plan, or a plain chat answer, needs no research.
   const mentionsAct = /\bact\b/i.test(turn.reply);
   if (turn.action === "none" && !mentionsAct) return turn;
@@ -265,10 +302,15 @@ export function researchQuestions(turn: CoordinatorTurn, max?: number): string[]
 export function enforceMode(turn: CoordinatorTurn, mode: ChatMode, hasPendingPlan: boolean): CoordinatorResult {
   if (turn.action !== "run") return turn;
   if (mode === "plan") {
-    return { ...turn, action: "none", overridden: "Plan mode does not run anything. Switch to Act mode to run the plan." };
+    return { ...turn, action: "none", overridden: hasPendingPlan ? 'Press "Run it" on the plan, or say "go", to start it.' : "There is no plan waiting to run." };
   }
   if (!hasPendingPlan) {
     return { ...turn, action: "none", overridden: "There is no plan waiting to run." };
   }
   return turn;
+}
+
+/** "go", "run it", "yes", "kör": the user starting the plan that is waiting. */
+export function isGoAhead(text: string): boolean {
+  return /^\s*(go|go ahead|go for it|run|run it|run the plan|do it|yes|yep|yeah|ok|okay|sure|start|start it|proceed|kör|kör på|kör den|ja|starta|gör det)\s*[.!]*\s*$/i.test(text);
 }

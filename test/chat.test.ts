@@ -11,7 +11,7 @@ import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
-import { buildCoordinatorMessages, coordinatorTurn, editingReason, enforceMode, isReadOnlyPlan, isReadOnlyRequest, steerToResearch } from "../src/chat/coordinatorChat";
+import { buildCoordinatorMessages, coordinatorTurn, editingReason, enforceMode, isGoAhead, isReadOnlyPlan, isReadOnlyRequest, keepPromise, steerToResearch } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
@@ -326,7 +326,7 @@ describe("ChatController", () => {
         worker("Read the README.", { tool: "read_file", path: "README.md" }),
         worker("Try to edit, which must be refused.", { tool: "write_file", path: "README.md", content: "hacked" }),
         worker("Done.", { tool: "finish", summary: "It is a flight simulator, described in README.md." }),
-        JSON.stringify({ thought: "Answer from the report.", reply: "This project is a flight simulator (see README.md).", action: "plan", request: "Do more things to the project" }),
+        JSON.stringify({ thought: "Answer from the report.", reply: "This project is a flight simulator (see README.md).", action: "research", request: "", questions: ["More?"] }),
       ],
       "plan",
     );
@@ -398,8 +398,9 @@ describe("ChatController", () => {
     ] });
     const { controller, provider, tasks } = setup(
       [
-        // 1st message: the model wrongly plans; it becomes research.
+        // 1st message: the model wrongly plans; the plan only reads, so it becomes research.
         turn("Plan below.", "plan", "Read all files and summarise them."),
+        JSON.stringify({ tasks: ["server", "web", "tests", "docs"].map((id) => ({ id, title: `Read ${id}`, instructions: `Read the ${id} files and report what they do.`, dependsOn: [], fileScope: [`${id}/**`] })) }),
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "The server is webapp/pyserver.py; routes are inline." } }),
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
@@ -416,7 +417,7 @@ describe("ChatController", () => {
     const entries = (await controller.state()).current!.entries;
     expect(entries.filter((e) => e.kind === "research")).toHaveLength(1);
     const planEntry = entries.find((e) => e.kind === "plan")!;
-    expect(planEntry.text).toMatch(/Switch to Act mode/);
+    expect(planEntry.text).toMatch(/Press "Run it"/);
     expect((await tasks.load(planEntry.runId!)).briefing).toMatch(/routes are inline/);
     expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/What we know so far[\s\S]*routes are inline/);
   });
@@ -433,16 +434,89 @@ describe("ChatController", () => {
     expect(entries.at(-1)!.text).toMatch(/What the sub-agents did:\n✓ Add model/);
   });
 
+  describe("Act mode does what it is asked (Oskar's log)", () => {
+    const rewritePlan = JSON.stringify({ tasks: [
+      { id: "casual", title: "Rewrite summary", instructions: "Rewrite PROJECT_SUMMARY.md in casual, less formal language. Keep the facts.", dependsOn: [], fileScope: ["PROJECT_SUMMARY.md"] },
+    ] });
+    const finishReport = (summary: string) => JSON.stringify({ thought: "Done.", call: { tool: "finish", summary } });
+
+    async function inAct(replies: string[]) {
+      await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+      await fs.writeFile(path.join(dir, "ws", "PROJECT_SUMMARY.md"), "## Project Summary\nA formal summary.\n");
+      return setup(replies, "act", { workspace: path.join(dir, "ws"), saved: [] });
+    }
+
+    it("a change request the coordinator plans runs right away, with no detour through research", async () => {
+      const { controller, started } = await inAct([
+        turn("I'll have a sub-agent rewrite it in casual language.", "plan", "Rewrite PROJECT_SUMMARY.md in casual, less formal language."),
+        rewritePlan,
+      ]);
+      await controller.send("alter the summary to use less formal language");
+      const entries = (await controller.state()).current!.entries;
+      expect(started).toHaveLength(1);
+      expect(entries.some((e) => e.kind === "research")).toBe(false);
+      expect(entries.find((e) => e.kind === "plan")!.text).toMatch(/Starting now/);
+    });
+
+    it("plans and runs after research when the user asked for a file", async () => {
+      const { controller, started, provider } = await inAct([
+        JSON.stringify({ reply: "Reading first.", action: "research", request: "", questions: ["What does this project do?"] }),
+        finishReport("It is a UCS prototype: a web HMI for flight operations."),
+        turn("I'll have a sub-agent write the summary file.", "plan", "Create SUMMARY.md summarising the project: a web HMI for flight operations."),
+        JSON.stringify({ tasks: [{ id: "file", title: "Write SUMMARY.md", instructions: "Create SUMMARY.md with a short project summary.", dependsOn: [], fileScope: ["SUMMARY.md"] }] }),
+      ]);
+      await controller.send("summarize this for me in a file");
+      expect(started).toHaveLength(1);
+      // The planner was told what the research found.
+      expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/web HMI for flight operations/);
+    });
+
+    it("keeps a promise to delegate even when the model forgets the action", async () => {
+      const { controller, started } = await inAct([
+        JSON.stringify({ reply: "Reading first.", action: "research", request: "", questions: ["Where is the summary?"] }),
+        finishReport("PROJECT_SUMMARY.md, formal tone."),
+        // What qwen did: it said it would delegate, but chose "none".
+        turn("I'll have a sub-agent update the summary to use less formal language.", "none"),
+        rewritePlan,
+      ]);
+      await controller.send("alter the summary to use less formal language");
+      expect(started).toHaveLength(1);
+    });
+
+    it("answers a question after research without starting work", async () => {
+      const { controller, started } = await inAct([
+        JSON.stringify({ reply: "Reading first.", action: "research", request: "", questions: ["What does this project do?"] }),
+        finishReport("A web HMI."),
+        turn("It is a web HMI for flight operations.", "none"),
+      ]);
+      await controller.send("what does this project do?");
+      expect(started).toEqual([]);
+      expect((await controller.state()).current!.entries.at(-1)).toMatchObject({ author: "coordinator", text: "It is a web HMI for flight operations." });
+    });
+  });
+
   it("a coordinator asking to run in Plan mode runs nothing", async () => {
     const { controller, started } = setup(
       [turn("Plan below.", "plan", "Add a User model and an API that uses it."), plan, turn("Running it now.", "run")],
       "plan",
     );
     await controller.send("add users");
-    await controller.send("go");
+    await controller.send("hmm, what would that do to the tests");
     expect(started).toEqual([]);
     const entries = (await controller.state()).current!.entries;
-    expect(entries.at(-1)).toMatchObject({ author: "system", tone: "warning" });
+    expect(entries.at(-1)).toMatchObject({ author: "system", tone: "warning", text: expect.stringMatching(/Run it/) });
+  });
+
+  it('"go" with a plan waiting starts it, and switches Plan mode to Act', async () => {
+    const { controller, started, provider } = setup([turn("Plan below.", "plan", "Add a User model and an API that uses it."), plan], "plan");
+    await controller.send("add users");
+    const calls = provider.requests.length;
+    await controller.send("go");
+    const state = await controller.state();
+    expect(started).toHaveLength(1);
+    expect(state.mode).toBe("act");
+    // No model call: "go" is not something to interpret.
+    expect(provider.requests.length).toBe(calls);
   });
   /** Waits until a card of this kind is waiting for the user, then returns it. */
   async function waitForCard(controller: ChatController, kind: string) {
@@ -702,8 +776,13 @@ describe("questions about the project become research", () => {
     }
   });
 
-  it("turns a plan for a question into read-only research with focused questions", () => {
+  it("never overrides the model's choice to plan; the plan check decides later", () => {
     const turn = { reply: "Switch to Act mode to run this.", action: "plan" as const, request: "Analyze the whole project and write a report" };
+    expect(steerToResearch(turn, "Analyze this project, understand what it does, and report back to me", 3)).toBe(turn);
+  });
+
+  it("turns a reply that tells the user to switch modes for a question into research with focused questions", () => {
+    const turn = { reply: "Switch to Act mode to run this.", action: "none" as const, request: "" };
     const out = steerToResearch(turn, "Analyze this project, understand what it does, and report back to me", 3);
     expect(out.action).toBe("research");
     expect(out.questions).toHaveLength(3);
@@ -773,6 +852,32 @@ describe("questions about the project become research", () => {
     expect(editingReason({ title: "Docs", instructions: "You should update the README with the new flags." })).toMatch(/update the README/);
   });
 
+  it("Oskar's phrasings are changes", () => {
+    for (const t of ["alter the summary to use less formal language", "summarize this for me in a file", "shorten the README", "rephrase the intro in docs/intro.md"]) {
+      expect(isReadOnlyRequest(t), t).toBe(false);
+    }
+    expect(editingReason({ title: "Casual", instructions: "Alter PROJECT_SUMMARY.md to use less formal language." })).toBeDefined();
+    // A file named like a report word is still a file to write.
+    expect(editingReason({ title: "Write SUMMARY.md", instructions: "Create SUMMARY.md with a short project summary." })).toBeDefined();
+  });
+
+  it("turns a promise to delegate into the action it promised", () => {
+    const promise = { reply: "I'll have a sub-agent update the summary to use less formal language.", action: "none" as const, request: "" };
+    const out = keepPromise(promise, "alter the summary to use less formal language", true);
+    expect(out.action).toBe("plan");
+    expect(out.request).toMatch(/alter the summary[\s\S]*less formal/);
+    // A plain answer is left alone.
+    const answer = { reply: "It is a web HMI.", action: "none" as const, request: "" };
+    expect(keepPromise(answer, "what is it?", true)).toBe(answer);
+    // After research, a question is answered, not planned.
+    expect(keepPromise({ ...promise, reply: "I'll have the sub-agents look into it." }, "what does it do?", true).action).toBe("none");
+  });
+
+  it("knows a go-ahead", () => {
+    for (const t of ["go", "Go!", "run it", "yes", "kör", "do it"]) expect(isGoAhead(t), t).toBe(true);
+    for (const t of ["go through the code", "yes but change the title first", "add users"]) expect(isGoAhead(t), t).toBe(false);
+  });
+
   it("leaves change requests and plain answers alone", () => {
     const plan = { reply: "Plan below.", action: "plan" as const, request: "Add a dark mode toggle to settings." };
     expect(steerToResearch(plan, "Add a dark mode toggle")).toBe(plan);
@@ -781,7 +886,7 @@ describe("questions about the project become research", () => {
   });
 
   it("runs as research in Plan mode end to end, with no switch to Act", async () => {
-    const provider = scripted([JSON.stringify({ reply: "Switch to Act mode and I'll start.", action: "plan", request: "Read every file and summarise the project." })]);
+    const provider = scripted([JSON.stringify({ reply: "Switch to Act mode and I'll start.", action: "none", request: "" })]);
     const out = await coordinatorTurn(provider, { mode: "plan", entries: [{ id: "1", time: "", author: "user", text: "Analyze this project and tell me what it does" }] });
     expect(out.action).toBe("research");
   });

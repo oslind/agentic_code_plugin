@@ -12,7 +12,7 @@ import { AutoApprove, isAutoApproved, isChangeAutoAccepted } from "../tools/poli
 import { acceptChange, changeKind, rejectChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
-import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isReadOnlyRequest, researchQuestions } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
@@ -582,6 +582,14 @@ export class ChatController {
     }
     await this.append(c.id, { author: "user", text: text.trim() });
 
+    const waiting = isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
+    if (waiting && this.runOwner.has(waiting.id)) {
+      // "go" with a plan waiting is the same as pressing Run it. No model call, nothing to misread.
+      await this.append(c.id, { author: "coordinator", text: this.mode === "act" ? "Starting the plan." : "Starting the plan. This switches the chat to Act mode." });
+      await this.runPlan(waiting.id);
+      return;
+    }
+
     const abort = new AbortController();
     this.abort = abort;
     this.busy = "Coordinator is thinking…";
@@ -616,26 +624,35 @@ export class ChatController {
           { mode: this.mode, entries: c.entries, fileTree, answerFromResearch: true },
           { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
         );
+        this.host.log("info", `Coordinator after research chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`);
         await this.append(c.id, { author: "coordinator", tag: "from research", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
+        // The user asked for a change: the research was the first step, the plan is the next.
+        if (answer.action === "plan") await makePlan(answer, true);
       };
 
-      if (turn.action === "plan") {
+      const makePlan = async (t: CoordinatorResult, afterResearch: boolean): Promise<void> => {
         this.busy = "Coordinator is splitting the work into sub-agent tasks…";
         this.changed();
         let planThinking: string | undefined;
+        c = await this.conversations.load(c.id);
         const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: turn.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks },
+          { request: t.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks },
           {
             signal: abort.signal,
             onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
-            onThinking: (t) => (planThinking = t),
+            onThinking: (x) => (planThinking = x),
           },
         );
         const editing = result.plan.tasks.map(editingReason).find((r) => r !== undefined);
         if (editing) this.host.log("info", `Plan kept as a change plan because ${editing}.`);
         if (isReadOnlyPlan(result.plan.tasks)) {
+          if (afterResearch) {
+            // Research already ran for this message; reading again would only loop.
+            await this.append(c.id, { author: "system", tone: "warning", text: "The plan only read files, which the research already did, so nothing was started. Say what should change, for example which file to edit." });
+            return;
+          }
           // Every task only reads: that is research, which needs no Act mode and changes nothing.
           await this.append(c.id, {
             author: "system",
@@ -643,12 +660,12 @@ export class ChatController {
             text: "These tasks only read the project, so they run now as read-only sub-agents instead of a plan. Nothing will be changed, and Plan mode is fine.",
           });
           // Tasks that only combine others' findings are left out: the coordinator combines the reports itself.
-          const own = result.plan.tasks.filter((t) => t.dependsOn.length === 0);
-          const questions = (own.length ? own : result.plan.tasks).map((t) => `${t.title}: ${t.instructions} (Start with: ${t.fileScope.join(", ")})`.slice(0, 500));
-          await doResearch({ ...turn, action: "research", request: "", questions });
+          const own = result.plan.tasks.filter((x) => x.dependsOn.length === 0);
+          const questions = (own.length ? own : result.plan.tasks).map((x) => `${x.title}: ${x.instructions} (Start with: ${x.fileScope.join(", ")})`.slice(0, 500));
+          await doResearch({ ...t, action: "research", request: "", questions });
           return;
         }
-        const run = await this.tasks.createRun(turn.request, c.workspaceRoot, undefined, learned);
+        const run = await this.tasks.createRun(t.request, c.workspaceRoot, undefined, learned);
         this.runOwner.set(run.id, c.id);
         await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
         await this.tasks.addTasks(run.id, result.plan.tasks);
@@ -664,10 +681,14 @@ export class ChatController {
           text:
             this.mode === "act"
               ? `Plan: ${n} task(s), each for one sub-agent. Starting now.`
-              : `Proposed plan: ${n} task(s), each for one sub-agent. Switch to Act mode and press Run when it looks right, or tell me what to change.`,
+              : `Proposed plan: ${n} task(s), each for one sub-agent. Press "Run it" (or say "go") to start, or tell me what to change.`,
         });
         if (result.droppedContext.length) this.host.log("warn", `Left out of the plan prompt: ${result.droppedContext.join(", ")}`);
         if (this.mode === "act") startRun = run.id;
+      };
+
+      if (turn.action === "plan") {
+        await makePlan(turn, false);
       } else if (turn.action === "run" && pending) {
         startRun = pending.id;
       } else if (turn.action === "research") {
