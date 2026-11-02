@@ -144,7 +144,69 @@ export async function coordinatorTurn(
     // One research round per message; the coordinator answers with what it has.
     return { ...turn, action: "none", thinking };
   }
-  return { ...enforceMode(turn, ctx.mode, ctx.pendingPlan !== undefined), thinking };
+  const lastUser = [...ctx.entries].reverse().find((e) => e.author === "user")?.text ?? "";
+  const steered = steerToResearch(turn, lastUser, ctx.maxResearchers, ctx.pendingPlan !== undefined);
+  return { ...enforceMode(steered, ctx.mode, ctx.pendingPlan !== undefined), thinking };
+}
+
+/** Words that ask to change the project. Any of them means the request is not read-only. */
+const CHANGE_WORDS =
+  /\b(add|adds|adding|implement|fix|fixes|change|changes|create|write|update|remove|delete|rename|refactor|make|modify|edit|replace|move|convert|migrate|install|generate|set up|improve|optimi[sz]e|upgrade|translate|port|rewrite|apply|run|go ahead|start|do it|lägg till|fixa|ändra|skapa|skriv|ta bort|byt|kör)\b/i;
+/** Words that ask to learn about the project. */
+const READ_WORDS =
+  /\b(analy[sz]e|analy[sz]is|understand|explain|describe|summari[sz]e|summary|overview|review|explore|investigate|look (at|into|through)|read|reads|reading|list|inspect|examine|identify|study|map|tell me|what|how (does|do|is|are)|where|which|why|report|find out|figure out|audit|förklara|analysera|beskriv|sammanfatta|vad|hur|varför|var finns)\b/i;
+
+/** Whether a message only asks to learn about the project, with nothing to change. Deliberately simple and predictable. */
+export function isReadOnlyRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // "How do I add a test?" is still a question; "Can you add a test?" is not.
+  if (/^(what|how|where|which|why|who|when|does|is|are|vad|hur|var|vilk\w*|varför|finns)\b/i.test(t)) return true;
+  if (CHANGE_WORDS.test(t)) return false;
+  return READ_WORDS.test(t) || /\?\s*$/.test(t);
+}
+
+/**
+ * Whether every planned task only reads: no change words in its title or
+ * instructions, and reading words in each. Such a "plan" is research.
+ */
+export function isReadOnlyPlan(tasks: { title: string; instructions: string }[]): boolean {
+  return tasks.length > 0 && tasks.every((t) => {
+    const text = `${t.title}. ${t.instructions}`;
+    return !CHANGE_WORDS.test(text) && READ_WORDS.test(text);
+  });
+}
+
+/** Focused questions for a broad "understand this project" request, so small models each get one clear job. */
+const BROAD_QUESTIONS = [
+  "What does this project do, and for whom? Read the README and the main entry points.",
+  "How is the code organised: the main folders and modules, what each one does, and how they connect?",
+  "How is the project built, run and tested: scripts, configuration and CI?",
+  "What are the main dependencies and external services, and where are they used?",
+];
+
+/**
+ * Small models sometimes answer a question about the project by planning
+ * changes, which in Plan mode means "switch to Act mode". When the user's
+ * message only asks to learn something, the turn becomes read-only research,
+ * which runs in either mode and changes nothing.
+ */
+export function steerToResearch(turn: CoordinatorTurn, userText: string, maxResearchers?: number, hasPendingPlan = false): CoordinatorResult {
+  if (turn.action === "research" || !isReadOnlyRequest(userText)) return turn;
+  // Asking about a waiting plan, or a plain chat answer, needs no research.
+  const mentionsAct = /\bact\b/i.test(turn.reply);
+  if (turn.action === "none" && !mentionsAct) return turn;
+  if (turn.action === "run" && hasPendingPlan) return turn;
+  const broad = /\b(project|codebase|code base|repo|repository|projektet|koden)\b/i.test(userText) && userText.length < 300;
+  const questions = turn.questions?.length ? turn.questions : broad ? BROAD_QUESTIONS.slice(0, researcherLimit(maxResearchers)) : [userText.trim().slice(0, 500)];
+  return {
+    ...turn,
+    action: "research",
+    request: "",
+    questions,
+    reply: "I'll have read-only sub-agents look into this and report back. Nothing will be changed.",
+    overridden: "This is a question about the project, so read-only sub-agents answer it. That works in Plan mode too.",
+  };
 }
 
 export function researcherLimit(n?: number): number {

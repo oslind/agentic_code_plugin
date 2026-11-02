@@ -11,7 +11,7 @@ import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
-import { buildCoordinatorMessages, coordinatorTurn, enforceMode } from "../src/chat/coordinatorChat";
+import { buildCoordinatorMessages, coordinatorTurn, enforceMode, isReadOnlyPlan, isReadOnlyRequest, steerToResearch } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
@@ -295,6 +295,28 @@ describe("ChatController", () => {
     expect(started).toEqual([runId]);
   });
 
+  it("runs a plan that only reads as research, in Plan mode, with no switch to Act", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    const readPlan = JSON.stringify({ tasks: [{ id: "scan", title: "Scan sources", instructions: "Read the files in src and summarise each module.", dependsOn: [], fileScope: ["src/**"] }] });
+    const { controller, started } = setup(
+      [
+        turn("Plan below.", "plan", "Go through the sources module by module."),
+        readPlan,
+        JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "src has one module, index.ts." } }),
+        JSON.stringify({ reply: "There is one module, src/index.ts.", action: "none", request: "" }),
+      ],
+      "plan",
+    );
+    await controller.send("Go through the sources module by module");
+    const state = await controller.state();
+    const entries = state.current!.entries;
+    expect(started).toEqual([]);
+    expect(state.mode).toBe("plan");
+    expect(entries.some((e) => e.kind === "plan")).toBe(false);
+    expect(entries.some((e) => e.kind === "research")).toBe(true);
+    expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "There is one module, src/index.ts." });
+  });
+
   it("Act mode runs the plan right away and shows sub-agent messages in the chat", async () => {
     const { controller, started } = setup([turn("On it.", "plan", "Add a User model and an API that uses it."), plan], "act");
     await controller.send("add users");
@@ -553,5 +575,54 @@ describe("previewChange", () => {
     expect(await previewChange({ tool: "write_file", path: "src/a.ts", content: "one\n2\nthree\n" }, sandbox)).toBe("@@ line 2 @@\n- two\n+ 2");
     // Nothing was written.
     expect(await fs.readFile(path.join(dir, "p", "src", "a.ts"), "utf8")).toBe("one\ntwo\nthree\n");
+  });
+});
+
+describe("questions about the project become research", () => {
+  it("tells questions from change requests", () => {
+    for (const t of ["Analyze this project, understand what it does, and repport back to me", "How do I run the tests?", "Explain the auth flow", "where is the config loaded?", "Förklara projektet"]) {
+      expect(isReadOnlyRequest(t), t).toBe(true);
+    }
+    for (const t of ["Add a dark mode toggle", "Can you fix the login bug?", "Refactor the parser and explain it", "go ahead", ""]) {
+      expect(isReadOnlyRequest(t), t).toBe(false);
+    }
+  });
+
+  it("turns a plan for a question into read-only research with focused questions", () => {
+    const turn = { reply: "Switch to Act mode to run this.", action: "plan" as const, request: "Analyze the whole project and write a report" };
+    const out = steerToResearch(turn, "Analyze this project, understand what it does, and report back to me", 3);
+    expect(out.action).toBe("research");
+    expect(out.questions).toHaveLength(3);
+    expect(out.reply).toMatch(/Nothing will be changed/);
+    expect(out.overridden).toMatch(/Plan mode too/);
+  });
+
+  it("also catches a reply that only tells the user to switch to Act mode", () => {
+    const out = steerToResearch({ reply: "Please switch to Act mode so I can read the files.", action: "none", request: "" }, "What does src/app.ts do?");
+    expect(out).toMatchObject({ action: "research", questions: ["What does src/app.ts do?"] });
+  });
+
+  it("sees a plan whose tasks only read as research", () => {
+    expect(isReadOnlyPlan([
+      { title: "Read the source", instructions: "Read the files in src/ and summarise what each module does." },
+      { title: "Inspect config", instructions: "Look at package.json and tsconfig.json and report the build setup." },
+    ])).toBe(true);
+    expect(isReadOnlyPlan([
+      { title: "Read the source", instructions: "Read src/ and report." },
+      { title: "Add docs", instructions: "Write docs/overview.md describing the modules." },
+    ])).toBe(false);
+  });
+
+  it("leaves change requests and plain answers alone", () => {
+    const plan = { reply: "Plan below.", action: "plan" as const, request: "Add a dark mode toggle to settings." };
+    expect(steerToResearch(plan, "Add a dark mode toggle")).toBe(plan);
+    const none = { reply: "It is a flight simulator, as the research found.", action: "none" as const, request: "" };
+    expect(steerToResearch(none, "What is it again?")).toBe(none);
+  });
+
+  it("runs as research in Plan mode end to end, with no switch to Act", async () => {
+    const provider = scripted([JSON.stringify({ reply: "Switch to Act mode and I'll start.", action: "plan", request: "Read every file and summarise the project." })]);
+    const out = await coordinatorTurn(provider, { mode: "plan", entries: [{ id: "1", time: "", author: "user", text: "Analyze this project and tell me what it does" }] });
+    expect(out.action).toBe("research");
   });
 });
