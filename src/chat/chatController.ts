@@ -11,7 +11,7 @@ import { ToolCall } from "../tools/protocol";
 import { AutoApprove, isAutoApproved } from "../tools/policy";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
-import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, researchQuestions } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isReadOnlyRequest, researchQuestions } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
@@ -502,6 +502,10 @@ export class ChatController {
         { mode: this.mode, entries: c.entries, fileTree, pendingPlan: pending && describePlan(pending), maxResearchers: this.host.delegationLimits().maxResearchers },
         { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
       );
+      this.host.log(
+        "info",
+        `Coordinator (${this.mode} mode) chose "${turn.modelAction ?? turn.action}"${turn.modelAction && turn.modelAction !== turn.action ? `, changed to "${turn.action}"` : ""}. Message looks read-only: ${isReadOnlyRequest(text) ? "yes" : "no"}.`,
+      );
       await this.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 
@@ -533,6 +537,8 @@ export class ChatController {
             onThinking: (t) => (planThinking = t),
           },
         );
+        const editing = result.plan.tasks.map(editingReason).find((r) => r !== undefined);
+        if (editing) this.host.log("info", `Plan kept as a change plan because ${editing}.`);
         if (isReadOnlyPlan(result.plan.tasks)) {
           // Every task only reads: that is research, which needs no Act mode and changes nothing.
           await this.append(c.id, {

@@ -15,7 +15,8 @@ Rules:
 - Tasks that change the same files must not run at the same time: make one depend on the other.
 - dependsOn lists ids of tasks whose results this task needs.
 - Do not add tasks for running tests or reviewing; that happens automatically.
-- Set "changes": true when a task creates or edits files, and false when it only reads and reports.
+- Set "changes": true only when a task creates or edits files. Tasks that read, explore, explain or summarise set "changes": false.
+- Start each instruction with what to do: "Add …", "Create …", "Read …", "Explain …".
 
 Reply with JSON only, in this shape:
 {"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"],"changes":true},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"],"changes":true}]}`;

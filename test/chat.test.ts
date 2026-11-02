@@ -11,7 +11,7 @@ import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
-import { buildCoordinatorMessages, coordinatorTurn, enforceMode, isReadOnlyPlan, isReadOnlyRequest, steerToResearch } from "../src/chat/coordinatorChat";
+import { buildCoordinatorMessages, coordinatorTurn, editingReason, enforceMode, isReadOnlyPlan, isReadOnlyRequest, steerToResearch } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
@@ -622,10 +622,30 @@ describe("questions about the project become research", () => {
     ])).toBe(true);
     // The planner's own flag decides when it is given.
     expect(isReadOnlyPlan([{ title: "Tidy", instructions: "Update the README wording.", changes: false }])).toBe(true);
-    expect(isReadOnlyPlan([{ title: "Summarize", instructions: "Read src and summarise it.", changes: true }])).toBe(false);
+    // "changes": true alone is not trusted; small models copy it from the example.
+    expect(isReadOnlyPlan([{ title: "Summarize", instructions: "Read src and summarise it.", changes: true }])).toBe(true);
     // A report written to a file is a change.
     expect(isReadOnlyPlan([{ title: "Report", instructions: "Read src and write a report to docs/report.md." }])).toBe(false);
     expect(isReadOnlyRequest("Go through the project and make me a summary of what it does")).toBe(true);
+  });
+
+  it("catches Oskar's 6-task Read/Explore plan, even with changes: true on every task", () => {
+    const tasks = [
+      ["Read README and documentation files", "Read README.md, README_busshack.txt, tryapp_readme.md and DEAD_CODE_REPORT.md. Report what the project is for and how to set it up and run it."],
+      ["Explore Python server files", "Explore webapp/pyserver.py and the protoserver package. Describe how the server starts, which port it uses, and how commands are handled."],
+      ["Explore frontend structure", "Look through index.html, map.html, map.js and shared/utils.js. Explain how the pages are built and what changes when the map updates."],
+      ["Explore flight instrument panels", "Read the flight, FTI, FTF and termination panel HTML files and describe what each panel shows and how it gets its data."],
+      ["Explore data parsers", "Read flightplanparser.py, routeparser.py and restrictionsparser.py. Summarise what each parser reads and returns, and make sure to note the input formats."],
+      ["Explore configuration files", "Inspect configuration.json, proto/README.md and command.proto and explain the settings and message types."],
+    ].map(([title, instructions], i) => ({ id: `t${i}`, title, instructions, dependsOn: [], fileScope: ["webapp/**"], changes: true }));
+    expect(tasks.map(editingReason)).toEqual(tasks.map(() => undefined));
+    expect(isReadOnlyPlan(tasks)).toBe(true);
+  });
+
+  it("still sees real change plans as changes", () => {
+    expect(editingReason({ title: "User model", instructions: "Create src/model.ts with a User type." })).toMatch(/Create src/);
+    expect(editingReason({ title: "Wind", instructions: "Read src/physics.ts, then add a wind force to the step function." })).toMatch(/add a wind force/);
+    expect(editingReason({ title: "Docs", instructions: "You should update the README with the new flags." })).toMatch(/update the README/);
   });
 
   it("leaves change requests and plain answers alone", () => {
