@@ -187,14 +187,17 @@
   }
 
   function outcomeActions(entry) {
-    const cmd = (command, label, cls) =>
-      el("button", { class: cls || "secondary", onclick: () => post({ type: "runCommand", command, runId: entry.runId }) }, label);
+    const cmd = (command, label, cls, title) =>
+      el("button", { class: cls || "secondary", title, onclick: () => post({ type: "runCommand", command, runId: entry.runId }) }, label);
+    // Older summaries have no outcome details; show the full set for them.
+    const o = entry.outcome || { changedFiles: [null], failed: 1 };
     return el(
       "div",
       { class: "row" },
-      cmd("applyRun", "Apply to my branch", "primary"),
-      cmd("retryFailed", "Retry failed"),
-      cmd("showTaskLog", "Log"),
+      o.changedFiles.length ? cmd("showRunChanges", "Show changes", "secondary", "Open the combined diff of everything the sub-agents changed") : null,
+      o.changedFiles.length ? cmd("applyRun", "Apply to my branch", "primary", "Merge the changes into the branch you have checked out. Asks first.") : null,
+      o.failed ? cmd("retryFailed", "Retry failed tasks", "secondary", "Start the failed tasks again; they are told why they failed") : null,
+      cmd("showTaskLog", "Details", "secondary", "Every step the sub-agents took"),
     );
   }
 

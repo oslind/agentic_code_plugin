@@ -15,13 +15,13 @@ type FromView =
   | { type: "runPlan"; runId: string }
   | { type: "cancel" }
   | { type: "settings" }
-  | { type: "runCommand"; command: "applyRun" | "showTaskLog" | "retryFailed" | "cleanupRun"; runId: string }
+  | { type: "runCommand"; command: "applyRun" | "showTaskLog" | "retryFailed" | "cleanupRun" | "showRunChanges"; runId: string }
   | { type: "decide"; entryId: string; decision: unknown }
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
   | { type: "setPermission"; key: string; value: boolean }
   | { type: "editChecks" };
 
-const RUN_COMMANDS = new Set(["applyRun", "showTaskLog", "retryFailed", "cleanupRun"]);
+const RUN_COMMANDS = new Set(["applyRun", "showTaskLog", "retryFailed", "cleanupRun", "showRunChanges"]);
 
 function isId(x: unknown): x is string {
   return typeof x === "string" && /^[\w-]{1,100}$/.test(x);

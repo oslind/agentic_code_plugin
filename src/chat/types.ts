@@ -29,6 +29,8 @@ export interface ChatEntry {
   checks?: { name: string; command: string; source?: string }[];
   /** For an approval card: whether "remember for this folder" is offered. */
   rememberable?: boolean;
+  /** For a run summary: what can be applied or retried. */
+  outcome?: { changedFiles: string[]; failed: number };
   /** For a card that waits on the user: what was decided, once it was. */
   decided?: string;
 }

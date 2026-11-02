@@ -112,6 +112,11 @@
         "command": "agentic.editChecks",
         "title": "Agentic: Choose checks for this folder",
         "icon": "$(beaker)"
+      },
+      {
+        "command": "agentic.showRunChanges",
+        "title": "Agentic: Show a run's changes",
+        "icon": "$(diff)"
       }
     ],
     "configuration": {
@@ -354,6 +359,10 @@
         },
         {
           "command": "agentic.cleanupRun",
+          "when": "view == agentic.tasks && viewItem == run"
+        },
+        {
+          "command": "agentic.showRunChanges",
           "when": "view == agentic.tasks && viewItem == run"
         }
       ]

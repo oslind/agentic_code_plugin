@@ -14,6 +14,7 @@ import { coordinatorTurn, CoordinatorResult, researchQuestions } from "./coordin
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
+import { changedFilesOf, describeOutcome } from "./outcome";
 import { ChatEntry, ChatMode, Conversation, ConversationSummary } from "./types";
 
 /** What the chat needs from VS Code. Kept small so the controller can be tested without it. */
@@ -561,14 +562,15 @@ export class ChatController {
         await this.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
         return;
       }
-      const parts = [`${outcome.done.length} done`, `${outcome.failed.length} failed`, `${outcome.blocked.length} blocked`];
       const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
+      const finished = await this.tasks.load(runId);
       await this.append(conversationId, {
         author: "coordinator",
         kind: "outcome",
         runId,
         tone: ok ? "success" : "warning",
-        text: `Run finished: ${parts.join(", ")}. The work is on ${outcome.integrationBranch}. Your branch is unchanged until you apply it.${await this.reports(runId)}`,
+        text: describeOutcome(finished, outcome),
+        outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
       });
     } catch (err) {
       this.host.log("error", (err as Error).message);

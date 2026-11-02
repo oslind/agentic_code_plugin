@@ -1,7 +1,7 @@
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
 import { createProvider, readPermissions, readRunConfig } from "../config";
-import { applyRun, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
+import { applyRun, runChanges, cleanupRun, integrationBranchFor, MergeRequest, Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
 import { Run, Task } from "../state/types";
@@ -253,6 +253,18 @@ export function registerRunCommands(
         vscode.window.showErrorMessage((err as Error).message);
       }
     }),
+    vscode.commands.registerCommand("agentic.showRunChanges", async (node: RunNode) => {
+      const run = await pickRun(store, node);
+      if (!run) return;
+      try {
+        const folder = await confinedFolder(run);
+        const diff = await runChanges(folder.uri.fsPath, integrationBranchFor(run.id));
+        const doc = await vscode.workspace.openTextDocument({ language: "diff", content: diff || "No changes compared with your current branch." });
+        await vscode.window.showTextDocument(doc, { preview: true });
+      } catch (err) {
+        vscode.window.showErrorMessage((err as Error).message);
+      }
+    }),
     vscode.commands.registerCommand("agentic.applyRun", async (node: RunNode) => {
       const run = await pickRun(store, node);
       if (!run) return;
@@ -260,11 +272,19 @@ export function registerRunCommands(
         const folder = await confinedFolder(run);
         const branch = integrationBranchFor(run.id);
         const ok = await vscode.window.showWarningMessage(
-          `Merge ${branch} into your current branch?`,
-          { modal: true, detail: "This changes your working tree. Your branch must have no uncommitted changes." },
-          "Merge",
+          "Bring the sub-agents' changes into your current branch?",
+          {
+            modal: true,
+            detail: `This merges ${branch} into the branch you have checked out and changes your files. Commit or stash your own changes first.`,
+          },
+          "Apply",
+          "Show changes first",
         );
-        if (ok !== "Merge") return;
+        if (ok === "Show changes first") {
+          await vscode.commands.executeCommand("agentic.showRunChanges", { kind: "run", run });
+          return;
+        }
+        if (ok !== "Apply") return;
         const conflicts = await applyRun(folder.uri.fsPath, branch);
         if (conflicts.length) {
           vscode.window.showErrorMessage(`Merge stopped on conflicts in ${conflicts.join(", ")}. Nothing was changed.`);

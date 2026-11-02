@@ -12,6 +12,8 @@ import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
 import { RunOutcome } from "../src/coordinator/orchestrator";
+import { changedFilesOf, describeOutcome } from "../src/chat/outcome";
+import { Run } from "../src/state/types";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 import { TaskStore } from "../src/state/taskStore";
 
@@ -242,6 +244,8 @@ describe("ChatController", () => {
     // The final answer comes from the reports, and cannot start more work.
     expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "This project is a flight simulator (see README.md)." });
     expect(entries.filter((e) => e.kind === "plan")).toHaveLength(0);
+    // Research never ends with a run summary or Apply buttons.
+    expect(entries.some((e) => e.kind === "outcome")).toBe(false);
   });
 
   it("Plan mode proposes a plan and does not start sub-agents", async () => {
@@ -274,7 +278,7 @@ describe("ChatController", () => {
     const entries = (await controller.state()).current!.entries;
     expect(entries.some((e) => e.author === "agent" && e.text === "Writing the model." && e.agentName === "Add model")).toBe(true);
     expect(entries.at(-1)).toMatchObject({ kind: "outcome", tone: "success" });
-    expect(entries.at(-1)!.text).toMatch(/Reports from the sub-agents:\n- Add model/);
+    expect(entries.at(-1)!.text).toMatch(/What the sub-agents did:\n✓ Add model/);
   });
 
   it("a coordinator asking to run in Plan mode runs nothing", async () => {
@@ -407,5 +411,33 @@ describe("permissions in the policy", () => {
     expect(checkToolCall({ tool: "request_check", name: "t", command: "rm -rf /", reason: "" }, ctx).verdict).toBe("ask");
     // Workspace rules hold whatever is auto-approved.
     expect(checkToolCall({ tool: "write_file", path: "../x", content: "" }, { ...ctx, askBeforeWrites: true }).verdict).toBe("deny");
+  });
+});
+
+describe("describeOutcome", () => {
+  const task = (id: string, status: string, extra: Record<string, unknown> = {}) =>
+    ({ id, title: `Task ${id}`, instructions: "x", dependsOn: [], fileScope: [], status, ...extra });
+  const run = (tasks: unknown[]) => ({ id: "r1", tasks }) as unknown as Run;
+
+  it("says what changed, which files, and what Apply does", () => {
+    const r = run([
+      task("a", "done", { summary: "Added the model.", changedFiles: ["src/user.ts"] }),
+      task("b", "done", { summary: "Added the API.", changedFiles: ["src/api.ts", "src/user.ts"] }),
+    ]);
+    const text = describeOutcome(r, { done: ["a", "b"], failed: [], blocked: [] } as unknown as RunOutcome);
+    expect(text).toMatch(/^All 2 task\(s\) are done\./);
+    expect(text).toMatch(/✓ Task a: Added the model\./);
+    expect(text).toMatch(/Changed files: src\/api\.ts, src\/user\.ts\./);
+    expect(text).toMatch(/Apply to my branch/);
+    expect(text).not.toMatch(/integration/);
+    expect(changedFilesOf(r)).toEqual(["src/api.ts", "src/user.ts"]);
+  });
+
+  it("says when nothing changed and counts failures", () => {
+    const r = run([task("a", "done", { summary: "Read it." }), task("b", "failed", { error: "Model gave up." }), task("c", "pending")]);
+    const text = describeOutcome(r, { done: ["a"], failed: ["b"], blocked: ["c"] } as unknown as RunOutcome);
+    expect(text).toMatch(/1 of 3 task\(s\) are done\. 1 failed\. 1 could not start/);
+    expect(text).toMatch(/✕ Task b: Model gave up\./);
+    expect(text).toMatch(/nothing to apply/);
   });
 });

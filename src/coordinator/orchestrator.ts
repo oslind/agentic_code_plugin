@@ -380,6 +380,13 @@ export async function applyRun(workspaceRoot: string, integrationBranch: string)
   return git.merge(integrationBranch, `Merge ${integrationBranch}`);
 }
 
+/** Everything a run's integration branch would bring into the checked-out branch, as a diff. */
+export async function runChanges(workspaceRoot: string, integrationBranch: string): Promise<string> {
+  const git = new Git(workspaceRoot);
+  if (!(await git.branchExists(integrationBranch))) throw new OrchestratorError(`The branch ${integrationBranch} no longer exists.`);
+  return git.diff("HEAD", integrationBranch);
+}
+
 function isTransient(err: unknown): boolean {
   return err instanceof ProviderError && err.retryable;
 }
