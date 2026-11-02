@@ -11,7 +11,7 @@ import { ToolCall } from "../tools/protocol";
 import { AutoApprove, isAutoApproved } from "../tools/policy";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
-import { coordinatorTurn, CoordinatorResult, researchQuestions } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, researchQuestions } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
@@ -505,6 +505,20 @@ export class ChatController {
       await this.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 
+      const doResearch = async (t: CoordinatorResult) => {
+        await this.research(c, t, abort.signal);
+        c = await this.conversations.load(c.id);
+        this.busy = "Coordinator is reading the reports…";
+        this.runningRunId = undefined;
+        this.changed();
+        const answer = await coordinatorTurn(
+          provider,
+          { mode: this.mode, entries: c.entries, fileTree, answerFromResearch: true },
+          { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
+        );
+        await this.append(c.id, { author: "coordinator", tag: "from research", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
+      };
+
       if (turn.action === "plan") {
         this.busy = "Coordinator is splitting the work into sub-agent tasks…";
         this.changed();
@@ -519,6 +533,16 @@ export class ChatController {
             onThinking: (t) => (planThinking = t),
           },
         );
+        if (isReadOnlyPlan(result.plan.tasks)) {
+          // Every task only reads: that is research, which needs no Act mode and changes nothing.
+          await this.append(c.id, {
+            author: "system",
+            tone: "warning",
+            text: "These tasks only read the project, so they run now as read-only sub-agents instead of a plan. Nothing will be changed, and Plan mode is fine.",
+          });
+          await doResearch({ ...turn, action: "research", request: "", questions: result.plan.tasks.map((t) => `${t.title}: ${t.instructions}`.slice(0, 500)) });
+          return;
+        }
         const run = await this.tasks.createRun(turn.request, c.workspaceRoot, undefined, learned);
         this.runOwner.set(run.id, c.id);
         await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
@@ -542,17 +566,7 @@ export class ChatController {
       } else if (turn.action === "run" && pending) {
         startRun = pending.id;
       } else if (turn.action === "research") {
-        await this.research(c, turn, abort.signal);
-        c = await this.conversations.load(c.id);
-        this.busy = "Coordinator is reading the reports…";
-        this.runningRunId = undefined;
-        this.changed();
-        const answer = await coordinatorTurn(
-          provider,
-          { mode: this.mode, entries: c.entries, fileTree, answerFromResearch: true },
-          { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
-        );
-        await this.append(c.id, { author: "coordinator", tag: "from research", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
+        await doResearch(turn);
       }
     } catch (err) {
       const message = abort.signal.aborted ? "Stopped." : (err as Error).message;

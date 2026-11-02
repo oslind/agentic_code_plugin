@@ -51,7 +51,8 @@ export function activate(context: vscode.ExtensionContext): void {
     provider: (root) => createProvider(root ? vscode.Uri.file(root) : undefined, output),
     modelLabel: (root) => {
       const c = readModelConfig(root ? vscode.Uri.file(root) : undefined);
-      return `${c.model} at ${c.baseUrl}`;
+      // The version shows which build is installed, which helps when trying a new VSIX.
+      return `${c.model} at ${c.baseUrl} · v${context.extension.packageJSON.version as string}`;
     },
     pickWorkspace: async () => (await pickWorkspaceFolder())?.uri.fsPath,
     // The coordinator only ever sees the file list of a folder that is open right now.
