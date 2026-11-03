@@ -60,7 +60,10 @@ export function modelNameSource(scope?: vscode.Uri): string {
 }
 
 export interface RunConfig {
+  /** Checks from every settings level, including the project's own. Project checks are only suggestions. */
   checks: CheckConfig[];
+  /** Commands of the checks in the user's own settings. Only these may run without asking when "Run commands" is on. */
+  trustedCommands: Set<string>;
   maxParallel: number;
   maxTurns: number;
   maxFixRounds: number;
@@ -69,15 +72,17 @@ export interface RunConfig {
 
 export function readRunConfig(scope?: vscode.Uri): RunConfig {
   const c = vscode.workspace.getConfiguration("agentic", scope);
-  const checks = c
-    .get<CheckConfig[]>("checks", [])
-    .filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command);
+  const valid = (list: unknown): CheckConfig[] =>
+    (Array.isArray(list) ? (list as CheckConfig[]) : []).filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command);
+  const checks = valid(c.get<unknown>("checks", []));
   return {
     checks,
+    trustedCommands: new Set(valid(c.inspect<unknown>("checks")?.globalValue).map((x) => x.command)),
     maxParallel: Math.max(1, Math.min(8, c.get<number>("maxParallelWorkers", 2))),
     maxTurns: c.get<number>("worker.maxTurns", 40),
     maxFixRounds: c.get<number>("worker.maxFixRounds", 2),
-    linkDirs: safeLinkDirs(c.get<unknown>("scratch.linkDirs", ["node_modules"])),
+    // User settings only: a project must not choose what gets linked into the scratch copy.
+    linkDirs: safeLinkDirs(c.inspect<unknown>("scratch.linkDirs")?.globalValue ?? ["node_modules"]),
   };
 }
 

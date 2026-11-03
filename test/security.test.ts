@@ -4,10 +4,10 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import pkg from "../package.json";
 import { safeLinkDirs, ScratchCopy } from "../src/changes/scratch";
-import { runCheck } from "../src/checks/runner";
+import { checkEnv, runCheck } from "../src/checks/runner";
 import { OpenAICompatibleProvider } from "../src/providers/openaiCompatible";
 import { OverlayFiles } from "../src/changes/overlay";
-import { checkToolCall, setExtraSecretPatterns, isAutoApproved, isChangeAutoAccepted, isProtectedPath, isSecretPath, isSensitivePath } from "../src/tools/policy";
+import { checkToolCall, isCheckAutoApproved, setExtraSecretPatterns, isAutoApproved, isChangeAutoAccepted, isProtectedPath, isSecretPath, isSensitivePath } from "../src/tools/policy";
 import { toolCallSchema } from "../src/tools/protocol";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import {
@@ -321,5 +321,53 @@ describe("more credential files", () => {
     setExtraSecretPatterns(["**/tokens.yml", 5]);
     expect(isSecretPath("deploy/tokens.yml")).toBe(true);
     expect(isProtectedPath("deploy/tokens.yml")).toBe(true);
+  });
+});
+
+describe("project-supplied scratch links and checks", () => {
+  const unix = process.platform !== "win32";
+  it("only links known dependency folders, never a project folder such as src", () => {
+    expect(safeLinkDirs(["src", "node_modules", "config", ".venv", "../.."])).toEqual(["node_modules", ".venv"]);
+  });
+
+  it.skipIf(!unix)("copies a folder named in linkDirs instead of linking it, so its secrets stay out", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "src"));
+    await fs.writeFile(path.join(root, "src", ".env"), "SECRET=1");
+    await fs.writeFile(path.join(root, "src", "a.ts"), "a");
+    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), ["src"]).sync(new Map());
+    expect((await fs.lstat(path.join(dir, "src"))).isSymbolicLink()).toBe(false);
+    expect(await fs.readFile(path.join(dir, "src", "a.ts"), "utf8")).toBe("a");
+    await expect(fs.lstat(path.join(dir, "src", ".env"))).rejects.toThrow();
+  });
+
+  it.skipIf(!unix)("does not link a dependency folder that holds secrets or is a link to somewhere else", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "node_modules"));
+    await fs.writeFile(path.join(root, "node_modules", ".env"), "SECRET=1");
+    await fs.symlink(os.tmpdir(), path.join(root, "vendor"));
+    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), ["node_modules", "vendor"]).sync(new Map());
+    await expect(fs.lstat(path.join(dir, "node_modules"))).rejects.toThrow();
+    await expect(fs.lstat(path.join(dir, "vendor"))).rejects.toThrow();
+  });
+
+  it.skipIf(!unix)("does not copy an absolute link to .env", async () => {
+    const root = await tempDir();
+    await fs.writeFile(path.join(root, ".env"), "SECRET=1");
+    await fs.symlink(path.join(root, ".env"), path.join(root, "notes.txt"));
+    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), []).sync(new Map());
+    await expect(fs.lstat(path.join(dir, "notes.txt"))).rejects.toThrow();
+  });
+
+  it("never auto-runs a check command the project supplied, even with Run commands on", () => {
+    const trusted = new Set(["npm test"]);
+    expect(isCheckAutoApproved(true, trusted, "npm test")).toBe(true);
+    expect(isCheckAutoApproved(true, trusted, `python -c "import os; print(os.environ)"`)).toBe(false);
+    expect(isCheckAutoApproved(false, trusted, "npm test")).toBe(false);
+  });
+
+  it("runs checks without credential-looking environment variables", () => {
+    const env = checkEnv({ PATH: "/bin", HOME: "/h", GITHUB_TOKEN: "t", AWS_SECRET_ACCESS_KEY: "s", OPENAI_API_KEY: "k", NPM_AUTH: "a", GIT_AUTHOR_NAME: "me" });
+    expect(env).toEqual({ PATH: "/bin", HOME: "/h", GIT_AUTHOR_NAME: "me" });
   });
 });

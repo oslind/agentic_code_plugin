@@ -27,7 +27,7 @@ export class ScratchCopy {
     if (!this.ready) {
       await fs.rm(this.dir, { recursive: true, force: true });
       await fs.mkdir(this.dir, { recursive: true });
-      const top = new Set([...this.skip, ...this.linkDirs]);
+      const top = new Set([...this.skip, ...safeLinkDirs(this.linkDirs)]);
       // Copied entry by entry: the copy lives inside the project, and copying a folder into itself is refused.
       for (const entry of await fs.readdir(this.projectRoot)) {
         if (top.has(entry)) continue;
@@ -37,9 +37,9 @@ export class ScratchCopy {
           filter: (source) => this.keep(source),
         });
       }
-      for (const d of this.linkDirs) {
+      for (const d of safeLinkDirs(this.linkDirs)) {
         const source = path.join(this.projectRoot, d);
-        if (await exists(source)) await fs.symlink(source, path.join(this.dir, d), process.platform === "win32" ? "junction" : "dir");
+        if (await this.mayLink(source)) await fs.symlink(source, path.join(this.dir, d), process.platform === "win32" ? "junction" : "dir");
       }
       this.ready = true;
     }
@@ -49,6 +49,19 @@ export class ScratchCopy {
       await fs.writeFile(target, content, "utf8");
     }
     return this.dir;
+  }
+
+  /**
+   * A dependency folder is linked only if it is a real folder (not itself a
+   * link to somewhere else) with no secret files at its top level.
+   */
+  private async mayLink(source: string): Promise<boolean> {
+    const stat = await fs.lstat(source).catch(() => undefined);
+    if (!stat?.isDirectory()) return false;
+    for (const name of await fs.readdir(source).catch(() => [] as string[])) {
+      if (isSecretPath(this.rel(path.join(source, name)))) return false;
+    }
+    return true;
   }
 
   private rel(absolute: string): string {
@@ -81,16 +94,17 @@ export class ScratchCopy {
 }
 
 /**
- * Only plain folder names at the top of the project may be linked. A name
- * such as "../.." or an absolute path would link a folder outside the
- * project into the copy, and secret folders are never linked.
+ * Folders that may be linked into the scratch copy: dependency folders that
+ * are too large to copy. Anything else is copied, so the secret filter
+ * applies to it. A project folder such as `src` can never be linked
+ * wholesale.
  */
+export const LINKABLE_DIRS = ["node_modules", "bower_components", ".venv", "venv", "vendor", ".tox", ".gradle", "target"];
+
+/** The configured folders that may be linked: only names from LINKABLE_DIRS. */
 export function safeLinkDirs(value: unknown): string[] {
   if (!Array.isArray(value)) return ["node_modules"];
-  return value.filter(
-    (d): d is string =>
-      typeof d === "string" && /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(d) && d !== ".." && !isSecretPath(d) && ![".git", ".agentic"].includes(d),
-  );
+  return [...new Set(value.filter((d): d is string => typeof d === "string" && LINKABLE_DIRS.includes(d)))];
 }
 
 /** Whether a folder holds a file that may contain secrets, or a link to one. Gives up (true) on very large folders. */
@@ -110,13 +124,4 @@ async function holdsSecrets(dir: string, root: string, budget = { left: 5000 }):
     }
   }
   return false;
-}
-
-async function exists(p: string): Promise<boolean> {
-  try {
-    await fs.lstat(p);
-    return true;
-  } catch {
-    return false;
-  }
 }

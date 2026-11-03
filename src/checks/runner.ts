@@ -18,6 +18,21 @@ export interface CheckResult {
   skipped?: boolean;
 }
 
+/** Names of environment variables that usually hold credentials. */
+const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL|SESSION_?KEY|COOKIE|(^|_)AUTH(_|$))/i;
+
+/**
+ * The environment a check runs with: yours, minus variables whose names look
+ * like credentials (GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, OPENAI_API_KEY, ...).
+ * This only lowers the chance of a leak; a command can still read files your
+ * account can read.
+ */
+export function checkEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env)) if (!SECRET_ENV.test(k)) out[k] = v;
+  return out;
+}
+
 /** Asks whether a check may run now. Resolving false skips it. */
 export type ApproveCommand = (check: CheckConfig) => Promise<boolean>;
 
@@ -29,7 +44,7 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
     // Simple commands run directly, without a shell, so nothing in them is expanded or chained.
     // Pipes, `&&` and the like need a shell, and so does Windows, where npm and most tools are .cmd scripts.
     const argv = process.platform === "win32" ? undefined : splitCommand(check.command);
-    const options = { cwd, timeoutMs: check.timeoutMs ?? 600_000, signal };
+    const options = { cwd, timeoutMs: check.timeoutMs ?? 600_000, signal, env: checkEnv() };
     const res = argv ? await exec(argv[0]!, argv.slice(1), { ...options, shell: false }) : await exec(check.command, [], { ...options, shell: true });
     const combined = [res.stdout, res.stderr].filter(Boolean).join("\n");
     return {

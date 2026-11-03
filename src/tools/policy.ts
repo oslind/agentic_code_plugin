@@ -225,3 +225,12 @@ export function isAutoApproved(call: ToolCall, auto: AutoApprove): boolean {
   if (call.tool === "write_file" || call.tool === "replace_in_file") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
   return false;
 }
+
+/**
+ * Whether a configured check may run without asking. The "Run commands"
+ * switch covers only commands from the user's own settings or ones the user
+ * approved; a command a project supplies in its own settings is always shown.
+ */
+export function isCheckAutoApproved(commandsSwitch: boolean, trusted: ReadonlySet<string>, command: string): boolean {
+  return commandsSwitch && trusted.has(command);
+}

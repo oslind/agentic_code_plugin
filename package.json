@@ -166,7 +166,7 @@
         "agentic.checks": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Default checks that decide whether a task is done. Before the first run in a folder, the chat proposes these plus commands it finds in the project (package.json scripts, pytest, cargo, go, dotnet, gradle, make) for you to edit and approve; your choice is saved per folder. Sub-agents can also ask to run extra checks, which you approve one by one. Example: `[{\"name\": \"test\", \"command\": \"npm test\"}]`.",
+          "markdownDescription": "Default checks that decide whether a task is done. Before the first run in a folder, the chat proposes these plus commands it finds in the project (package.json scripts, pytest, cargo, go, dotnet, gradle, make) for you to edit and approve; your choice is saved per folder. Sub-agents can also ask to run extra checks, which you approve one by one. Example: `[{\"name\": \"test\", \"command\": \"npm test\"}]`. Checks from a project's own `.vscode/settings.json` are only suggestions: they are shown for your approval, and **Run commands** never runs them without asking.",
           "items": {
             "type": "object",
             "required": [
@@ -270,7 +270,8 @@
           "default": [
             "node_modules"
           ],
-          "description": "Top-level folders linked, not copied, into the scratch copy inside .agentic where checks run against pending changes, so dependencies need no reinstall. Only plain folder names count. Files that may hold secrets (.env, keys, credentials) are never copied there."
+          "description": "Dependency folders linked, not copied, into the scratch copy inside .agentic where checks run against pending changes, so they need no reinstall. Only node_modules, bower_components, .venv, venv, vendor, .tox, .gradle and target can be linked, and only from your user settings; a folder with secret files at its top level is not linked. Everything else is copied, without files that may hold secrets (.env, keys, credentials).",
+          "scope": "machine"
         },
         "agentic.protectedFiles": {
           "type": "array",

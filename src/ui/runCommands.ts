@@ -7,7 +7,7 @@ import { Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
 import { Run, Task } from "../state/types";
-import { isAutoApproved, isChangeAutoAccepted } from "../tools/policy";
+import { isAutoApproved, isChangeAutoAccepted, isCheckAutoApproved } from "../tools/policy";
 import { ChangeViews } from "./changeViews";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
@@ -55,11 +55,16 @@ async function approveTool(task: Task, reason: string, call: ToolCall, preview?:
   return choice === "Allow once";
 }
 
-/** Asks before each check command runs, unless commands are auto-approved. "Allow for this run" is kept per run. */
-function commandApprover(): (task: Task, check: CheckConfig) => Promise<boolean> {
+/**
+ * Asks before each check command runs, unless commands are auto-approved.
+ * "Allow for this run" is kept per run. The "Run commands" switch only
+ * covers checks from the user's own settings: a command that the project's
+ * .vscode/settings.json supplies is always shown first.
+ */
+function commandApprover(trusted: ReadonlySet<string>): (task: Task, check: CheckConfig) => Promise<boolean> {
   const allowed = new Set<string>();
   return async (task, check) => {
-    if (readPermissions().commands || allowed.has(check.command)) return true;
+    if (isCheckAutoApproved(readPermissions().commands, trusted, check.command) || allowed.has(check.command)) return true;
     const choice = await vscode.window.showWarningMessage(
       `"${task.title}" wants to run \`${check.command}\``,
       { modal: true, detail: `Check "${check.name}". It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it.` },
@@ -128,7 +133,7 @@ export function registerRunCommands(
       linkDirs: config.linkDirs,
       signal: abort.signal,
       approveTool: hooks?.approveTool ?? approveTool,
-      approveCommand: hooks?.approveCommand ?? commandApprover(),
+      approveCommand: hooks?.approveCommand ?? commandApprover(config.trustedCommands),
       onChanges: hooks?.onChanges ?? (async (_task, changes) => {
         // Outside the chat: accept what the switches allow, and leave the rest for "Review pending changes".
         for (const c of changes) {
