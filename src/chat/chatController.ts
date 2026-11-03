@@ -115,6 +115,14 @@ export interface ChatViewState {
   permissions: AutoApprove;
   /** Ids of cards still waiting for the user. */
   waiting: string[];
+  /** How the last prompt in this conversation ended, shown as a bar at the bottom. Unset while a prompt runs. */
+  done?: DoneBar;
+}
+
+/** The bar at the bottom of the chat once a prompt is dealt with: green when finished. */
+export interface DoneBar {
+  status: "finished" | "partial" | "stopped" | "failed";
+  text: string;
 }
 
 /** Thinking can be long; keep enough to follow along. */
@@ -148,6 +156,8 @@ export class ChatController {
   private busy?: string;
   private abort?: AbortController;
   private runningRunId?: string;
+  /** How the last prompt ended, for the bar at the bottom of its conversation. */
+  private done?: DoneBar & { conversationId: string };
   /** Set by Stop until the work it stopped has wound down. */
   private stopping = false;
   /** Which conversation each run belongs to, so sub-agent events land in the right chat. */
@@ -247,6 +257,7 @@ export class ChatController {
       runningRunId: this.runningRunId,
       permissions: this.host.permissions(),
       waiting: [...this.pending.keys()],
+      done: this.done && this.done.conversationId === current?.id ? { status: this.done.status, text: this.done.text } : undefined,
     };
   }
 
@@ -599,6 +610,8 @@ export class ChatController {
       c = await this.conversations.create(root, this.mode, title(text));
       this.currentId = c.id;
     }
+    // A new prompt: the bar goes away until this one is dealt with.
+    this.done = undefined;
     await this.append(c.id, { author: "user", text: text.trim() });
 
     const waiting = isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
@@ -614,6 +627,7 @@ export class ChatController {
     this.busy = "Coordinator is thinking…";
     this.changed();
     let startRun: string | undefined;
+    let ended: DoneBar = { status: "finished", text: "Finished" };
     try {
       c = await this.conversations.load(c.id);
       const provider = this.host.provider(c.workspaceRoot);
@@ -739,6 +753,7 @@ export class ChatController {
       }
     } catch (err) {
       const message = abort.signal.aborted ? "Stopped." : (err as Error).message;
+      ended = abort.signal.aborted ? { status: "stopped", text: "Stopped" } : { status: "failed", text: "Failed. See the message above." };
       this.host.log("error", message);
       await this.append(c.id, { author: "system", kind: "error", text: message, tone: abort.signal.aborted ? "warning" : "error" });
     } finally {
@@ -747,6 +762,8 @@ export class ChatController {
       this.runningRunId = undefined;
       if (abort.signal.aborted) startRun = undefined;
       this.stopping = false;
+      // A plan that starts now is still part of this prompt; runPlan shows the bar when it ends.
+      if (!startRun) this.done = { ...ended, conversationId: c.id };
       this.changed();
     }
     if (startRun) await this.runPlan(startRun);
@@ -769,7 +786,9 @@ export class ChatController {
 
     this.busy = "Waiting for you to approve the checks…";
     this.runningRunId = runId;
+    this.done = undefined;
     this.changed();
+    let ended: DoneBar = { status: "stopped", text: "The run was not started" };
     try {
       const workspaceRoot = run.workspaceRoot ?? (await this.conversations.load(conversationId)).workspaceRoot;
       const checks = await this.chooseChecks(conversationId, workspaceRoot);
@@ -792,6 +811,14 @@ export class ChatController {
       }
       const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
       const finished = await this.tasks.load(runId);
+      const waitingReview = (finished.changes ?? []).filter((ch) => ch.status === "pending").length;
+      const review = waitingReview ? ` ${waitingReview} change(s) wait for your review.` : "";
+      const notDone = outcome.failed.length + outcome.blocked.length;
+      ended = this.stopping
+        ? { status: "stopped", text: `Stopped.${review}` }
+        : ok
+          ? { status: "finished", text: `Finished.${review}` }
+          : { status: "partial", text: `Finished, but ${notDone} of ${finished.tasks.length} task(s) did not complete.${review}` };
       await this.append(conversationId, {
         author: "coordinator",
         kind: "outcome",
@@ -802,11 +829,13 @@ export class ChatController {
       });
     } catch (err) {
       this.host.log("error", (err as Error).message);
+      ended = { status: "failed", text: "Failed. See the message above." };
       await this.append(conversationId, { author: "system", kind: "error", text: (err as Error).message, tone: "error" });
     } finally {
       this.runningRunId = undefined;
       this.busy = undefined;
       this.stopping = false;
+      this.done = { ...ended, conversationId };
       this.changed();
     }
   }

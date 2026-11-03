@@ -768,3 +768,25 @@ button.mini {
 .agents.files {
   max-height: 30%;
 }
+
+/* The bar at the bottom once a prompt is dealt with: green when finished. */
+.done-bar {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-weight: 600;
+  color: #1e1e1e;
+  background: var(--success);
+}
+
+.done-bar.done-partial,
+.done-bar.done-stopped {
+  background: var(--warning);
+}
+
+.done-bar.done-failed {
+  background: var(--error);
+}
