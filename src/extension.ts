@@ -1,7 +1,8 @@
 import { ChangeViews } from "./ui/changeViews";
 import * as vscode from "vscode";
 import { z } from "zod";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, PERMISSION_KEYS, readModelConfig, readPermissions, readRunConfig, setSecretApiKey } from "./config";
+import { setExtraSecretPatterns } from "./tools/policy";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readModelConfig, readPermissions, readRunConfig, setSecretApiKey } from "./config";
 import { legacyApiKeyFrom } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
@@ -88,6 +89,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Agentic Code", { log: true });
   void loadApiKey(context, output).catch((err) => output.warn(`Could not read the API key from secret storage: ${(err as Error).message}`));
   context.subscriptions.push(warnAboutProjectSettings(output));
+  setExtraSecretPatterns(readProtectedFiles());
   const store = new TaskStore(context.globalStorageUri.fsPath);
   const tree = new TaskTreeProvider(store);
 
@@ -164,6 +166,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     { dispose: () => chat.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentic.protectedFiles")) setExtraSecretPatterns(readProtectedFiles());
       if (e.affectsConfiguration("agentic.autoApprove")) chat.settingsChanged();
       if (!e.affectsConfiguration("agentic.model")) return;
       // The user may have switched model or server; try the configured format again.

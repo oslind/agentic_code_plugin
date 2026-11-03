@@ -6,7 +6,8 @@ import pkg from "../package.json";
 import { safeLinkDirs, ScratchCopy } from "../src/changes/scratch";
 import { runCheck } from "../src/checks/runner";
 import { OpenAICompatibleProvider } from "../src/providers/openaiCompatible";
-import { checkToolCall, isAutoApproved, isChangeAutoAccepted, isProtectedPath, isSecretPath, isSensitivePath } from "../src/tools/policy";
+import { OverlayFiles } from "../src/changes/overlay";
+import { checkToolCall, setExtraSecretPatterns, isAutoApproved, isChangeAutoAccepted, isProtectedPath, isSecretPath, isSensitivePath } from "../src/tools/policy";
 import { toolCallSchema } from "../src/tools/protocol";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import {
@@ -238,5 +239,87 @@ describe("check commands", () => {
     const res = await runCheck({ name: "t", command: "definitely-not-a-real-program-xyz --x" }, await tempDir());
     expect(res.passed).toBe(false);
     expect(res.output).toContain("Command not found");
+  });
+});
+
+describe("secrets behind harmless-looking symlinks", () => {
+  const unix = process.platform !== "win32";
+  /** project/.env, project/.git/config, and links with ordinary names pointing at them. */
+  async function linkedProject(): Promise<{ root: string; sandbox: WorkspaceSandbox }> {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "src"));
+    await fs.mkdir(path.join(root, ".git"));
+    await fs.mkdir(path.join(root, "conf"));
+    await fs.writeFile(path.join(root, ".env"), "API_TOKEN=hunter2\n");
+    await fs.writeFile(path.join(root, ".git", "config"), "[core]\n");
+    await fs.writeFile(path.join(root, "conf", ".env"), "DB_PASSWORD=hunter3\n");
+    await fs.writeFile(path.join(root, "src", "app.ts"), "const API_TOKEN = 1;\n");
+    await fs.symlink(path.join("..", ".env"), path.join(root, "src", "build-info.txt"));
+    await fs.symlink(path.join("..", ".git"), path.join(root, "src", "meta"));
+    await fs.symlink(path.join("..", ".vscode"), path.join(root, "src", "editor"));
+    await fs.symlink(path.join("..", "conf"), path.join(root, "src", "conf-link"));
+    return { root, sandbox: await WorkspaceSandbox.create(root) };
+  }
+
+  it.skipIf(!unix)("cannot read .env through a link with an ordinary name", async () => {
+    const { sandbox } = await linkedProject();
+    await expect(sandbox.readFile("src/build-info.txt")).rejects.toThrow(/secrets/);
+    const res = await executeTool(toolCallSchema.parse({ tool: "read_file", path: "src/build-info.txt" }), { sandbox, checks: [] });
+    expect(res.ok).toBe(false);
+    expect(res.output).not.toContain("hunter2");
+    // Not through a sub-agent's view with pending changes either.
+    await expect(new OverlayFiles(sandbox).readFile("src/build-info.txt")).rejects.toThrow(/secrets/);
+  });
+
+  it.skipIf(!unix)("does not find secrets through a link when searching, and does not list the link", async () => {
+    const { sandbox } = await linkedProject();
+    const res = await executeTool(toolCallSchema.parse({ tool: "search", query: "API_TOKEN" }), { sandbox, checks: [] });
+    expect(res.output).toContain("src/app.ts");
+    expect(res.output).not.toContain("hunter2");
+    expect(await sandbox.listFiles("**")).not.toContain("src/build-info.txt");
+  });
+
+  it.skipIf(!unix)("cannot write protected files through linked folders or links", async () => {
+    const { root, sandbox } = await linkedProject();
+    await fs.mkdir(path.join(root, ".vscode"));
+    for (const p of ["src/meta/hooks/pre-commit", "src/meta/config", "src/editor/settings.json", "src/build-info.txt"]) {
+      await expect(sandbox.writeFile(p, "x"), p).rejects.toThrow(/protected/);
+      // Drafts are refused too, before they ever become a pending change.
+      await expect(new OverlayFiles(sandbox).writeFile(p, "x"), p).rejects.toThrow(/protected/);
+    }
+    expect(await fs.readFile(path.join(root, ".env"), "utf8")).toContain("hunter2");
+    await expect(fs.stat(path.join(root, ".git", "hooks", "pre-commit"))).rejects.toThrow();
+    await expect(fs.stat(path.join(root, ".vscode", "settings.json"))).rejects.toThrow();
+    // Ordinary files through an ordinary link still work.
+    await sandbox.writeFile("src/conf-link/app.json", "{}");
+    expect(await fs.readFile(path.join(root, "conf", "app.json"), "utf8")).toBe("{}");
+  });
+
+  it.skipIf(!unix)("does not copy links to secrets, or to folders holding secrets, into the scratch copy", async () => {
+    const { root } = await linkedProject();
+    await fs.symlink(path.join("..", "src", "app.ts"), path.join(root, "conf", "app-link.ts"));
+    await fs.mkdir(path.join(root, "lib"));
+    await fs.writeFile(path.join(root, "lib", "x.ts"), "x");
+    await fs.symlink(path.join("..", "lib"), path.join(root, "src", "lib-link"));
+    await fs.symlink(os.tmpdir(), path.join(root, "src", "outside"));
+    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t1"), []).sync(new Map());
+    const has = async (rel: string) => fs.lstat(path.join(dir, rel)).then(() => true, () => false);
+    for (const rel of ["src/build-info.txt", "src/meta", "src/conf-link", "src/outside", "conf/.env"]) expect(await has(rel), rel).toBe(false);
+    for (const rel of ["src/app.ts", "src/lib-link", "conf/app-link.ts"]) expect(await has(rel), rel).toBe(true);
+  });
+});
+
+describe("more credential files", () => {
+  afterEach(() => setExtraSecretPatterns([]));
+  it("covers gcloud and GitHub CLI credentials", () => {
+    for (const p of [".config/gcloud/application_default_credentials.json", "home/.config/gcloud/credentials.db", ".config/gh/hosts.yml"]) {
+      expect(isSecretPath(p), p).toBe(true);
+    }
+  });
+  it("adds the user's own patterns", () => {
+    expect(isSecretPath("deploy/tokens.yml")).toBe(false);
+    setExtraSecretPatterns(["**/tokens.yml", 5]);
+    expect(isSecretPath("deploy/tokens.yml")).toBe(true);
+    expect(isProtectedPath("deploy/tokens.yml")).toBe(true);
   });
 });

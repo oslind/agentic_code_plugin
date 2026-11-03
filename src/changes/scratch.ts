@@ -34,7 +34,7 @@ export class ScratchCopy {
         await fs.cp(path.join(this.projectRoot, entry), path.join(this.dir, entry), {
           recursive: true,
           verbatimSymlinks: true,
-          filter: (source) => !isSecretPath(path.relative(this.projectRoot, source).split(path.sep).join("/")),
+          filter: (source) => this.keep(source),
         });
       }
       for (const d of this.linkDirs) {
@@ -49,6 +49,29 @@ export class ScratchCopy {
       await fs.writeFile(target, content, "utf8");
     }
     return this.dir;
+  }
+
+  private rel(absolute: string): string {
+    return path.relative(this.projectRoot, absolute).split(path.sep).join("/");
+  }
+
+  /**
+   * Whether an entry goes into the copy. Secret files are left out by name.
+   * Links are kept as links, so they are also followed: one that leads
+   * outside the project or to a secret file is left out, and so is one to a
+   * folder that holds secret files.
+   */
+  private async keep(source: string): Promise<boolean> {
+    if (isSecretPath(this.rel(source))) return false;
+    const stat = await fs.lstat(source).catch(() => undefined);
+    if (!stat?.isSymbolicLink()) return true;
+    const real = await fs.realpath(source).catch(() => undefined);
+    if (!real) return false;
+    const root = await fs.realpath(this.projectRoot);
+    const rel = path.relative(root, real).split(path.sep).join("/");
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel) || isSecretPath(rel)) return false;
+    const target = await fs.stat(real);
+    return !target.isDirectory() || !(await holdsSecrets(real, root));
   }
 
   async remove(): Promise<void> {
@@ -68,6 +91,25 @@ export function safeLinkDirs(value: unknown): string[] {
     (d): d is string =>
       typeof d === "string" && /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(d) && d !== ".." && !isSecretPath(d) && ![".git", ".agentic"].includes(d),
   );
+}
+
+/** Whether a folder holds a file that may contain secrets, or a link to one. Gives up (true) on very large folders. */
+async function holdsSecrets(dir: string, root: string, budget = { left: 5000 }): Promise<boolean> {
+  for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (--budget.left < 0) return true;
+    const abs = path.join(dir, e.name);
+    const rel = path.relative(root, abs).split(path.sep).join("/");
+    if (isSecretPath(rel)) return true;
+    if (e.isSymbolicLink()) {
+      const real = await fs.realpath(abs).catch(() => undefined);
+      if (!real) continue;
+      const realRel = path.relative(root, real).split(path.sep).join("/");
+      if (realRel.startsWith("..") || path.isAbsolute(realRel) || isSecretPath(realRel)) return true;
+    } else if (e.isDirectory() && (await holdsSecrets(abs, root, budget))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function exists(p: string): Promise<boolean> {

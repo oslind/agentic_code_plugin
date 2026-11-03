@@ -68,10 +68,24 @@ export const SECRET = [
   "**/secrets.yaml",
   "**/secrets.yml",
   "**/secrets.toml",
+  "**/.config/gcloud",
+  "**/.config/gcloud/**",
+  "**/application_default_credentials.json",
+  "**/.config/gh/hosts.yml",
+  "**/.config/hub",
+  "**/.terraformrc",
+  "**/.terraform.d/credentials.tfrc.json",
   "**/*.tfvars",
   "**/*.tfstate",
   "**/*.tfstate.*",
 ];
+
+/** More secret patterns from the user's setting agentic.protectedFiles. Treated like the built-in list. */
+let extraSecrets: string[] = [];
+
+export function setExtraSecretPatterns(globs: unknown): void {
+  extraSecrets = Array.isArray(globs) ? globs.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim().replace(/\\/g, "/")) : [];
+}
 
 /** Templates that only show which variables exist. They are safe to read and change. */
 const SECRET_EXCEPTIONS = ["**/.env.example", "**/.env.sample", "**/.env.template", "**/.env.dist"];
@@ -126,6 +140,7 @@ function matchesNoCase(p: string, globs: string[]): boolean {
 export function isSecretPath(path: string): boolean {
   const p = normalizeWorkspacePath(path);
   if (!p) return false;
+  if (extraSecrets.length && matchesNoCase(p, extraSecrets)) return true;
   return matchesNoCase(p, SECRET) && !matchesAny(p, SECRET_EXCEPTIONS, { nocase: true });
 }
 

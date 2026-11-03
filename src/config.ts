@@ -95,6 +95,16 @@ export interface Permissions extends AutoApprove {
   commands: boolean;
 }
 
+/**
+ * Extra secret file patterns. Values from every level are combined, so a
+ * project can add patterns but never remove the user's.
+ */
+export function readProtectedFiles(): string[] {
+  const i = vscode.workspace.getConfiguration("agentic").inspect<unknown>("protectedFiles");
+  const all = [i?.globalValue, i?.workspaceValue, i?.workspaceFolderValue].flatMap((v) => (Array.isArray(v) ? v : []));
+  return [...new Set(all.filter((g): g is string => typeof g === "string"))];
+}
+
 /** The switches from user settings only. A project's .vscode/settings.json cannot turn them on. */
 export function readPermissions(): Permissions {
   return permissionsFrom(vscode.workspace.getConfiguration("agentic.autoApprove"));

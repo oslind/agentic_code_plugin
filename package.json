@@ -271,6 +271,14 @@
             "node_modules"
           ],
           "description": "Top-level folders linked, not copied, into the scratch copy inside .agentic where checks run against pending changes, so dependencies need no reinstall. Only plain folder names count. Files that may hold secrets (.env, keys, credentials) are never copied there."
+        },
+        "agentic.protectedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "More files that may hold secrets, as globs relative to the project (for example `**/my-tokens.yml`). They are treated like the built-in list (`.env`, keys, `.npmrc`, cloud credentials and more): sub-agents cannot read, search or change them, and they are left out of the scratch copy. Patterns from your user settings and the project's settings are combined, so a project can add patterns but not remove yours."
         }
       }
     },
