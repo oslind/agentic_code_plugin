@@ -12,7 +12,7 @@ import { AutoApprove, isAutoApproved, isChangeAutoAccepted } from "../tools/poli
 import { acceptChange, changeKind, rejectChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
-import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
@@ -48,7 +48,7 @@ export interface ChatHost {
   /** Limits for read-only research sub-agents. */
   researchLimits(): { maxTurns: number; maxParallel: number };
   /** How heavily the coordinator may delegate. */
-  delegationLimits(): { maxTasks: number; maxResearchers: number };
+  delegationLimits(): { maxTasks: number; maxResearchers: number; maxResearchRounds?: number };
   /** Opens a pending change in VS Code: a new file as its own editor, an edit as a side-by-side diff. */
   showChange(runId: string, filePath: string): Promise<void>;
   /** Closes the editors showing a change once it is decided. */
@@ -617,21 +617,45 @@ export class ChatController {
       await this.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 
-      const doResearch = async (t: CoordinatorResult) => {
-        await this.research(c, t, abort.signal);
+      // Research can take several rounds: a broad first look, then narrower researchers
+      // (for example one per file) when the reports are too general to answer from.
+      const maxRounds = researchRoundLimit(this.host.delegationLimits().maxResearchRounds);
+      let round = 0;
+      const doResearch = async (t: CoordinatorResult): Promise<void> => {
+        round++;
+        await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined);
         c = await this.conversations.load(c.id);
         this.busy = "Coordinator is reading the reports…";
         this.runningRunId = undefined;
         this.changed();
         const answer = await coordinatorTurn(
           provider,
-          { mode: this.mode, entries: c.entries, fileTree, answerFromResearch: true },
+          {
+            mode: this.mode,
+            entries: c.entries,
+            fileTree,
+            answerFromResearch: true,
+            researchRoundsLeft: maxRounds - round,
+            maxResearchers: this.host.delegationLimits().maxResearchers,
+          },
           { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
         );
-        this.host.log("info", `Coordinator after research chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`);
+        this.host.log(
+          "info",
+          `Coordinator after research round ${round} of ${maxRounds} chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`,
+        );
         await this.append(c.id, { author: "coordinator", tag: "from research", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
         // The user asked for a change: the research was the first step, the plan is the next.
         if (answer.action === "plan") await makePlan(answer, true);
+        // The reports were too general: send narrower researchers.
+        else if (answer.action === "research") await doResearch(answer);
+        else if (answer.researchLimitReached) {
+          await this.append(c.id, {
+            author: "system",
+            tone: "warning",
+            text: `The coordinator wanted to dig deeper, but this message already used ${maxRounds} research round(s), so no more sub-agents were sent. Ask again to continue from what was found, or raise agentic.delegation.maxResearchRounds.`,
+          });
+        }
       };
 
       const makePlan = async (t: CoordinatorResult, afterResearch: boolean): Promise<void> => {
@@ -652,8 +676,8 @@ export class ChatController {
         const editing = result.plan.tasks.map(editingReason).find((r) => r !== undefined);
         if (editing) this.host.log("info", `Plan kept as a change plan because ${editing}.`);
         if (isReadOnlyPlan(result.plan.tasks)) {
-          if (afterResearch) {
-            // Research already ran for this message; reading again would only loop.
+          if (afterResearch && round >= maxRounds) {
+            // Every research round for this message is used; reading again would only loop.
             await this.append(c.id, { author: "system", tone: "warning", text: "The plan only read files, which the research already did, so nothing was started. Say what should change, for example which file to edit." });
             return;
           }
@@ -774,7 +798,8 @@ export class ChatController {
    * project. They read the open folder directly and their file scope is
    * empty, so the policy refuses every write.
    */
-  private async research(c: Conversation, turn: CoordinatorResult, signal: AbortSignal): Promise<void> {
+  /** One research round. `learned` is what earlier rounds found, so follow-up researchers build on it. */
+  private async research(c: Conversation, turn: CoordinatorResult, signal: AbortSignal, learned?: string): Promise<void> {
     const root = await this.host.openFolder(c.workspaceRoot);
     if (!root) throw new Error(`${c.workspaceRoot} is not open in VS Code, so the sub-agents cannot read it.`);
     const questions = researchQuestions(turn, this.host.delegationLimits().maxResearchers);
@@ -815,6 +840,7 @@ export class ChatController {
             maxTurns,
             signal,
             readOnly: true,
+            context: learned ? `What earlier researchers found (build on it, do not repeat it):\n${learned}` : undefined,
             approve: async () => false,
             inbox: () => this.drainInbox(run.id, task!.id),
             log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
