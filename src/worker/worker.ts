@@ -246,8 +246,8 @@ export class Worker {
       }
       const call = turn.call.tool === "request_check" ? { tool: "run_check" as const, name: turn.call.name } : turn.call;
       if (call.tool === "run_check" && this.opts.approveCommand) {
-        // A new command was just approved above; any other check run is asked about now, before it runs.
-        const justApproved = turn.call.tool === "request_check" && decision.verdict === "ask";
+        // A command the user just approved above runs without a second question; any other check run is asked about now.
+        const justApproved = decision.verdict === "ask";
         const check = this.checks.find((c) => c.name === call.name);
         if (check && !justApproved && !(await this.opts.approveCommand(check))) {
           this.opts.log("denied", `User declined running ${check.command}`, { call: turn.call });

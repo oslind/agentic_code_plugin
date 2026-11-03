@@ -165,9 +165,15 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
         : { verdict: "ask", reason: `Run the command \`${call.command}\` as check "${call.name}": ${call.reason}` };
     }
     case "run_check":
-      return ctx.allowedChecks.includes(call.name)
-        ? { verdict: "allow" }
-        : { verdict: "deny", reason: `Unknown check '${call.name}'. Available: ${ctx.allowedChecks.join(", ") || "none"}` };
+      if (!ctx.allowedChecks.includes(call.name)) {
+        return { verdict: "deny", reason: `Unknown check '${call.name}'. Available: ${ctx.allowedChecks.join(", ") || "none"}` };
+      }
+      // A reopened sub-agent runs even a configured check only with the user's go-ahead for that one run.
+      if (ctx.followUp) {
+        const command = ctx.knownCommands?.get(call.name);
+        return { verdict: "ask", reason: `Run the check "${call.name}"${command ? ` (\`${command}\`)` : ""}` };
+      }
+      return { verdict: "allow" };
     case "list_files":
     case "search": {
       const glob = call.glob;

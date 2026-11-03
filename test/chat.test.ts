@@ -1028,6 +1028,60 @@ describe("ChatController", () => {
       expect((await tasks.load(agent.runId)).changes ?? []).toEqual([]);
     });
 
+    it("asks before every run of a saved check, even with Run commands on, and never remembers the approval", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      await fs.writeFile(path.join(ws, "a.txt"), "a\n");
+      const saved = [{ name: "version", command: "node --version" }];
+      const { controller, provider } = setup(
+        [
+          ...planReplies(),
+          // As if its saved history told it to run checks.
+          step("Run the check.", { tool: "run_check", name: "version" }),
+          step("Again.", { tool: "run_check", name: "version" }),
+          step("Done.", { tool: "finish", summary: "Checked." }),
+        ],
+        "act",
+        {
+          workspace: ws,
+          saved,
+          permissions: { editFiles: true, sensitiveFiles: true, commands: true },
+          during: async (_hooks, runId, store) => {
+            await store.setStatus(runId, "add-model", "running");
+            await store.setStatus(runId, "add-model", "done");
+          },
+        },
+      );
+      await controller.send("add users");
+      const agent = (await controller.state()).dashboard!.agents.find((a) => a.taskId === "add-model")!;
+      await controller.messageAgent(agent.runId, agent.taskId, "Anything else?");
+      const seen = new Set<string>();
+      const nextCard = async () => {
+        for (let i = 0; i < 200; i++) {
+          const st = await controller.state();
+          const e = st.current!.entries.find((x) => x.kind === "approval" && st.waiting.includes(x.id) && !seen.has(x.id));
+          if (e) {
+            seen.add(e.id);
+            return e;
+          }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        throw new Error("No approval card: " + JSON.stringify((await controller.state()).current!.entries.slice(-4).map((e) => [e.kind, e.tag, e.text.slice(0, 200)])));
+      };
+      // Each run is its own card naming the real command, and allowing one does not cover the next.
+      const first = await nextCard();
+      expect(first.text).toContain("`node --version`");
+      expect(first.text).toMatch(/even a saved check with Run commands on/);
+      expect(first.text).toMatch(/this one run by me only/);
+      await controller.decide(first.id, { kind: "allow" });
+      const second = await nextCard();
+      await controller.decide(second.id, { kind: "deny" });
+      await settled(controller);
+      const toolResults = provider.requests.at(-1)!.messages.filter((m) => m.role === "user").map((m) => m.content);
+      expect(toolResults.filter((t) => /^Result:/.test(t) && /v\d+\./.test(t))).toHaveLength(1);
+      expect(toolResults.filter((t) => /declined/.test(t))).toHaveLength(1);
+    });
+
     it("says why a sub-agent that has not started cannot get messages", async () => {
       const { controller } = setup([turn("Plan below.", "plan", "Add a User model and an API that uses it."), plan], "plan");
       await controller.send("add users");

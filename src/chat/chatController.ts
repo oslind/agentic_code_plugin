@@ -562,7 +562,10 @@ export class ChatController {
       context: history?.length ? undefined : earlierWork(task, conversation.entries, run.id),
       // Never auto-approved: its history may hold injected text from files it read, so the user decides every write and command.
       approve: research ? async () => false : (reason, call, preview) => this.askFollowUpApproval(conversationId, run.id, task, reason, call, preview),
-      approveCommand: research ? undefined : (check) => hooks.approveCommand(task, check),
+      // Also never auto-approved, and never remembered: each command run is one card for this sub-agent only.
+      approveCommand: research
+        ? undefined
+        : (check) => this.askFollowUpApproval(conversationId, run.id, task, `Run the check "${check.name}" (\`${check.command}\`)`, { tool: "run_check", name: check.name }),
       askUser: (q) => hooks.askUser(task, q),
       beforeAsk: overlay ? async () => void (await publishDrafts(this.tasks, run.id, task, overlay, published, (t, c) => this.announceFollowUpDrafts(conversationId, run.id, t, c))) : undefined,
       inbox: () => this.drainInbox(run.id, task.id),
@@ -613,7 +616,6 @@ export class ChatController {
    * instructions planted in a file it read, so it never gets to act alone.
    */
   private async askFollowUpApproval(conversationId: string, runId: string, task: Task, reason: string, call: ToolCall, preview?: string): Promise<boolean> {
-    const isCommand = call.tool === "request_check";
     const { decision } = await this.waitFor(conversationId, {
       author: "agent",
       kind: "approval",
@@ -621,11 +623,14 @@ export class ChatController {
       taskId: task.id,
       agentName: task.title,
       preview,
-      text: isCommand
-        ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} In a reopened conversation every command needs your approval, even with Run commands on. It runs as you, so only allow it if you trust it.`
-        : `${reason}. In a reopened conversation every change needs your approval, even with Edit files on, and it stays a draft for review afterwards.`,
+      text:
+        call.tool === "request_check"
+          ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} In a reopened conversation every command needs your approval, even with Run commands on. Allowing it covers this one run by me only. It runs as you, so only allow it if you trust it.`
+          : call.tool === "run_check"
+            ? `${reason}. In a reopened conversation every command needs your approval, even a saved check with Run commands on. Allowing it covers this one run by me only. It runs as you, so only allow it if you trust it.`
+            : `${reason}. In a reopened conversation every change needs your approval, even with Edit files on, and it stays a draft for review afterwards.`,
     });
-    if (decision?.kind === "allow" && isCommand) this.allowedFor(runId).add(call.command);
+    // Deliberately not remembered (no allowedFor): an approval covers this one call by this sub-agent, nothing else.
     return decision?.kind === "allow";
   }
 
