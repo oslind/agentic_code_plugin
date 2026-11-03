@@ -53,6 +53,14 @@ export class OverlayFiles implements ProjectFiles {
     return [...new Set([...onDisk, ...extra])].sort().slice(0, limit);
   }
 
+  /**
+   * The user accepted this text for `relPath` while the sub-agent was still
+   * working, so it is on disk now. Later drafts are compared with it.
+   */
+  rebase(relPath: string, onDisk: string): void {
+    this.originals.set(this.norm(relPath), onDisk);
+  }
+
   /** Every file this sub-agent and the tasks before it changed, with its current text. For checks. */
   allChanges(): Map<string, string> {
     return new Map([...this.base, ...this.writes]);

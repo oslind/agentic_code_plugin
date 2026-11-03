@@ -266,7 +266,7 @@
   }
 
   function thinkingBlock(entry) {
-    if (!entry.thinking) return null;
+    if (!entry.thinking || !String(entry.thinking).trim()) return null;
     return details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking));
   }
 
@@ -335,7 +335,7 @@
       "div",
       { class: "agent-latest" },
       said ? el("div", { class: "agent-thought" }, said) : el("div", { class: "muted" }, "Nothing yet."),
-      latest && latest.thinking ? details("a:" + key + ":" + latest.id, "Latest thinking", el("pre", { class: "thinking-text" }, latest.thinking)) : null,
+      latest && latest.thinking && String(latest.thinking).trim() ? details("a:" + key + ":" + latest.id, "Latest thinking", el("pre", { class: "thinking-text" }, latest.thinking)) : null,
       extra || null,
     );
     return el("div", { class: "agent" }, row, body);

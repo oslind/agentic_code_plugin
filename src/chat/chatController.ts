@@ -119,6 +119,7 @@ export interface ChatViewState {
 
 /** Thinking can be long; keep enough to follow along. */
 function clip(text: string | undefined, max = 4000): string | undefined {
+  text = text?.trim();
   if (!text) return undefined;
   return text.length > max ? `${text.slice(0, max)}\n[… cut]` : text;
 }

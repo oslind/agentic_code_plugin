@@ -164,6 +164,14 @@ describe("eventToEntry", () => {
     expect(e).toMatchObject({ author: "agent", kind: "report", text: "Added the User type.", thinking: "Checked everything." });
   });
 
+  it("leaves out whitespace-only thinking, which showed as an empty box", () => {
+    const e = eventToEntry(
+      { time: "", runId: "r", taskId: "t1", type: "tool_call", message: "write_file", data: { thought: "Rewrite it.", thinking: "\n\n  \n", call: { tool: "write_file", path: "a.md" } } },
+      tasks,
+    );
+    expect(e?.thinking).toBeUndefined();
+  });
+
   it("ignores bookkeeping events", () => {
     expect(eventToEntry({ time: "", runId: "r", taskId: "t1", type: "worktree", message: "/x" }, tasks)).toBeUndefined();
   });

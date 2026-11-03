@@ -35,6 +35,12 @@ export interface WorkerOptions {
   inbox?: () => string[];
   /** Asks the user a question in the chat and resolves with the answer. Without it, ask_user is refused. */
   askUser?: (question: string) => Promise<string>;
+  /**
+   * Called right before ask_user. The orchestrator uses it to put this
+   * sub-agent's drafts up for review, so the user can see what the question
+   * is about before answering.
+   */
+  beforeAsk?: () => Promise<void>;
 }
 
 export interface WorkerResult {
@@ -91,7 +97,8 @@ Rules:
 - Read a file before changing it. Prefer replace_in_file for small edits.
 - Paths are relative to the project root.
 - Only use request_check if you changed code and none of the available checks covers it. Never for documentation, config text or other changes that have nothing to test. Approved checks also run when your task is verified.
-- Only use ask_user if you truly cannot continue without the user's decision.
+- Only use ask_user if you truly cannot continue without the user's decision. Never use it to ask for review or feedback ("Anything to change?", "Let me wait for your review"): the user reviews every draft after you call finish, and can message you then.
+- write_file and replace_in_file only make drafts. Nothing reaches the project until the user accepts it, so never say a file "has been created" or "has been updated". Say it is ready for review.
 - When the task is done and checks pass, call finish.`;
 }
 
@@ -181,6 +188,7 @@ export class Worker {
           this.messages.push({ role: "user", content: "The user cannot be asked right now. Make a reasonable choice, say which in your summary, and continue." });
           continue;
         }
+        await this.opts.beforeAsk?.();
         const answer = await this.opts.askUser(turn.call.question);
         this.opts.log("user_answer", answer);
         this.messages.push({ role: "user", content: `The user answered: ${answer}` });
@@ -253,6 +261,7 @@ function lineDiff(before: string, after: string): string {
 
 /** Thinking can be long; keep enough to follow along without bloating the log. */
 function clip(text: string | undefined, max = 4000): string | undefined {
+  text = text?.trim();
   if (!text) return undefined;
   return text.length > max ? `${text.slice(0, max)}\n[… cut]` : text;
 }

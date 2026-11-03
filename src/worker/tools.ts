@@ -63,7 +63,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       }
       case "write_file":
         await ctx.sandbox.writeFile(call.path, call.content);
-        return { ok: true, output: `Wrote ${call.path} (${call.content.split("\n").length} lines). The user reviews it before it reaches the project.`, wrote: call.path };
+        return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`), wrote: call.path };
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
         const count = text.split(call.search).length - 1;
@@ -77,7 +77,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
           };
         }
         await ctx.sandbox.writeFile(call.path, text.replace(call.search, () => call.replace));
-        return { ok: true, output: `Updated ${call.path}.`, wrote: call.path };
+        return { ok: true, output: draftNote(call.path, "edit"), wrote: call.path };
       }
       case "run_check": {
         const check = ctx.checks.find((c) => c.name === call.name);
@@ -95,4 +95,12 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
   } catch (err) {
     return { ok: false, output: (err as Error).message };
   }
+}
+
+/**
+ * What a sub-agent is told after a write. Small models repeat this back to the
+ * user, so it must not say the file was written: it is only a draft.
+ */
+export function draftNote(filePath: string, what: string): string {
+  return `Drafted ${filePath} (${what}). This is a draft, not in the project yet: the user reviews it and decides whether to accept it. Do not say the file was created or updated; say it is ready for review.`;
 }
