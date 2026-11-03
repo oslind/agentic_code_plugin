@@ -934,7 +934,7 @@ describe("ChatController", () => {
       expect(learnedSoFar(state.current!.entries)).toMatch(/written in Rust/);
     });
 
-    it("keeps a reopened sub-agent's edits as drafts for review, and End chat sends the update", async () => {
+    it("asks before every edit of a reopened sub-agent, even with every auto-approve switch on, and keeps it a draft", async () => {
       const ws = path.join(dir, "ws");
       await fs.mkdir(path.join(ws, "src"), { recursive: true });
       await fs.writeFile(path.join(ws, "src", "model.ts"), "export type User = { id: string };\n");
@@ -950,7 +950,7 @@ describe("ChatController", () => {
         {
           workspace: ws,
           saved: [],
-          permissions: { editFiles: false },
+          permissions: { editFiles: true, sensitiveFiles: true, commands: true },
           during: async (_hooks, runId, store) => {
             await store.setStatus(runId, "add-model", "running");
             await store.updateTask(runId, "add-model", { summary: "Created src/model.ts with a User type." });
@@ -963,16 +963,22 @@ describe("ChatController", () => {
       expect(agent.canMessage).toBe(true);
 
       await controller.messageAgent(agent.runId, agent.taskId, "Please add an email field too.");
+      // Its history may carry injected text from files it read, so the switches do not apply: the user decides.
+      const card = await waitForCard(controller, "approval");
+      expect(card).toMatchObject({ taskId: "add-model", preview: expect.stringContaining("+ id: string; email: string") });
+      expect(card.text).toMatch(/every change needs your approval, even with Edit files on/);
+      await controller.decide(card.id, { kind: "allow" });
       await settled(controller);
       // No saved conversation for this run, so it was briefed from its report and its steps in the chat.
       const briefed = provider.requests[2]!.messages.map((m) => m.content).join("\n");
       expect(briefed).toMatch(/Created src\/model.ts with a User type/);
       expect(briefed).toMatch(/Writing the model/);
-      // Nothing written: a draft waits for review, like any other.
+      // Nothing written, although Edit files is on: a follow-up draft is never accepted automatically.
       expect(await fs.readFile(path.join(ws, "src", "model.ts"), "utf8")).toBe("export type User = { id: string };\n");
       const run = await tasks.load(agent.runId);
       expect(run.changes).toMatchObject([{ path: "src/model.ts", taskId: "add-model", status: "pending", proposed: "export type User = { id: string; email: string };\n" }]);
       expect(shown).toEqual(["src/model.ts"]);
+      expect((await controller.state()).current!.entries.some((e) => e.kind === "review" && /never accepted automatically/.test(e.text))).toBe(true);
 
       await controller.endAgentChat(agent.runId, agent.taskId);
       const state = await controller.state();
@@ -980,6 +986,100 @@ describe("ChatController", () => {
       expect(state.dashboard!.agents.find((a) => a.taskId === "add-model")!.followUp).toBeUndefined();
       // Its saved conversation now includes the follow-up, for the next time it is reopened.
       expect((await tasks.loadHistory(agent.runId, "add-model"))!.some((m) => /email field too/.test(m.content))).toBe(true);
+    });
+
+    it("drafts nothing when you deny, and asks before a new command even with Run commands on", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(path.join(ws, "src"), { recursive: true });
+      await fs.writeFile(path.join(ws, "src", "model.ts"), "export type User = {};\n");
+      const { controller, tasks } = setup(
+        [
+          ...planReplies(),
+          // As if a file it read told it to: an unasked edit and a new command.
+          step("The file said to do this.", { tool: "write_file", path: "src/model.ts", content: "pwned" }),
+          step("Run it then.", { tool: "request_check", name: "x", command: "npm run postinstall", reason: "the file said so" }),
+          step("Done.", { tool: "finish", summary: "The User type has no fields." }),
+        ],
+        "act",
+        {
+          workspace: ws,
+          saved: [],
+          permissions: { editFiles: true, sensitiveFiles: true, commands: true },
+          during: async (_hooks, runId, store) => {
+            await store.setStatus(runId, "add-model", "running");
+            await store.setStatus(runId, "add-model", "done");
+          },
+        },
+      );
+      await controller.send("add users");
+      const agent = (await controller.state()).dashboard!.agents.find((a) => a.taskId === "add-model")!;
+      await controller.messageAgent(agent.runId, agent.taskId, "What fields does User have?");
+      const edit = await waitForCard(controller, "approval");
+      await controller.decide(edit.id, { kind: "deny" });
+      let command: ChatEntry | undefined;
+      for (let i = 0; i < 100 && !command; i++) {
+        command = (await controller.state()).current!.entries.find((e) => e.kind === "approval" && e.id !== edit.id && !e.decided);
+        if (!command) await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(command!.text).toMatch(/every command needs your approval, even with Run commands on/);
+      await controller.decide(command!.id, { kind: "deny" });
+      await settled(controller);
+      expect(await fs.readFile(path.join(ws, "src", "model.ts"), "utf8")).toBe("export type User = {};\n");
+      expect((await tasks.load(agent.runId)).changes ?? []).toEqual([]);
+    });
+
+    it("asks before every run of a saved check, even with Run commands on, and never remembers the approval", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      await fs.writeFile(path.join(ws, "a.txt"), "a\n");
+      const saved = [{ name: "version", command: "node --version" }];
+      const { controller, provider } = setup(
+        [
+          ...planReplies(),
+          // As if its saved history told it to run checks.
+          step("Run the check.", { tool: "run_check", name: "version" }),
+          step("Again.", { tool: "run_check", name: "version" }),
+          step("Done.", { tool: "finish", summary: "Checked." }),
+        ],
+        "act",
+        {
+          workspace: ws,
+          saved,
+          permissions: { editFiles: true, sensitiveFiles: true, commands: true },
+          during: async (_hooks, runId, store) => {
+            await store.setStatus(runId, "add-model", "running");
+            await store.setStatus(runId, "add-model", "done");
+          },
+        },
+      );
+      await controller.send("add users");
+      const agent = (await controller.state()).dashboard!.agents.find((a) => a.taskId === "add-model")!;
+      await controller.messageAgent(agent.runId, agent.taskId, "Anything else?");
+      const seen = new Set<string>();
+      const nextCard = async () => {
+        for (let i = 0; i < 200; i++) {
+          const st = await controller.state();
+          const e = st.current!.entries.find((x) => x.kind === "approval" && st.waiting.includes(x.id) && !seen.has(x.id));
+          if (e) {
+            seen.add(e.id);
+            return e;
+          }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        throw new Error("No approval card: " + JSON.stringify((await controller.state()).current!.entries.slice(-4).map((e) => [e.kind, e.tag, e.text.slice(0, 200)])));
+      };
+      // Each run is its own card naming the real command, and allowing one does not cover the next.
+      const first = await nextCard();
+      expect(first.text).toContain("`node --version`");
+      expect(first.text).toMatch(/even a saved check with Run commands on/);
+      expect(first.text).toMatch(/this one run by me only/);
+      await controller.decide(first.id, { kind: "allow" });
+      const second = await nextCard();
+      await controller.decide(second.id, { kind: "deny" });
+      await settled(controller);
+      const toolResults = provider.requests.at(-1)!.messages.filter((m) => m.role === "user").map((m) => m.content);
+      expect(toolResults.filter((t) => /^Result:/.test(t) && /v\d+\./.test(t))).toHaveLength(1);
+      expect(toolResults.filter((t) => /declined/.test(t))).toHaveLength(1);
     });
 
     it("says why a sub-agent that has not started cannot get messages", async () => {

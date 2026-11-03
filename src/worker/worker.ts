@@ -75,7 +75,7 @@ const FOLLOW_UP_RULES = `Your task has ended, and the user has reopened the conv
 
 Follow-up rules:
 - Each new user message is a question or request from the user about your task.
-- Use the tools when you need to look at files again. Only draft changes if the user asks for them, and only in your files. Drafts wait for the user's review like before.
+- Use the tools when you need to look at files again. Only draft changes if the user asks for them, and only in your files. Every change and every new command now needs the user's explicit approval first, and drafts then wait for review like before.
 - When you have an answer, call finish. Its summary is shown to the user as your reply, so write it to them: answer the question directly, and do not repeat your old report.`;
 
 function researchPrompt(): string {
@@ -201,6 +201,7 @@ export class Worker {
         fileScope: task.fileScope,
         allowedChecks: this.opts.readOnly ? [] : checks.map((c) => c.name),
         knownCommands: new Map(checks.map((c) => [c.name, c.command])),
+        followUp: this.opts.followUp,
       });
       if (decision.verdict === "deny") {
         this.opts.log("denied", decision.reason, { call: turn.call });
@@ -245,8 +246,8 @@ export class Worker {
       }
       const call = turn.call.tool === "request_check" ? { tool: "run_check" as const, name: turn.call.name } : turn.call;
       if (call.tool === "run_check" && this.opts.approveCommand) {
-        // A new command was just approved above; any other check run is asked about now, before it runs.
-        const justApproved = turn.call.tool === "request_check" && decision.verdict === "ask";
+        // A command the user just approved above runs without a second question; any other check run is asked about now.
+        const justApproved = decision.verdict === "ask";
         const check = this.checks.find((c) => c.name === call.name);
         if (check && !justApproved && !(await this.opts.approveCommand(check))) {
           this.opts.log("denied", `User declined running ${check.command}`, { call: turn.call });

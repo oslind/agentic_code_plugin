@@ -9,6 +9,13 @@ export interface PolicyContext {
   allowedChecks: string[];
   /** Commands of the allowed checks by name, so a known check can be requested again without asking. */
   knownCommands?: Map<string, string>;
+  /**
+   * The user reopened this sub-agent after its task ended. Its conversation
+   * may carry text it read from project files (possible prompt injection), so
+   * every write and every new command needs the user's explicit go-ahead,
+   * whatever the auto-approve switches say.
+   */
+  followUp?: boolean;
 }
 
 export type PolicyDecision =
@@ -153,14 +160,20 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       const outside = commandLeavesProject(call.command);
       if (outside) return { verdict: "deny", reason: `The command \`${call.command}\` is not allowed. ${outside} Commands run in the project folder.` };
       // A new command always needs the user's go-ahead; workers cannot run commands on their own.
-      return ctx.allowedChecks.includes(call.name) && ctx.knownCommands?.get(call.name) === call.command
+      return !ctx.followUp && ctx.allowedChecks.includes(call.name) && ctx.knownCommands?.get(call.name) === call.command
         ? { verdict: "allow" }
         : { verdict: "ask", reason: `Run the command \`${call.command}\` as check "${call.name}": ${call.reason}` };
     }
     case "run_check":
-      return ctx.allowedChecks.includes(call.name)
-        ? { verdict: "allow" }
-        : { verdict: "deny", reason: `Unknown check '${call.name}'. Available: ${ctx.allowedChecks.join(", ") || "none"}` };
+      if (!ctx.allowedChecks.includes(call.name)) {
+        return { verdict: "deny", reason: `Unknown check '${call.name}'. Available: ${ctx.allowedChecks.join(", ") || "none"}` };
+      }
+      // A reopened sub-agent runs even a configured check only with the user's go-ahead for that one run.
+      if (ctx.followUp) {
+        const command = ctx.knownCommands?.get(call.name);
+        return { verdict: "ask", reason: `Run the check "${call.name}"${command ? ` (\`${command}\`)` : ""}` };
+      }
+      return { verdict: "allow" };
     case "list_files":
     case "search": {
       const glob = call.glob;
@@ -187,6 +200,9 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
           verdict: "deny",
           reason: `'${p}' is outside this task's file scope (${ctx.fileScope.join(", ")}). Only change files in scope.`,
         };
+      }
+      if (ctx.followUp) {
+        return { verdict: "ask", path: p, reason: `Draft a change to ${p} in a reopened conversation` };
       }
       // Writes stay pending until the user accepts them (or an auto-approve switch does), so they need no question here.
       return { verdict: "allow", path: p };
