@@ -257,6 +257,8 @@ describe("ChatController", () => {
       const card = state.current!.entries.find((e) => e.kind === "review")!;
       expect(card).toMatchObject({ author: "agent", taskId: "add-model", agentName: "Add model" });
       expect(card.text).toMatch(/2 change\(s\) for you to review/);
+      // The receipt: every file with the sub-agent that changed it.
+      expect(state.plans[runId]!.changes.map((c) => c.agentName)).toEqual(["Add model", "Add model"]);
       expect(state.plans[runId]!.changes.map((c) => [c.path, c.kind, c.status])).toEqual([
         ["src/model.ts", "new", "pending"],
         ["README.md", "edit", "pending"],

@@ -92,6 +92,8 @@ export interface PlanView {
 export interface ChangeView {
   path: string;
   taskId: string;
+  /** The sub-agent that made the change: its task's title. */
+  agentName: string;
   kind: "new" | "edit";
   status: PendingChange["status"];
   /** Written by an auto-approve switch rather than by the user. */
@@ -224,6 +226,7 @@ export class ChatController {
         changes: (run.changes ?? []).map((ch) => ({
           path: ch.path,
           taskId: ch.taskId,
+          agentName: run.tasks.find((t) => t.id === ch.taskId)?.title ?? ch.taskId,
           kind: changeKind(ch),
           status: ch.status,
           auto: ch.auto,
