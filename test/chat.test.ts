@@ -511,6 +511,26 @@ describe("ChatController", () => {
       expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "old_handler() in app.py is dead code." });
     });
 
+    it("sends new researchers for a later message, whatever earlier ones did", async () => {
+      const { controller } = setup(
+        [
+          ...firstRound,
+          turn("It is a Flask app with a JavaScript front end.", "none"),
+          // Second message in the same conversation: a fresh round, not blocked by the finished one.
+          JSON.stringify({ reply: "I'll send researchers per file.", action: "research", request: "", questions: ["In app.py, list unused functions."] }),
+          report("app.py: old_handler() is never called."),
+          turn("old_handler() in app.py is unused.", "none"),
+        ],
+        "plan",
+        { maxResearchRounds: 1 },
+      );
+      await controller.send("What does this project do?");
+      await controller.send(userText);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.filter((e) => e.kind === "research")).toHaveLength(2);
+      expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "old_handler() in app.py is unused." });
+    });
+
     it("stops after the last allowed round and says so", async () => {
       const { controller } = setup(
         [
