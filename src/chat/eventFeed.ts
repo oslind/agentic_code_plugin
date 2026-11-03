@@ -62,7 +62,8 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       }
     case "tool_call": {
       const call = data.call as Record<string, unknown> | undefined;
-      const thinking = typeof data.thinking === "string" ? data.thinking : undefined;
+      // Whitespace-only thinking (some local models send it) would show as an empty box.
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
       const thought = typeof data.thought === "string" ? short(data.thought) : "";
       if (event.message === "finish") {
         return agent({ kind: "report", text: String(call?.summary ?? "Finished."), tag: "report to coordinator", thought: thought || undefined, thinking });

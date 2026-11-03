@@ -339,3 +339,65 @@ describe("RetryingProvider", () => {
     await expect(new RetryingProvider(bad, 3, 1).chat({ messages: [] })).rejects.toThrow("bad");
   });
 });
+
+describe("drafts and questions", () => {
+  const ask = (q: string): Turn => ({ thought: "ask", call: { tool: "ask_user", question: q } });
+
+  it("shows the drafts for review before a sub-agent asks, and writes nothing until accepted", async () => {
+    // What Oskar saw: write, ask "anything to change?", rewrite, ask again, with "Edit files" off.
+    const runId = await setup([task("doc", ["PROJECT_ANALYSIS.md"])]);
+    const seen: ChatRequest[] = [];
+    const provider = scripted(
+      { doc: [write("PROJECT_ANALYSIS.md", "Formal."), ask("Anything to change?"), write("PROJECT_ANALYSIS.md", "Informal!"), ask("Anything else?"), finish] },
+      seen,
+    );
+    const atQuestion: { pending: string[]; disk: string | undefined }[] = [];
+    const { o, proposed } = make(runId, provider, {
+      askUser: async () => {
+        const pending = (await changesOf(runId)).filter((c) => c.status === "pending").map((c) => c.proposed);
+        atQuestion.push({ pending, disk: onDisk("PROJECT_ANALYSIS.md") });
+        return atQuestion.length === 1 ? "change it to more informal language" : "looks good";
+      },
+    });
+    expect((await o.run()).done).toEqual(["doc"]);
+
+    // Each question came after its draft was up for review, and the file never reached the disk.
+    expect(atQuestion).toEqual([
+      { pending: ["Formal."], disk: undefined },
+      { pending: ["Informal!"], disk: undefined },
+    ]);
+    // Announced once per draft, not again at finish.
+    expect(proposed.map((p) => p.changes.map((c) => c.proposed))).toEqual([["Formal."], ["Informal!"]]);
+    const changes = await changesOf(runId);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({ path: "PROJECT_ANALYSIS.md", original: null, proposed: "Informal!", status: "pending" });
+    expect(onDisk("PROJECT_ANALYSIS.md")).toBeUndefined();
+    // The sub-agent is told its write is a draft, so it does not claim the file was created.
+    const toolResult = seen[1]!.messages.at(-1)!.content;
+    expect(toolResult).toMatch(/draft, not in the project yet/);
+    expect(toolResult).not.toMatch(/^Result:\nWrote/);
+  });
+
+  it("builds on a draft the user accepted while answering", async () => {
+    const runId = await setup([task("edit", ["README.md"])]);
+    const provider = scripted({
+      edit: [write("README.md", "hello\nthere\n"), ask("Is this edit right?"), write("README.md", "hello\nthere!\n"), finish],
+    });
+    const { o } = make(runId, provider, {
+      askUser: async () => {
+        expect((await acceptChange(store, runId, "README.md", repo)).ok).toBe(true);
+        return "yes, add an exclamation mark";
+      },
+    });
+    await o.run();
+    const changes = await changesOf(runId);
+    expect(changes.map((c) => [c.status, c.original, c.proposed])).toEqual([
+      ["accepted", "hello\nworld\n", "hello\nthere\n"],
+      ["pending", "hello\nthere\n", "hello\nthere!\n"],
+    ]);
+    // The second draft is an edit on top of the accepted one, so accepting it is not a conflict.
+    expect((await acceptChange(store, runId, "README.md", repo)).ok).toBe(true);
+    expect(onDisk("README.md")).toBe("hello\nthere!\n");
+    expect((await store.load(runId)).tasks.find((t) => t.id === "edit")?.changedFiles).toEqual(["README.md"]);
+  });
+});

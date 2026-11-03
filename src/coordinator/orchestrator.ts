@@ -179,6 +179,8 @@ export class Orchestrator {
       const run = await this.o.store.load(this.o.runId);
       files = new OverlayFiles(await WorkspaceSandbox.create(this.root), pendingBase(run.changes));
       const overlay = files;
+      // Drafts already put up for review while the task ran, by path, so they are not announced twice.
+      const published = new Map<string, string>();
       const checkDir = () => scratch.sync(overlay.allChanges());
 
       const worker = new Worker({
@@ -193,6 +195,8 @@ export class Orchestrator {
         approve: (reason, call, preview) => this.o.approveTool(task, reason, call, preview),
         approveCommand: this.o.approveCommand && ((check) => this.o.approveCommand!(task, check)),
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
+        // A question is usually about the drafts ("is this what you wanted?"), so show them first.
+        beforeAsk: async () => void (await this.publishDrafts(task, overlay, published)),
         inbox: this.o.inbox && (() => this.o.inbox!(task.id)),
         log: (type, message, data) => void this.log(type, message, task.id, data),
       });
@@ -215,14 +219,10 @@ export class Orchestrator {
         );
       }
 
-      const changes = overlay.pending(task.id);
-      await this.o.store.updateTask(this.o.runId, task.id, { summary: result.summary, changedFiles: changes.map((c) => c.path), unfinished: undefined });
-      if (changes.length) {
-        await this.o.store.addChanges(this.o.runId, changes);
-        await this.log("changes_pending", changes.map((c) => c.path).join(", "), task.id, { files: changes.map((c) => c.path) });
-      } else {
-        await this.log("no_changes", "Task finished without changing files", task.id);
-      }
+      const changes = await this.publishDrafts(task, overlay, published, false);
+      const changedFiles = [...new Set([...published.keys(), ...overlay.pending(task.id).map((c) => c.path)])];
+      await this.o.store.updateTask(this.o.runId, task.id, { summary: result.summary, changedFiles, unfinished: undefined });
+      if (changedFiles.length === 0) await this.log("no_changes", "Task finished without changing files", task.id);
       await this.setStatus(task, "done");
       if (changes.length) await this.o.onChanges?.(task, changes);
     } catch (err) {
@@ -235,6 +235,27 @@ export class Orchestrator {
       this.taskControllers.delete(task.id);
       await scratch.remove().catch(() => undefined);
     }
+  }
+
+  /**
+   * Records this task's drafts that are new since the last call as pending
+   * changes. With `announce`, the user is shown them right away (and the
+   * auto-approve switches apply), which is what happens before a question.
+   * Returns the changes it recorded.
+   */
+  private async publishDrafts(task: Task, overlay: OverlayFiles, published: Map<string, string>, announce = true): Promise<PendingChange[]> {
+    const run = await this.o.store.load(this.o.runId);
+    // A draft the user already accepted is on disk now; later drafts of that file are edits on top of it.
+    for (const [p, text] of published) {
+      if (run.changes?.some((c) => c.path === p && c.taskId === task.id && c.status === "accepted" && c.proposed === text)) overlay.rebase(p, text);
+    }
+    const changes = overlay.pending(task.id).filter((c) => published.get(c.path) !== c.proposed);
+    if (changes.length === 0) return [];
+    await this.o.store.addChanges(this.o.runId, changes);
+    for (const c of changes) published.set(c.path, c.proposed);
+    await this.log("changes_pending", changes.map((c) => c.path).join(", "), task.id, { files: changes.map((c) => c.path) });
+    if (announce) await this.o.onChanges?.(task, changes);
+    return changes;
   }
 
   private async handleFailure(task: Task, err: unknown, taskCancelled: boolean): Promise<void> {
