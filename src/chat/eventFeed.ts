@@ -89,16 +89,16 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       const kept = Array.isArray(data.kept) ? (data.kept as string[]) : [];
       return agent({
         text: kept.length
-          ? `Stopped. Nothing was written to your project. My drafts of ${kept.join(", ")} are kept: review them under Files changed, and Accept or Reject as usual.`
+          ? `Stopped. Nothing was written to your project. My drafts of ${kept.join(", ")} are kept: review them under Drafts, and Accept or Reject as usual.`
           : "Stopped. Nothing was written to your project.",
         tag: "stopped",
         tone: "warning",
       });
     }
     case "change_accepted":
-      return { author: "system", text: `Wrote ${event.message} to your project.`, tone: "success" };
+      return { author: "system", text: `Accepted the draft of ${event.message} and wrote it to your project.`, tone: "success" };
     case "change_rejected":
-      return { author: "system", text: `Rejected the change to ${event.message}. Nothing was written.` };
+      return { author: "system", text: `Rejected the draft of ${event.message}. Nothing was written.` };
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

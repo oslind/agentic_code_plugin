@@ -18,6 +18,8 @@ import { Worker } from "../worker/worker";
 import { eventToEntry } from "./eventFeed";
 import { changedFilesOf, describeOutcome } from "./outcome";
 import { ChatEntry, ChatMode, Conversation, ConversationSummary } from "./types";
+import { buildDashboard, DashboardView } from "./dashboard";
+import { DraftState, draftState, lineCounts } from "./lifecycle";
 
 /** What the chat needs from VS Code. Kept small so the controller can be tested without it. */
 export interface ChatHost {
@@ -53,6 +55,8 @@ export interface ChatHost {
   showChange(runId: string, filePath: string): Promise<void>;
   /** Closes the editors showing a change once it is decided. */
   closeChange(runId: string, filePath: string): Promise<void>;
+  /** Lets the user pick files to attach to a prompt. Returns paths relative to the folder, and only files inside it. */
+  pickFiles?(workspaceRoot: string): Promise<string[]>;
 }
 
 /** How a run started from the chat talks back to the user. */
@@ -96,6 +100,11 @@ export interface ChangeView {
   agentName: string;
   kind: "new" | "edit";
   status: PendingChange["status"];
+  /** Where the change is in its lifecycle: draft (waiting for review), applied or discarded. */
+  state: DraftState;
+  /** Lines added and removed compared with the file the sub-agent started from. */
+  added: number;
+  removed: number;
   /** Written by an auto-approve switch rather than by the user. */
   auto?: boolean;
   /** Why the last Accept did not go through, e.g. the file changed on disk. */
@@ -117,12 +126,18 @@ export interface ChatViewState {
   waiting: string[];
   /** How the last prompt in this conversation ended, shown as a bar at the bottom. Unset while a prompt runs. */
   done?: DoneBar;
+  /** The orchestration dashboard for the current conversation: coordinator, agents, counts and what needs the user. */
+  dashboard?: DashboardView;
+  /** The folder files are attached from before a conversation exists. */
+  attachRoot?: string;
 }
 
 /** The bar at the bottom of the chat once a prompt is dealt with: green when finished. */
 export interface DoneBar {
   status: "finished" | "partial" | "stopped" | "failed";
   text: string;
+  /** When the prompt was dealt with. */
+  time?: string;
 }
 
 /** Thinking can be long; keep enough to follow along. */
@@ -160,6 +175,8 @@ export class ChatController {
   private done?: DoneBar & { conversationId: string };
   /** Set by Stop until the work it stopped has wound down. */
   private stopping = false;
+  /** The folder files were attached from before the first message, so the new conversation uses the same one. */
+  private attachRoot?: string;
   /** Which conversation each run belongs to, so sub-agent events land in the right chat. */
   private readonly runOwner = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
@@ -242,11 +259,15 @@ export class ChatController {
           agentName: run.tasks.find((t) => t.id === ch.taskId)?.title ?? ch.taskId,
           kind: changeKind(ch),
           status: ch.status,
+          state: draftState(ch.status),
+          ...lineCounts(ch.original, ch.proposed),
           auto: ch.auto,
           note: this.changeNotes.get(`${runId}:${ch.path}`),
         })),
       };
     }
+    const done = this.done && this.done.conversationId === current?.id ? { status: this.done.status, text: this.done.text, time: this.done.time } : undefined;
+    const waiting = [...this.pending.keys()];
     return {
       mode: this.mode,
       model: this.host.modelLabel(current?.workspaceRoot),
@@ -256,8 +277,21 @@ export class ChatController {
       plans,
       runningRunId: this.runningRunId,
       permissions: this.host.permissions(),
-      waiting: [...this.pending.keys()],
-      done: this.done && this.done.conversationId === current?.id ? { status: this.done.status, text: this.done.text } : undefined,
+      waiting,
+      done,
+      dashboard: current
+        ? buildDashboard({
+            entries: current.entries,
+            plans,
+            runIds: current.runIds,
+            waiting,
+            busy: this.busy,
+            stopping: this.stopping,
+            runningRunId: this.runningRunId,
+            done,
+          })
+        : undefined,
+      attachRoot: current ? undefined : this.attachRoot,
     };
   }
 
@@ -265,6 +299,7 @@ export class ChatController {
   newTask(): void {
     if (this.busy) return;
     this.currentId = undefined;
+    this.attachRoot = undefined;
     this.changed();
   }
 
@@ -400,7 +435,7 @@ export class ChatController {
     }
     if (conversationId && targets.length > 1) {
       const n = targets.length;
-      await this.append(conversationId, { author: "system", runId, text: action === "accept" ? `Accepted ${n} change(s).` : `Rejected ${n} change(s). Nothing was written for them.` });
+      await this.append(conversationId, { author: "system", runId, text: action === "accept" ? `Accepted ${n} draft(s) and wrote them to your project.` : `Rejected ${n} draft(s). Nothing was written for them.` });
     }
     this.changed();
   }
@@ -505,7 +540,7 @@ export class ChatController {
           agentName: task.title,
           tone: waiting.length ? "warning" : "success",
           text: waiting.length
-            ? `I have ${waiting.length} change(s) for you to review. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were written right away because an auto-approve switch is on.` : ""}`
+            ? `I have ${waiting.length} draft change(s) for you to review under Drafts. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}`
             : `My ${written.length} change(s) were written to your project, because an auto-approve switch is on.`,
         });
         // Open what waits for review, so the user sees it right away.
@@ -602,15 +637,34 @@ export class ChatController {
     return run && isUnstarted(run) ? run : undefined;
   }
 
+  /**
+   * Lets the user pick files in the conversation's folder to attach to the
+   * next prompt. Only their paths are attached: the coordinator never reads
+   * files, it passes the paths on to the sub-agents, who read through the
+   * sandbox like any other file.
+   */
+  async pickAttachments(): Promise<string[]> {
+    if (!this.host.pickFiles) return [];
+    await this.ready;
+    let root: string | undefined;
+    if (this.currentId) root = (await this.conversations.load(this.currentId)).workspaceRoot;
+    else root = this.attachRoot ?? (await this.host.pickWorkspace());
+    if (!root) return [];
+    if (!this.currentId) this.attachRoot = root;
+    return this.host.pickFiles(root);
+  }
+
   /** Handles one message from the user: the coordinator answers, and may plan or run. */
-  async send(text: string): Promise<void> {
+  async send(text: string, attachments: string[] = []): Promise<void> {
     if (!text.trim() || this.busy) return;
     await this.ready;
+    if (attachments.length) text = `${text.trim()}\n\nAttached files: ${[...new Set(attachments)].join(", ")}`;
     let c: Conversation;
     if (this.currentId) {
       c = await this.conversations.load(this.currentId);
     } else {
-      const root = await this.host.pickWorkspace();
+      const root = this.attachRoot ?? (await this.host.pickWorkspace());
+      this.attachRoot = undefined;
       if (!root) return;
       c = await this.conversations.create(root, this.mode, title(text));
       this.currentId = c.id;
@@ -768,7 +822,7 @@ export class ChatController {
       if (abort.signal.aborted) startRun = undefined;
       this.stopping = false;
       // A plan that starts now is still part of this prompt; runPlan shows the bar when it ends.
-      if (!startRun) this.done = { ...ended, conversationId: c.id };
+      if (!startRun) this.done = { ...ended, time: new Date().toISOString(), conversationId: c.id };
       this.changed();
     }
     if (startRun) await this.runPlan(startRun);
@@ -817,7 +871,7 @@ export class ChatController {
       const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
       const finished = await this.tasks.load(runId);
       const waitingReview = (finished.changes ?? []).filter((ch) => ch.status === "pending").length;
-      const review = waitingReview ? ` ${waitingReview} change(s) wait for your review.` : "";
+      const review = waitingReview ? ` ${waitingReview} draft(s) await your review.` : "";
       const notDone = outcome.failed.length + outcome.blocked.length;
       ended = this.stopping
         ? { status: "stopped", text: `Stopped.${review}` }
@@ -840,7 +894,7 @@ export class ChatController {
       this.runningRunId = undefined;
       this.busy = undefined;
       this.stopping = false;
-      this.done = { ...ended, conversationId };
+      this.done = { ...ended, time: new Date().toISOString(), conversationId };
       this.changed();
     }
   }

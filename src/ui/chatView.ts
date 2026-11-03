@@ -7,7 +7,8 @@ import { TaskStore } from "../state/taskStore";
 /** Messages the webview may send. Anything else is ignored. */
 type FromView =
   | { type: "ready" }
-  | { type: "send"; text: string }
+  | { type: "send"; text: string; attachments?: unknown }
+  | { type: "attach" }
   | { type: "newTask" }
   | { type: "setMode"; mode: "plan" | "act" }
   | { type: "open"; id: string }
@@ -90,8 +91,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "ready":
           return this.push();
         case "send":
-          if (typeof m.text === "string") await this.controller.send(m.text.slice(0, 20000));
+          if (typeof m.text === "string") {
+            const attachments = Array.isArray(m.attachments) ? m.attachments.filter(isRelPath).slice(0, 20) : [];
+            await this.controller.send(m.text.slice(0, 20000), attachments);
+          }
           return;
+        case "attach": {
+          const paths = await this.controller.pickAttachments();
+          void this.view?.webview.postMessage({ type: "attached", paths });
+          return;
+        }
         case "newTask":
           return this.controller.newTask();
         case "setMode":
