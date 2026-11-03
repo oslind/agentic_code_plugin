@@ -378,7 +378,8 @@
       { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${kind}` },
       el("div", { class: "msg-head" }, el("span", { class: "who" }, label), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(entry.time))),
       entry.thought && entry.thought !== entry.text ? el("div", { class: "thought" }, entry.thought) : null,
-      longText("x:" + entry.id, entry.text),
+      // The answer that combines the research reports is what the user asked for, so it is never folded.
+      kind === "answer" ? el("div", { class: "msg-text" }, entry.text) : longText("x:" + entry.id, entry.text),
       entry.thinking && String(entry.thinking).trim() ? details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking)) : null,
       kind === "plan" || kind === "research" ? planCard(entry) : null,
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,

@@ -15,6 +15,7 @@ import { AutoApprove, isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted 
 import { acceptChange, changeKind, rejectChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
+import { ResearchReport, synthesizeFindings } from "./synthesis";
 import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
@@ -1001,9 +1002,15 @@ export class ChatController {
       // (for example one per file) when the reports are too general to answer from.
       const maxRounds = researchRoundLimit(this.host.delegationLimits().maxResearchRounds);
       let round = 0;
+      // Every research round of this message, and the coordinator's last reply when it chose to answer.
+      // Unless a plan follows, the prompt always ends with one answer that combines all the reports.
+      const researchRuns: string[] = [];
+      let planned = false;
+      let draft: { reply: string; thought?: string; thinking?: string } | undefined;
+      let limitReached = false;
       const doResearch = async (t: CoordinatorResult): Promise<void> => {
         round++;
-        await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined);
+        researchRuns.push(await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined));
         c = await this.conversations.load(c.id);
         this.busy = "Coordinator is reading the reports…";
         this.runningRunId = undefined;
@@ -1024,12 +1031,18 @@ export class ChatController {
           "info",
           `Coordinator after research round ${round} of ${maxRounds} chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`,
         );
-        await this.append(c.id, { author: "coordinator", tag: "from research", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
+        if (answer.action === "plan" || answer.action === "research") {
+          await this.append(c.id, { author: "coordinator", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
+        }
         // The user asked for a change: the research was the first step, the plan is the next.
         if (answer.action === "plan") await makePlan(answer, true);
         // The reports were too general: send narrower researchers.
         else if (answer.action === "research") await doResearch(answer);
-        else if (answer.researchLimitReached) {
+        else {
+          // The coordinator's reply is only a draft: the answer combining every report is written below.
+          draft = { reply: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) };
+          if (!answer.researchLimitReached) return;
+          limitReached = true;
           await this.append(c.id, {
             author: "system",
             tone: "warning",
@@ -1059,6 +1072,7 @@ export class ChatController {
           if (afterResearch && round >= maxRounds) {
             // Every research round for this message is used; reading again would only loop.
             await this.append(c.id, { author: "system", tone: "warning", text: "The plan only read files, which the research already did, so nothing was started. Say what should change, for example which file to edit." });
+            limitReached = true;
             return;
           }
           // Every task only reads: that is research, which needs no Act mode and changes nothing.
@@ -1074,6 +1088,7 @@ export class ChatController {
           return;
         }
         const run = await this.tasks.createRun(t.request, c.workspaceRoot, undefined, learned);
+        planned = true;
         this.runOwner.set(run.id, c.id);
         await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
         await this.tasks.addTasks(run.id, result.plan.tasks);
@@ -1102,6 +1117,7 @@ export class ChatController {
       } else if (turn.action === "research") {
         await doResearch(turn);
       }
+      if (researchRuns.length && !planned) await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal);
     } catch (err) {
       const message = abort.signal.aborted ? "Stopped." : (err as Error).message;
       ended = abort.signal.aborted ? { status: "stopped", text: "Stopped" } : { status: "failed", text: "Failed. See the message above." };
@@ -1199,7 +1215,7 @@ export class ChatController {
    * empty, so the policy refuses every write.
    */
   /** One research round. `learned` is what earlier rounds found, so follow-up researchers build on it. */
-  private async research(c: Conversation, turn: CoordinatorResult, signal: AbortSignal, learned?: string): Promise<void> {
+  private async research(c: Conversation, turn: CoordinatorResult, signal: AbortSignal, learned?: string): Promise<string> {
     const root = await this.host.openFolder(c.workspaceRoot);
     if (!root) throw new Error(`${c.workspaceRoot} is not open in VS Code, so the sub-agents cannot read it.`);
     const questions = researchQuestions(turn, this.host.delegationLimits().maxResearchers);
@@ -1265,6 +1281,46 @@ export class ChatController {
     await this.eventQueue.run(async () => {});
     signal.throwIfAborted();
     await this.append(c.id, { author: "coordinator", runId: run.id, text: `Research finished.${await this.reports(run.id)}` });
+    return run.id;
+  }
+
+  /**
+   * The guaranteed last step of research that ends in an answer: one model
+   * call that combines every report from every round into a reply to the
+   * user. Small models often end the JSON turn with "Research is done.", so
+   * that reply is only used as a hint, and as the lead of the fallback.
+   */
+  private async answerFromReports(
+    c: Conversation,
+    question: string,
+    runIds: string[],
+    draft: { reply: string; thought?: string; thinking?: string } | undefined,
+    limitReached: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.busy = "Coordinator is combining the reports into an answer…";
+    this.changed();
+    const reports: ResearchReport[] = [];
+    for (const id of runIds) {
+      const run = await this.tasks.load(id).catch(() => undefined);
+      for (const t of run?.tasks ?? []) {
+        reports.push({ title: t.title, status: t.status.replace("_", " "), text: t.summary ?? (t.error ? `No report: ${t.error}` : "") });
+      }
+    }
+    const result = await synthesizeFindings(
+      this.host.provider(c.workspaceRoot),
+      { question, reports, draft: draft?.reply, limitReached },
+      { signal, onError: (m) => this.host.log("warn", m) },
+    );
+    this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
+    await this.append(c.id, {
+      author: "coordinator",
+      kind: "answer",
+      tag: "from research",
+      text: result.text,
+      thought: draft?.thought,
+      thinking: clip(result.thinking ?? draft?.thinking),
+    });
   }
 
   /**

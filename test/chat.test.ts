@@ -322,6 +322,7 @@ describe("ChatController", () => {
         JSON.stringify({ reply: "Reading.", action: "research", request: "", questions: ["What does this project do?"] }),
         worker("Done.", { tool: "finish", summary: "It is a flight simulator; physics lives in src/physics.ts." }),
         JSON.stringify({ reply: "It is a flight simulator.", action: "none", request: "" }),
+        "It is a flight simulator. The physics lives in src/physics.ts.",
         turn("Plan below.", "plan", "Add wind to the physics."),
         plan,
       ],
@@ -345,7 +346,9 @@ describe("ChatController", () => {
         worker("Read the README.", { tool: "read_file", path: "README.md" }),
         worker("Try to edit, which must be refused.", { tool: "write_file", path: "README.md", content: "hacked" }),
         worker("Done.", { tool: "finish", summary: "It is a flight simulator, described in README.md." }),
-        JSON.stringify({ thought: "Answer from the report.", reply: "This project is a flight simulator (see README.md).", action: "none", request: "" }),
+        JSON.stringify({ thought: "Answer from the report.", reply: "Research is done.", action: "none", request: "" }),
+        // The final answer: one plain-text call that combines the reports.
+        "This project is a flight simulator (see README.md).",
       ],
       "plan",
     );
@@ -360,8 +363,9 @@ describe("ChatController", () => {
     expect(entries.some((e) => e.kind === "spawn" && /Read-only/.test(e.text))).toBe(true);
     expect(entries.some((e) => e.author === "agent" && /Blocked/.test(e.text))).toBe(true);
     expect(entries.some((e) => e.kind === "report" && /flight simulator/.test(e.text))).toBe(true);
-    // The final answer comes from the reports.
-    expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "This project is a flight simulator (see README.md)." });
+    // The final answer comes from the reports, and the one-line "Research is done." is not shown.
+    expect(entries.at(-1)).toMatchObject({ author: "coordinator", kind: "answer", tag: "from research", text: "This project is a flight simulator (see README.md)." });
+    expect(entries.some((e) => e.text === "Research is done.")).toBe(false);
     expect(entries.filter((e) => e.kind === "plan")).toHaveLength(0);
     // Research never ends with a run summary or Apply buttons.
     expect(entries.some((e) => e.kind === "outcome")).toBe(false);
@@ -500,6 +504,7 @@ describe("ChatController", () => {
         readPlan,
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "src has one module, index.ts." } }),
         JSON.stringify({ reply: "There is one module, src/index.ts.", action: "none", request: "" }),
+        "There is one module, src/index.ts.",
       ],
       "plan",
     );
@@ -528,6 +533,7 @@ describe("ChatController", () => {
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
         JSON.stringify({ reply: "It is a small Python web app.", action: "none", request: "" }),
+        "It is a small Python web app; the routes are inline in webapp/pyserver.py.",
         // 2nd message: a change, which stays a plan.
         turn("Plan below.", "plan", "Refactor the server so routes live in their own module."),
         refactorPlan,
@@ -600,6 +606,31 @@ describe("ChatController", () => {
       expect(secondRoundPrompt!.messages.map((m) => m.content).join("\n")).toMatch(/Flask app in app\.py/);
     });
 
+    it("ends with one answer that combines every report from every round, not the coordinator's one-liner", async () => {
+      const { controller, provider } = setup(
+        [
+          ...firstRound,
+          JSON.stringify({ reply: "I'll send one researcher per file.", action: "research", request: "", questions: ["In app.py, list unused functions.", "In static/main.js, list unused functions."] }),
+          report("app.py: old_handler() is never called; DEBUG_PORT is unused."),
+          report("static/main.js: drawLegacy() is never called."),
+          // What small models often reply once the reports are in.
+          turn("Research complete.", "none"),
+          "Dead code found in both files.\n- app.py: old_handler() and DEBUG_PORT are unused.\n- static/main.js: drawLegacy() is never called.",
+        ],
+        "plan",
+      );
+      await controller.send(userText);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.at(-1)).toMatchObject({ author: "coordinator", kind: "answer", text: expect.stringMatching(/old_handler[\s\S]*drawLegacy/) });
+      expect(entries.some((e) => e.text === "Research complete.")).toBe(false);
+      // The summary call saw the user's message and every full report from both rounds, as plain text (no JSON schema).
+      const summaryCall = provider.requests.at(-1)!;
+      const prompt = summaryCall.messages.map((m) => m.content).join("\n");
+      expect(summaryCall.jsonSchema).toBeUndefined();
+      expect(prompt).toContain(userText);
+      expect(prompt).toMatch(/Flask app in app\.py[\s\S]*old_handler\(\) is never called; DEBUG_PORT is unused[\s\S]*drawLegacy/);
+    });
+
     it("keeps the promise to look deeper when the model forgets the action", async () => {
       const { controller } = setup(
         [
@@ -612,6 +643,7 @@ describe("ChatController", () => {
           }),
           report("app.py: old_handler() is never called."),
           turn("old_handler() in app.py is dead code.", "none"),
+          "old_handler() in app.py is dead code.",
         ],
         "plan",
       );
@@ -626,10 +658,12 @@ describe("ChatController", () => {
         [
           ...firstRound,
           turn("It is a Flask app with a JavaScript front end.", "none"),
+          "It is a Flask app with a JavaScript front end.",
           // Second message in the same conversation: a fresh round, not blocked by the finished one.
           JSON.stringify({ reply: "I'll send researchers per file.", action: "research", request: "", questions: ["In app.py, list unused functions."] }),
           report("app.py: old_handler() is never called."),
           turn("old_handler() in app.py is unused.", "none"),
+          "old_handler() in app.py is unused.",
         ],
         "plan",
         { maxResearchRounds: 1 },
@@ -653,7 +687,9 @@ describe("ChatController", () => {
       await controller.send(userText);
       const entries = (await controller.state()).current!.entries;
       expect(entries.filter((e) => e.kind === "research")).toHaveLength(1);
-      expect(entries.at(-1)).toMatchObject({ author: "system", tone: "warning", text: expect.stringMatching(/maxResearchRounds/) });
+      expect(entries.some((e) => e.author === "system" && e.tone === "warning" && /maxResearchRounds/.test(e.text))).toBe(true);
+      // It still ends with an answer. Here the model gave no summary, so the reports are shown as they are.
+      expect(entries.at(-1)).toMatchObject({ author: "coordinator", kind: "answer", text: expect.stringMatching(/What the sub-agents found:[\s\S]*Flask app in app\.py/) });
     });
   });
 
@@ -711,6 +747,7 @@ describe("ChatController", () => {
         JSON.stringify({ reply: "Reading first.", action: "research", request: "", questions: ["What does this project do?"] }),
         finishReport("A web HMI."),
         turn("It is a web HMI for flight operations.", "none"),
+        "It is a web HMI for flight operations.",
       ]);
       await controller.send("what does this project do?");
       expect(started).toEqual([]);
@@ -897,6 +934,7 @@ describe("ChatController", () => {
           step("Read the README.", { tool: "read_file", path: "README.md" }),
           step("Done.", { tool: "finish", summary: "It is a flight simulator, described in README.md." }),
           turn("This project is a flight simulator."),
+          "This project is a flight simulator, described in README.md.",
           // The follow-up: the researcher answers from what it read before.
           step("I read the README already.", { tool: "finish", summary: "It is written in Rust, says README.md." }),
           // Ending it: its update for the coordinator.
@@ -914,7 +952,7 @@ describe("ChatController", () => {
       const agents = await settled(controller);
       expect(agents[0]).toMatchObject({ followUp: "open", label: "Chat open", canMessage: true });
       // It resumed with its own conversation: the README it read is in the request.
-      const followUpRequest = provider.requests[4]!;
+      const followUpRequest = provider.requests[5]!;
       expect(followUpRequest.messages[0]!.content).toMatch(/reopened the conversation/);
       expect(followUpRequest.messages.some((m) => /A flight simulator written in Rust/.test(m.content))).toBe(true);
       expect(followUpRequest.messages.at(-1)!.content).toMatch(/Which language/);
