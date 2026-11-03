@@ -21,6 +21,28 @@ export interface CheckResult {
 /** Names of environment variables that usually hold credentials. */
 const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL|SESSION_?KEY|COOKIE|(^|_)AUTH(_|$))/i;
 
+/** Variables that point to credential files, agents or helpers rather than holding a secret themselves. */
+const CREDENTIAL_ENV = new Set([
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUDSDK_CONFIG",
+  "KUBECONFIG",
+  "DOCKER_CONFIG",
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "SUDO_ASKPASS",
+  "GPG_AGENT_INFO",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "AWS_CONFIG_FILE",
+  "AWS_PROFILE",
+  "AZURE_CONFIG_DIR",
+  "NETRC",
+  "NPM_CONFIG_USERCONFIG",
+  "PIP_CONFIG_FILE",
+  "VAULT_ADDR",
+]);
+
 /**
  * The environment a check runs with: yours, minus variables whose names look
  * like credentials (GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, OPENAI_API_KEY, ...).
@@ -29,7 +51,7 @@ const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_?K
  */
 export function checkEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(env)) if (!SECRET_ENV.test(k)) out[k] = v;
+  for (const [k, v] of Object.entries(env)) if (!SECRET_ENV.test(k) && !CREDENTIAL_ENV.has(k.toUpperCase())) out[k] = v;
   return out;
 }
 

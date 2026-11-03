@@ -39,7 +39,9 @@ export class ScratchCopy {
       }
       for (const d of safeLinkDirs(this.linkDirs)) {
         const source = path.join(this.projectRoot, d);
-        if (await this.mayLink(source)) await fs.symlink(source, path.join(this.dir, d), process.platform === "win32" ? "junction" : "dir");
+        const stat = await fs.lstat(source).catch(() => undefined);
+        // Only a real folder, never a link to somewhere else.
+        if (stat?.isDirectory()) await this.linkTree(source, path.join(this.dir, d));
       }
       this.ready = true;
     }
@@ -52,16 +54,30 @@ export class ScratchCopy {
   }
 
   /**
-   * A dependency folder is linked only if it is a real folder (not itself a
-   * link to somewhere else) with no secret files at its top level.
+   * Links a dependency folder into the copy without its secret files. A
+   * folder with no secrets anywhere inside is linked whole; one that holds
+   * some is recreated, and its other entries are linked one by one, so the
+   * secret files themselves are the only things left out.
    */
-  private async mayLink(source: string): Promise<boolean> {
-    const stat = await fs.lstat(source).catch(() => undefined);
-    if (!stat?.isDirectory()) return false;
-    for (const name of await fs.readdir(source).catch(() => [] as string[])) {
-      if (isSecretPath(this.rel(path.join(source, name)))) return false;
+  private async linkTree(source: string, target: string): Promise<void> {
+    const root = await fs.realpath(this.projectRoot);
+    if (!(await holdsSecrets(source, root))) {
+      await fs.symlink(source, target, process.platform === "win32" ? "junction" : "dir");
+      return;
     }
-    return true;
+    await fs.mkdir(target, { recursive: true });
+    for (const e of await fs.readdir(source, { withFileTypes: true })) {
+      const from = path.join(source, e.name);
+      const to = path.join(target, e.name);
+      if (!(await this.keep(from))) continue;
+      if (e.isDirectory()) {
+        await this.linkTree(from, to);
+        continue;
+      }
+      const isDir = await fs.stat(from).then((x) => x.isDirectory(), () => false);
+      // Windows needs extra rights for file links; a copy of the file does the same job.
+      await fs.symlink(from, to, isDir ? (process.platform === "win32" ? "junction" : "dir") : "file").catch(() => fs.cp(from, to, { recursive: true }));
+    }
   }
 
   private rel(absolute: string): string {

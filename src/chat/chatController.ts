@@ -8,7 +8,7 @@ import { PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
 import { CheckConfig } from "../checks/runner";
 import { DetectedCheck } from "../checks/detect";
 import { ToolCall } from "../tools/protocol";
-import { AutoApprove, isAutoApproved, isChangeAutoAccepted } from "../tools/policy";
+import { AutoApprove, isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted } from "../tools/policy";
 import { acceptChange, changeKind, rejectChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
@@ -424,6 +424,9 @@ export class ChatController {
   }
 
   private hooksFor(conversationId: string, runId: string, checks: CheckConfig[], workspaceRoot: string): RunHooks {
+    // The checks the user approved for this run (saved for the folder, or chosen in the checks form).
+    // Only these, and commands approved during the run, may run without asking; the same rule as outside the chat.
+    const trusted = new Set(checks.map((c) => c.command));
     return {
       checks,
       inbox: (taskId) => this.drainInbox(runId, taskId),
@@ -440,6 +443,8 @@ export class ChatController {
       },
       approveTool: async (task, reason, call, preview) => {
         if (isAutoApproved(call, this.host.permissions())) {
+          // "Run commands" is on: the user has given this authority for commands sub-agents request.
+          if (call.tool === "request_check") this.allowedFor(runId).add(call.command);
           await this.append(conversationId, {
             author: "system",
             runId,
@@ -496,7 +501,7 @@ export class ChatController {
         for (const ch of waiting.slice(0, 3)) await this.host.showChange(runId, ch.path).catch((err) => this.host.log("warn", (err as Error).message));
       },
       approveCommand: async (task, check) => {
-        if (this.host.permissions().commands || this.allowedFor(runId).has(check.command)) return true;
+        if (isCheckAutoApproved(this.host.permissions().commands, trusted, check.command) || this.allowedFor(runId).has(check.command)) return true;
         const { decision } = await this.waitFor(conversationId, {
           author: "agent",
           kind: "approval",

@@ -808,12 +808,30 @@ describe("ChatController", () => {
     let allowed: boolean | undefined;
     const { controller } = setup(planReplies(), "act", {
       permissions: { commands: true },
+      saved: [{ name: "test", command: "npm test" }],
       during: async (hooks) => {
         allowed = await hooks.approveCommand({ id: "add-model", title: "Add model" } as never, { name: "test", command: "npm test" });
       },
     });
     await controller.send("add users");
     expect(allowed).toBe(true);
+  });
+
+  it("still asks before a command the user never approved, even when commands are auto-approved", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { commands: true },
+      saved: [{ name: "test", command: "npm test" }],
+      during: async (hooks) => {
+        allowed = await hooks.approveCommand({ id: "add-model", title: "Add model" } as never, { name: "verify", command: "python -c pass" });
+      },
+    });
+    const sending = controller.send("add users");
+    const card = await waitForCard(controller, "approval");
+    expect(card.text).toContain("python -c pass");
+    await controller.decide(card.id, { kind: "deny" });
+    await sending;
+    expect(allowed).toBe(false);
   });
 
   it("lets a sub-agent ask the user, and delivers direct messages on its next step", async () => {

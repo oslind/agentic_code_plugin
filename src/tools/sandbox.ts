@@ -2,7 +2,7 @@ import { constants, promises as fs } from "fs";
 import * as path from "path";
 import picomatch from "picomatch";
 import { normalizeWorkspacePath } from "./paths";
-import { isProtectedPath, isSecretPath } from "./policy";
+import { isProtectedPath, isSecretPath, isSensitivePath } from "./policy";
 
 export class SandboxError extends Error {
   constructor(message: string) {
@@ -101,8 +101,15 @@ export class WorkspaceSandbox implements ProjectFiles {
     if (await exists(target)) {
       real = await this.assertInside(target, relPath);
     }
-    if (isProtectedPath(relPath) || isProtectedPath(this.relative(real))) {
+    const realRel = this.relative(real);
+    if (isProtectedPath(relPath) || isProtectedPath(realRel)) {
       throw new SandboxError(`'${relPath}' is protected and is never written`);
+    }
+    // package.json, lockfiles, CI and git hooks have their own approval switch, which goes by the name of the change.
+    // A link with another name would slip past it, so such files are written only by their real name.
+    const lexicalRel = normalizeWorkspacePath(relPath);
+    if (realRel !== lexicalRel && isSensitivePath(realRel) && !isSensitivePath(lexicalRel ?? "")) {
+      throw new SandboxError(`'${relPath}' links to '${realRel}', which needs your approval to change. Change it by its real name, '${realRel}'.`);
     }
     return target;
   }

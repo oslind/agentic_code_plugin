@@ -341,14 +341,25 @@ describe("project-supplied scratch links and checks", () => {
     await expect(fs.lstat(path.join(dir, "src", ".env"))).rejects.toThrow();
   });
 
-  it.skipIf(!unix)("does not link a dependency folder that holds secrets or is a link to somewhere else", async () => {
+  it.skipIf(!unix)("links dependency folders without the secret files anywhere inside them, and never a link to somewhere else", async () => {
     const root = await tempDir();
-    await fs.mkdir(path.join(root, "node_modules"));
-    await fs.writeFile(path.join(root, "node_modules", ".env"), "SECRET=1");
+    await fs.mkdir(path.join(root, "node_modules", "clean", "lib"), { recursive: true });
+    await fs.mkdir(path.join(root, "node_modules", "some-package", "dist"), { recursive: true });
+    await fs.writeFile(path.join(root, "node_modules", ".env"), "TOP=1");
+    await fs.writeFile(path.join(root, "node_modules", "clean", "lib", "a.js"), "a");
+    await fs.writeFile(path.join(root, "node_modules", "some-package", ".env"), "DEEP=1");
+    await fs.writeFile(path.join(root, "node_modules", "some-package", "dist", "deep.pem"), "pem");
+    await fs.writeFile(path.join(root, "node_modules", "some-package", "index.js"), "i");
     await fs.symlink(os.tmpdir(), path.join(root, "vendor"));
     const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), ["node_modules", "vendor"]).sync(new Map());
-    await expect(fs.lstat(path.join(dir, "node_modules"))).rejects.toThrow();
-    await expect(fs.lstat(path.join(dir, "vendor"))).rejects.toThrow();
+    const has = async (rel: string) => fs.lstat(path.join(dir, rel)).then(() => true, () => false);
+    for (const rel of ["node_modules/.env", "node_modules/some-package/.env", "node_modules/some-package/dist/deep.pem", "vendor"]) {
+      expect(await has(rel), rel).toBe(false);
+    }
+    // Everything else is still there, and a folder without secrets is linked whole.
+    expect(await fs.readFile(path.join(dir, "node_modules", "some-package", "index.js"), "utf8")).toBe("i");
+    expect(await fs.readFile(path.join(dir, "node_modules", "clean", "lib", "a.js"), "utf8")).toBe("a");
+    expect((await fs.lstat(path.join(dir, "node_modules", "clean"))).isSymbolicLink()).toBe(true);
   });
 
   it.skipIf(!unix)("does not copy an absolute link to .env", async () => {
@@ -367,7 +378,41 @@ describe("project-supplied scratch links and checks", () => {
   });
 
   it("runs checks without credential-looking environment variables", () => {
-    const env = checkEnv({ PATH: "/bin", HOME: "/h", GITHUB_TOKEN: "t", AWS_SECRET_ACCESS_KEY: "s", OPENAI_API_KEY: "k", NPM_AUTH: "a", GIT_AUTHOR_NAME: "me" });
+    const env = checkEnv({
+      PATH: "/bin",
+      HOME: "/h",
+      GITHUB_TOKEN: "t",
+      AWS_SECRET_ACCESS_KEY: "s",
+      OPENAI_API_KEY: "k",
+      NPM_AUTH: "a",
+      GIT_AUTHOR_NAME: "me",
+      GOOGLE_APPLICATION_CREDENTIALS: "/c.json",
+      KUBECONFIG: "/k",
+      DOCKER_CONFIG: "/d",
+      SSH_AUTH_SOCK: "/s",
+      GIT_ASKPASS: "/a",
+      CLOUDSDK_CONFIG: "/g",
+    });
     expect(env).toEqual({ PATH: "/bin", HOME: "/h", GIT_AUTHOR_NAME: "me" });
+  });
+});
+
+describe("sensitive files behind symlinks", () => {
+  it.skipIf(process.platform === "win32")("cannot change package.json, CI or git hooks through a link with an ordinary name", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "src"));
+    await fs.mkdir(path.join(root, ".github", "workflows"), { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), "{}");
+    await fs.symlink(path.join("..", "package.json"), path.join(root, "src", "metadata.json"));
+    await fs.symlink(path.join("..", ".github"), path.join(root, "src", "gh"));
+    const sandbox = await WorkspaceSandbox.create(root);
+    for (const p of ["src/metadata.json", "src/gh/workflows/ci.yml"]) {
+      await expect(sandbox.writeFile(p, "x"), p).rejects.toThrow(/approval/);
+      await expect(new OverlayFiles(sandbox).writeFile(p, "x"), p).rejects.toThrow(/approval/);
+    }
+    expect(await fs.readFile(path.join(root, "package.json"), "utf8")).toBe("{}");
+    // By its real name the change is allowed, and goes through the sensitive-files approval.
+    await new OverlayFiles(sandbox).writeFile("package.json", "{\"a\":1}");
+    expect(isSensitivePath("package.json")).toBe(true);
   });
 });
