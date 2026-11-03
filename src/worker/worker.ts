@@ -1,3 +1,4 @@
+import { CommandSink } from "../checks/commandTerminal";
 import { ApproveCommand, CheckConfig } from "../checks/runner";
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
@@ -14,6 +15,8 @@ export interface WorkerOptions {
   sandbox: ProjectFiles;
   /** Folder where check commands run. Defaults to the project folder (used by research, which never writes). */
   checkDir?: () => Promise<string>;
+  /** The extension's terminal, where commands are shown as they run. */
+  terminal?: CommandSink;
   task: Task;
   /** Extra notes for the first message, such as what a failed earlier attempt did. */
   context?: string;
@@ -219,7 +222,7 @@ export class Worker {
           continue;
         }
       }
-      const outcome = await executeTool(call, { sandbox: this.opts.sandbox, checks: this.checks, signal, checkDir: this.opts.checkDir });
+      const outcome = await executeTool(call, { sandbox: this.opts.sandbox, checks: this.checks, signal, checkDir: this.opts.checkDir, terminal: this.opts.terminal });
       if (outcome.wrote) this.changed.add(outcome.wrote);
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });
     }

@@ -1,3 +1,4 @@
+import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
 import { ToolCall } from "../tools/protocol";
@@ -13,6 +14,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Where checks run: a scratch copy that holds the pending changes. */
   checkDir?: () => Promise<string>;
+  /** The extension's terminal, where commands are shown as they run. */
+  terminal?: CommandSink;
 }
 
 export interface ToolOutcome {
@@ -82,7 +85,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       case "run_check": {
         const check = ctx.checks.find((c) => c.name === call.name);
         if (!check) return { ok: false, output: `Unknown check '${call.name}'.` };
-        const res = await runCheck(check, ctx.checkDir ? await ctx.checkDir() : ctx.sandbox.root, ctx.signal);
+        const res = await runCheck(check, ctx.checkDir ? await ctx.checkDir() : ctx.sandbox.root, ctx.signal, undefined, ctx.terminal);
         return { ok: res.passed, output: `${check.name}: ${res.passed ? "passed" : "FAILED"}\n${res.output}` };
       }
       case "finish":

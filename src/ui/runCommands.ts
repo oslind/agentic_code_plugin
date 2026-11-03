@@ -11,6 +11,7 @@ import { isAutoApproved, isChangeAutoAccepted } from "../tools/policy";
 import { ChangeViews } from "./changeViews";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
+import { ProjectTerminals } from "./projectTerminal";
 import { RunHooks } from "../chat/chatController";
 
 export interface RunControl {
@@ -95,6 +96,9 @@ export function registerRunCommands(
   views: ChangeViews,
 ): RunControl {
   const active = new Map<string, { abort: AbortController; orchestrator: Orchestrator }>();
+  // Commands are shown in the extension's own terminal, opened at the project folder.
+  const terminals = new ProjectTerminals();
+  context.subscriptions.push(terminals);
 
   /**
    * Runs a plan with sub-agents. Resolves undefined if the user chose not to
@@ -127,6 +131,7 @@ export function registerRunCommands(
       maxFixRounds: config.maxFixRounds,
       linkDirs: config.linkDirs,
       signal: abort.signal,
+      terminal: terminals.for(await fs.realpath(folder.uri.fsPath)),
       approveTool: hooks?.approveTool ?? approveTool,
       approveCommand: hooks?.approveCommand ?? commandApprover(),
       onChanges: hooks?.onChanges ?? (async (_task, changes) => {

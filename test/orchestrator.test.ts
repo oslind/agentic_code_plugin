@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, realpathSync } from "fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
@@ -149,6 +149,27 @@ describe("Orchestrator without git", () => {
     expect(onDisk("v.txt")).toBeUndefined();
     const log = await store.readLog(runId);
     expect(log.filter((e) => e.type === "checks").map((e) => e.message)).toEqual(["failed", "passed"]);
+  });
+
+  it("shows verification commands in the project terminal, run inside the project", async () => {
+    const checks: CheckConfig[] = [{ name: "test", command: node("console.log(process.cwd())") }];
+    const runId = await setup([task("a", ["a.txt"])]);
+    const shown: { command: string; cwd: string; out: string }[] = [];
+    const terminal = {
+      start: (command: string, cwd: string) => {
+        const entry = { command, cwd, out: "" };
+        shown.push(entry);
+        return { output: (c: string) => void (entry.out += c), end: () => undefined };
+      },
+    };
+    await make(runId, scripted({ a: [write("a.txt", "ok"), finish] }), { checks, terminal }).o.run();
+    expect(shown.length).toBeGreaterThan(0);
+    const real = realpathSync(repo);
+    for (const s of shown) {
+      expect(s.command).toBe(checks[0].command);
+      expect(s.cwd.startsWith(path.join(real, ".agentic", "scratch"))).toBe(true);
+      expect(s.out.trim()).toBe(s.cwd);
+    }
   });
 
   it("does not turn files that checks create into changes", async () => {
