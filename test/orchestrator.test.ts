@@ -376,6 +376,8 @@ describe("drafts and questions", () => {
     const toolResult = seen[1]!.messages.at(-1)!.content;
     expect(toolResult).toMatch(/draft, not in the project yet/);
     expect(toolResult).not.toMatch(/^Result:\nWrote/);
+    // And told not to ask for review, which kept this task waiting instead of finishing.
+    expect(seen[0]!.messages[0]!.content).toMatch(/Never use it to ask for review/);
   });
 
   it("builds on a draft the user accepted while answering", async () => {
