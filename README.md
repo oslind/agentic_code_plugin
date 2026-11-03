@@ -42,7 +42,7 @@ What works now:
   - **Run commands**: when on, checks run without asking. When off, each command is shown and nothing runs until you allow it. "Allow for the rest of this run" stops repeat questions for the same command.
 
   Workspace confinement and the protected files (.git, secrets, .agentic, .vscode/settings.json) are never writable, whatever is switched on. Commands always run with their working folder inside the project, and commands that point outside it (absolute paths, `..`, `~`, variables, `$(...)`, sudo/ssh) are refused.
-- **Heavier delegation.** The planner is told to prefer many small tasks: up to `agentic.delegation.maxTasks` (default 12). Research uses up to `agentic.delegation.maxResearchers` read-only sub-agents (default 5). `agentic.maxParallelWorkers` still sets how many run at the same time.
+- **Heavier delegation.** The planner is told to prefer many small tasks: up to `agentic.delegation.maxTasks` (default 12). Research uses up to `agentic.delegation.maxResearchers` read-only sub-agents per round (default 8). When the first reports are too general (for example you asked for unused functions or dead code), the coordinator sends narrower researchers, such as one per file, that build on what the first round found: up to `agentic.delegation.maxResearchRounds` rounds per message (default 3). `agentic.maxParallelWorkers` still sets how many run at the same time.
 - A **Run history (advanced)** view, collapsed under the chat, lists every saved run as a tree of its tasks. Right-click a run or task there to retry, cancel, view its log, review its changes, or delete the run.
 - Task state saved on disk with atomic writes, an append-only event log, a dependency graph with cycle checks, and recovery of tasks interrupted by a restart.
 

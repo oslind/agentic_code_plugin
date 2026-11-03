@@ -99,7 +99,11 @@ export function activate(context: vscode.ExtensionContext): void {
     closeChange: (runId, filePath) => views.close(runId, filePath),
     delegationLimits: () => {
       const c = vscode.workspace.getConfiguration("agentic.delegation");
-      return { maxTasks: c.get<number>("maxTasks", 12), maxResearchers: c.get<number>("maxResearchers", 5) };
+      return {
+        maxTasks: c.get<number>("maxTasks", 12),
+        maxResearchers: c.get<number>("maxResearchers", 8),
+        maxResearchRounds: c.get<number>("maxResearchRounds", 3),
+      };
     },
     researchLimits: () => {
       const c = readRunConfig();

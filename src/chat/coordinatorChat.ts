@@ -11,7 +11,10 @@ import { ChatEntry, ChatMode } from "./types";
  */
 /** Hard cap on read-only sub-agents per research step. agentic.delegation.maxResearchers picks the real limit. */
 export const MAX_RESEARCHERS = 10;
-export const DEFAULT_RESEARCHERS = 5;
+export const DEFAULT_RESEARCHERS = 8;
+/** Research rounds one message may use: the first round plus follow-ups that dig deeper. agentic.delegation.maxResearchRounds picks the real limit. */
+export const MAX_RESEARCH_ROUNDS = 5;
+export const DEFAULT_RESEARCH_ROUNDS = 3;
 
 export const coordinatorTurnSchema = z
   .object({
@@ -48,6 +51,7 @@ You cannot read or change files yourself, and you never write code. Sub-agents d
 - To learn about the project (explain it, analyse it, find where something is, review code), use action "research" with up to ${researchers} questions. Split broad questions into several focused ones (for example structure, main features, build and tests, dependencies), one per read-only sub-agent; they work in parallel, read the files and report back, and then you answer the user. Research never changes anything.
 - To change the project, use action "plan" with a complete, standalone description of the work in request. A planner splits it into many small tasks, each done by one sub-agent limited to its own files. Delegate generously.
 - Use action "none" only when you can answer from the conversation and the file list alone, or to ask the user a question.
+- Sub-agents that finished earlier in this conversation do not use anything up. For each new message, send new sub-agents (research or plan) whenever the earlier reports do not already answer it fully and concretely. Never answer a new question with "I'll look into it" without sending them.
 Keep replies short and plain. No code blocks.`;
 const MODE_RULES: Record<ChatMode, string> = {
   plan: `You are in PLAN mode. Nothing runs in this mode.
@@ -65,11 +69,15 @@ const EXAMPLE = `Reply with JSON only. Examples:
 {"thought":"The request is clear and touches two files, so I will delegate it.","reply":"I'll have the sub-agents add the toggle and its setting.","action":"plan","request":"Add a dark mode toggle to the settings page in src/settings.tsx and persist the choice in src/prefs.ts."}
 {"thought":"I need to read the code to explain it, so I will send researchers.","reply":"I'll have sub-agents read the project and report back.","action":"research","request":"","questions":["What does this project do and how is it structured? Read the README and main entry points.","How are tests and builds set up?"]}`;
 
-/** Added after research, so the coordinator answers from the reports instead of starting more work. */
-const ANSWER_RULE = `The read-only sub-agents have reported back; their reports are in the conversation.
-- If the user asked a question, answer it from the reports, clearly and concretely, naming files where useful. Use action "none".
+/** Added after research, so the coordinator answers from the reports, or digs deeper when they are too general. */
+const answerRule = (roundsLeft: number, researchers: number) => `The read-only sub-agents have reported back; their reports are in the conversation.
+- If the user asked a question and the reports answer it, answer it from the reports, clearly and concretely, naming files where useful. Use action "none".
 - If the user asked for something to be changed or written (for example a file, or an edit to one), use action "plan" now, with a request that includes what the reports found. Do not just say you will.
-Never start more research.`;
+${
+  roundsLeft > 0
+    ? `- If the reports are too general for what the user asked (for example the user wants concrete lists such as unused functions, unused variables, dead code or refactoring candidates), send more researchers now: action "research" with up to ${researchers} new, narrower questions. Give each researcher one file or folder from the reports, name it in the question, and ask for a concrete list (each function or variable, where it is used, what to do about it). Do not repeat earlier questions. Never just say you will look deeper: either answer, or send the researchers in this same reply. You may send ${roundsLeft} more research round(s) for this message.`
+    : "- Never start more research. Answer with what the reports found, and say what is still unknown."
+}`;
 
 export interface CoordinatorContext {
   mode: ChatMode;
@@ -77,8 +85,10 @@ export interface CoordinatorContext {
   fileTree?: string;
   /** Short description of a plan that is proposed but not run yet. */
   pendingPlan?: string;
-  /** True right after research: the coordinator must answer, not start more work. */
+  /** True right after research: the coordinator answers from the reports, plans, or digs deeper. */
   answerFromResearch?: boolean;
+  /** After research: how many more research rounds this message may start. 0 means it must answer now. */
+  researchRoundsLeft?: number;
   /** Most read-only sub-agents one research step may start. */
   maxResearchers?: number;
 }
@@ -87,7 +97,7 @@ const REPLY_RESERVE = 2048;
 
 /** Builds the coordinator prompt: rules, project files, then as much recent conversation as fits. */
 export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow: number): ChatMessage[] {
-  const system = [base(researcherLimit(ctx.maxResearchers)), MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? ANSWER_RULE : ""].filter(Boolean).join("\n\n");
+  const system = [base(researcherLimit(ctx.maxResearchers)), MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? answerRule(Math.max(0, ctx.researchRoundsLeft ?? 0), researcherLimit(ctx.maxResearchers)) : ""].filter(Boolean).join("\n\n");
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(system);
 
   const history: ChatMessage[] = [];
@@ -123,6 +133,8 @@ export interface CoordinatorResult extends CoordinatorTurn {
   overridden?: string;
   /** What the model asked for, before any fallback changed it. For the log. */
   modelAction?: CoordinatorTurn["action"];
+  /** The model wanted more research after the last allowed round, so it was told no. */
+  researchLimitReached?: boolean;
 }
 
 /**
@@ -147,34 +159,62 @@ export async function coordinatorTurn(
   });
   const lastUser = [...ctx.entries].reverse().find((e) => e.author === "user")?.text ?? "";
   if (ctx.answerFromResearch) {
-    // One research round per message. After it, the coordinator answers, or plans the change the user asked for.
-    const after = turn.action === "research" || turn.action === "run" ? { ...turn, action: "none" as const } : turn;
-    return { ...keepPromise(after, lastUser, true), thinking, modelAction: turn.action };
+    // After research the coordinator answers, plans the change the user asked for, or sends
+    // another, narrower research round while rounds are left for this message.
+    const canDigDeeper = (ctx.researchRoundsLeft ?? 0) > 0;
+    const blocked = turn.action === "run" || (turn.action === "research" && !canDigDeeper);
+    const after = blocked ? { ...turn, action: "none" as const } : turn;
+    const kept = keepPromise(after, lastUser, true, canDigDeeper);
+    const limitHit = (turn.action === "research" && !canDigDeeper) || (!canDigDeeper && promisesReading(turn));
+    return { ...kept, thinking, modelAction: turn.action, ...(limitHit ? { researchLimitReached: true } : {}) };
   }
   const steered = steerToResearch(keepPromise(turn, lastUser, false), lastUser, ctx.maxResearchers, ctx.pendingPlan !== undefined);
   return { ...enforceMode(steered, ctx.mode, ctx.pendingPlan !== undefined), thinking, modelAction: turn.action };
 }
 
-/** "I'll have a sub-agent update it", "Let me get the sub-agents to…": a reply that promises work. */
+/** "I'll have a sub-agent update it", "Let me get the sub-agents to…", "Let me send researchers": a reply that promises work. */
 const PROMISES_WORK =
-  /\b(i'?ll|i will|i'?m going to|i am going to|let me|going to)\b[^.!?\n]{0,40}\b(sub-?agents?|agents?|planner|delegate)\b|\b(sub-?agents?|agents?) (will|are going to|can now)\b/i;
-const PROMISES_READING = /\b(read-only|research|look into|look at|investigate|report back)\b/i;
+  /\b(i'?ll|i will|i'?m going to|i am going to|let me|going to)\b[^.!?\n]{0,40}\b(sub-?agents?|agents?|researchers?|planner|delegate)\b|\b(sub-?agents?|agents?|researchers?) (will|are going to|can now)\b/i;
+const PROMISES_READING = /\b(read-only|research|researchers?|look into|look at|investigate|report back|analy[sz]e|examine|inspect|dig)\b/i;
+/** "I'll analyze the main code files", "Let me examine…": the coordinator promising to read, which only researchers can do. */
+const PROMISES_OWN_READING =
+  /\b(i'?ll|i will|i'?m going to|i am going to|let me)\s+(now\s+|first\s+|then\s+)?(analy[sz]e|examine|inspect|investigate|look (at|into|through|deeper)|dig|check|read|review|go through|scan)\b/i;
+
+/** Whether a "none" turn promises more reading instead of answering. */
+function promisesReading(turn: CoordinatorTurn): boolean {
+  if (turn.action !== "none") return false;
+  // "I'll have a sub-agent analyze and fix it" promises a change, not reading.
+  if (CHANGE_WORDS.test(withoutReportPhrases(turn.reply))) return false;
+  const said = `${turn.reply}\n${turn.thought ?? ""}`;
+  return PROMISES_OWN_READING.test(turn.reply) || (PROMISES_WORK.test(said) && PROMISES_READING.test(said));
+}
 
 /**
  * Small models often say "I'll have a sub-agent do it" with action "none",
  * which leaves the user waiting for work that never starts. A reply that
  * promises work gets the action it promised: research when it promises
  * reading (and research is still allowed), otherwise a plan built from the
- * user's message and the reply.
+ * user's message and the reply. After research, a promise to look deeper
+ * becomes a follow-up research round while rounds are left.
  */
-export function keepPromise(turn: CoordinatorTurn, userText: string, afterResearch: boolean): CoordinatorResult {
-  if (turn.action !== "none" || !PROMISES_WORK.test(turn.reply) || !userText.trim()) return turn;
+export function keepPromise(turn: CoordinatorTurn, userText: string, afterResearch: boolean, canResearch = !afterResearch): CoordinatorResult {
+  if (turn.action !== "none" || !userText.trim()) return turn;
+  if (afterResearch && canResearch && promisesReading(turn)) {
+    const focus = [turn.thought, turn.reply].filter(Boolean).join(" ");
+    return { ...turn, action: "research", request: "", questions: [`${userText.trim()}\n\nDig deeper than the earlier reports: ${focus}`.slice(0, 500)] };
+  }
+  if (!PROMISES_WORK.test(turn.reply)) return turn;
   if (PROMISES_READING.test(turn.reply) && !afterResearch && isReadOnlyRequest(userText)) {
     return { ...turn, action: "research", request: "", questions: [userText.trim().slice(0, 500)] };
   }
-  if (afterResearch && isReadOnlyRequest(userText)) return turn;
+  if (afterResearch && (isReadOnlyRequest(userText) || promisesReading(turn))) return turn;
   const request = `${userText.trim()}\n\n${turn.reply.trim()}`.slice(0, 3000);
   return { ...turn, action: "plan", request: request.length >= 10 ? request : `${request} (as the user asked)` };
+}
+
+/** How many research rounds one message may use. */
+export function researchRoundLimit(n?: number): number {
+  return Math.max(1, Math.min(MAX_RESEARCH_ROUNDS, Math.floor(n ?? DEFAULT_RESEARCH_ROUNDS)));
 }
 
 /** Words that ask to change the project. Any of them means the request is not read-only. */
