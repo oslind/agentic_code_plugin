@@ -67,6 +67,16 @@ button.secondary:hover:not(:disabled) {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+button.stop {
+  background: var(--vscode-statusBarItem-errorBackground, #c72e0f);
+  color: var(--vscode-statusBarItem-errorForeground, #fff);
+  font-weight: 600;
+}
+
+button.stop:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
 button.link,
 button.icon-btn {
   background: none;

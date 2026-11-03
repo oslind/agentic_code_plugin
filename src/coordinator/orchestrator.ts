@@ -171,6 +171,8 @@ export class Orchestrator {
     const signal = this.o.signal ? AbortSignal.any([this.o.signal, controller.signal]) : controller.signal;
     const scratch = new ScratchCopy(this.root, this.scratchDir(task.id), this.o.linkDirs);
     let files: OverlayFiles | undefined;
+    // Drafts already put up for review while the task ran, by path, so they are not announced twice.
+    const published = new Map<string, string>();
     try {
       const fresh = (await this.current(task.id)) ?? task;
       const note = [await this.briefingFor(fresh), this.previousAttemptNote(fresh)].filter(Boolean).join("\n\n") || undefined;
@@ -179,8 +181,6 @@ export class Orchestrator {
       const run = await this.o.store.load(this.o.runId);
       files = new OverlayFiles(await WorkspaceSandbox.create(this.root), pendingBase(run.changes));
       const overlay = files;
-      // Drafts already put up for review while the task ran, by path, so they are not announced twice.
-      const published = new Map<string, string>();
       const checkDir = () => scratch.sync(overlay.allChanges());
 
       const worker = new Worker({
@@ -230,7 +230,15 @@ export class Orchestrator {
         const unfinished = [...files.writes].map(([p, content]) => ({ path: p, content: content.slice(0, 20000) })).slice(0, 20);
         await this.o.store.updateTask(this.o.runId, task.id, { unfinished }).catch(() => undefined);
       }
-      await this.handleFailure(task, err, controller.signal.aborted);
+      // Stopped by the user: what the sub-agent drafted stays reviewable. Nothing is written, and the
+      // auto-approve switches do not apply, because the user asked for everything to stop.
+      let kept: string[] = [];
+      if (files && signal.aborted) {
+        await this.publishDrafts(task, files, published, false).catch(() => []);
+        kept = [...published.keys()];
+        if (kept.length) await this.o.store.updateTask(this.o.runId, task.id, { changedFiles: kept }).catch(() => undefined);
+      }
+      await this.handleFailure(task, err, controller.signal.aborted, kept);
     } finally {
       this.taskControllers.delete(task.id);
       await scratch.remove().catch(() => undefined);
@@ -258,7 +266,7 @@ export class Orchestrator {
     return changes;
   }
 
-  private async handleFailure(task: Task, err: unknown, taskCancelled: boolean): Promise<void> {
+  private async handleFailure(task: Task, err: unknown, taskCancelled: boolean, kept: string[] = []): Promise<void> {
     const cancelled = taskCancelled || this.o.signal?.aborted === true;
     const message = cancelled ? "Cancelled" : (err as Error).message;
     const current = await this.current(task.id);
@@ -266,11 +274,11 @@ export class Orchestrator {
     // Brief outages of the model server should not need the user: try again automatically.
     if (!cancelled && isTransient(err) && current.attempts < this.o.maxAttempts) {
       await this.log("transient_failure", message, task.id, { attempt: current.attempts });
-      await sleep(this.o.retryDelayMs * current.attempts);
+      await sleep(this.o.retryDelayMs * current.attempts, this.o.signal);
       await this.setStatus(task, "pending", `Retrying after: ${message}`);
       return;
     }
-    await this.log(cancelled ? "cancelled" : "task_failed", message, task.id);
+    await this.log(cancelled ? "cancelled" : "task_failed", message, task.id, cancelled && kept.length ? { kept } : undefined);
     await this.setStatus(task, cancelled ? "cancelled" : "failed", message);
   }
 }
@@ -279,6 +287,16 @@ function isTransient(err: unknown): boolean {
   return err instanceof ProviderError && err.retryable;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/** Waits, but ends early when the run is stopped. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((r) => {
+    if (signal?.aborted) return r();
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      r();
+    }
+  });
 }

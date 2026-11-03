@@ -12,12 +12,13 @@ export function changedFilesOf(run: Run): string[] {
  * changed, and what happens next. It is also a coordinator message, so the
  * coordinator reads the sub-agents' reports from it on its next turn.
  */
-export function describeOutcome(run: Run, outcome: RunOutcome): string {
+export function describeOutcome(run: Run, outcome: RunOutcome, stopped = false): string {
   const total = run.tasks.length;
   const done = outcome.done.length;
   const files = changedFilesOf(run);
-  const head =
-    done === total
+  const head = stopped
+    ? `You stopped the run. ${done} of ${total} task(s) had finished.`
+    : done === total
       ? `All ${total} task(s) are done.`
       : `${done} of ${total} task(s) are done.${outcome.failed.length ? ` ${outcome.failed.length} failed.` : ""}${
           outcome.blocked.length ? ` ${outcome.blocked.length} could not start because a task they depend on failed.` : ""
@@ -35,7 +36,7 @@ export function describeOutcome(run: Run, outcome: RunOutcome): string {
     ? [
         `Changed files: ${files.join(", ")}.`,
         waiting
-          ? `${waiting} change(s) wait for your review in the cards above. Nothing is written to your project until you press Accept.${written ? ` ${written} already written.` : ""}`
+          ? `${waiting} change(s) wait for your review in the cards above and under Files changed. Nothing is written to your project until you press Accept.${written ? ` ${written} already written.` : ""}`
           : `${written} change(s) written to your project.${rejected ? ` ${rejected} rejected.` : ""}`,
       ]
     : ["No files were changed."];

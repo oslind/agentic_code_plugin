@@ -42,6 +42,7 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
 export async function runAllChecks(checks: CheckConfig[], cwd: string, signal?: AbortSignal, approve?: ApproveCommand): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const c of checks) {
+    if (signal?.aborted) break;
     if (approve && !(await approve(c))) {
       results.push({ name: c.name, passed: true, skipped: true, output: "Skipped: you did not approve running it.", durationMs: 0 });
       continue;

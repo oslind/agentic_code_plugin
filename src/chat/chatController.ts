@@ -148,6 +148,8 @@ export class ChatController {
   private busy?: string;
   private abort?: AbortController;
   private runningRunId?: string;
+  /** Set by Stop until the work it stopped has wound down. */
+  private stopping = false;
   /** Which conversation each run belongs to, so sub-agent events land in the right chat. */
   private readonly runOwner = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
@@ -284,7 +286,19 @@ export class ChatController {
     this.changed();
   }
 
+  /**
+   * The Stop button: ends everything the coordinator and its sub-agents are
+   * doing right now. Model calls are aborted, running commands are killed,
+   * and questions waiting for the user are closed. Drafts stay pending for
+   * review; nothing is written.
+   */
   cancel(): void {
+    if (!this.busy && this.pending.size === 0) return;
+    if (this.busy) {
+      this.busy = "Stopping…";
+      this.stopping = true;
+      this.changed();
+    }
     this.abort?.abort();
     if (this.runningRunId) this.host.cancelRun(this.runningRunId);
     for (const [id, p] of [...this.pending]) {
@@ -561,6 +575,7 @@ export class ChatController {
       await this.chooseChecks(c.id, c.workspaceRoot, true);
     } finally {
       this.busy = undefined;
+      this.stopping = false;
       this.changed();
     }
   }
@@ -730,6 +745,8 @@ export class ChatController {
       this.abort = undefined;
       this.busy = undefined;
       this.runningRunId = undefined;
+      if (abort.signal.aborted) startRun = undefined;
+      this.stopping = false;
       this.changed();
     }
     if (startRun) await this.runPlan(startRun);
@@ -780,7 +797,7 @@ export class ChatController {
         kind: "outcome",
         runId,
         tone: ok ? "success" : "warning",
-        text: describeOutcome(finished, outcome),
+        text: describeOutcome(finished, outcome, this.stopping),
         outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
       });
     } catch (err) {
@@ -789,6 +806,7 @@ export class ChatController {
     } finally {
       this.runningRunId = undefined;
       this.busy = undefined;
+      this.stopping = false;
       this.changed();
     }
   }

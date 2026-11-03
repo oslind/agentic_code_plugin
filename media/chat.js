@@ -123,10 +123,24 @@
       el("span", { class: "hint mode-" + state.mode }, state.mode === "plan" ? "Plan mode" : "Act mode"),
       el("span", { class: "model", title: "Model used for the next message. Change it in settings (green dot)." }, state.model || ""),
       el("span", { class: "spacer" }),
-      busy ? el("button", { class: "secondary", onclick: () => post({ type: "cancel" }) }, "Stop") : null,
-      el("button", { class: "primary", disabled: busy, onclick: () => send(ta) }, "Send"),
+      busy ? stopButton() : el("button", { class: "primary", onclick: () => send(ta) }, "Send"),
     );
     return el("div", { class: "input-box" }, ta, actions);
+  }
+
+  // Stops the coordinator and every sub-agent. Drafts stay pending for review; nothing is written.
+  function stopButton() {
+    const stopping = state.busy === "Stopping…";
+    return el(
+      "button",
+      {
+        class: "stop",
+        disabled: stopping,
+        title: "Stop the coordinator and all sub-agents now (Esc). Drafts are kept for review; nothing is written.",
+        onclick: () => post({ type: "cancel" }),
+      },
+      stopping ? "Stopping…" : "■ Stop",
+    );
   }
 
   function send(ta) {
@@ -702,7 +716,7 @@
       header(),
       inputBox(),
       permissionsBar(),
-      state.busy ? el("div", { class: "busy" }, el("span", { class: "spinner" }), state.busy) : null,
+      state.busy ? el("div", { class: "busy" }, el("span", { class: "spinner" }), el("span", { class: "spacer" }, state.busy), stopButton()) : null,
       state.current ? conversation() : welcome(),
     ];
     app.replaceChildren(...parts.filter(Boolean));
@@ -715,6 +729,14 @@
       if (caret && typeof again.setSelectionRange === "function") again.setSelectionRange(caret[0], caret[1]);
     }
   }
+
+  // Esc stops the work, like the Stop button.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.busy && state.busy !== "Stopping…" && !e.defaultPrevented) {
+      e.preventDefault();
+      post({ type: "cancel" });
+    }
+  });
 
   window.addEventListener("message", (event) => {
     const msg = event.data;
