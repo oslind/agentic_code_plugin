@@ -1,9 +1,13 @@
 /**
- * A last line of defence for shell commands (checks): every command runs with
- * its working directory inside the project, and this refuses commands whose
- * text points outside it. It is a text check, so it cannot see what a script
- * the command starts does; that is why commands need approval unless the user
- * turned on auto-approve.
+ * A text check on check commands that refuses ones that obviously point
+ * outside the project (absolute paths, `..`, `~`, variables, sudo/ssh).
+ *
+ * It is NOT a sandbox. Commands start in the project folder, but they run as
+ * the user with the user's environment: `python -c ...`, `node -e ...`,
+ * `curl`, or any script in the project can read other files and use the
+ * network, and this check cannot see what they do. The real protection is
+ * that every command waits for the user's approval unless the user turned
+ * on "Run commands" in their own settings.
  */
 export function commandLeavesProject(command: string): string | undefined {
   const c = command.trim();

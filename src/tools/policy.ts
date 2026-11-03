@@ -16,14 +16,133 @@ export type PolicyDecision =
   | { verdict: "deny"; reason: string }
   | { verdict: "ask"; reason: string; path?: string };
 
-/** Never readable or writable: likely to hold secrets or repository internals. */
-const SECRET = [".git/**", ".git", "**/.env", "**/.env.*", "**/*.pem", "**/*.key"];
+/**
+ * Never readable or writable: likely to hold secrets or repository internals.
+ * Matched without regard to case, because Windows and macOS treat `.ENV` and
+ * `.env` as the same file.
+ */
+export const SECRET = [
+  "**/.git",
+  "**/.git/**",
+  // Environment files
+  "**/.env",
+  "**/.env.*",
+  "**/.envrc",
+  // Keys and certificates
+  "**/*.pem",
+  "**/*.key",
+  "**/*.p12",
+  "**/*.pfx",
+  "**/*.p8",
+  "**/*.jks",
+  "**/*.keystore",
+  "**/*.ppk",
+  "**/*.kdbx",
+  "**/id_rsa*",
+  "**/id_dsa*",
+  "**/id_ecdsa*",
+  "**/id_ed25519*",
+  // Credential stores and tool configs that carry tokens
+  "**/.ssh",
+  "**/.ssh/**",
+  "**/.aws",
+  "**/.aws/**",
+  "**/.azure",
+  "**/.azure/**",
+  "**/.gnupg",
+  "**/.gnupg/**",
+  "**/.kube/config",
+  "**/.docker/config.json",
+  "**/.npmrc",
+  "**/.yarnrc.yml",
+  "**/.pypirc",
+  "**/.netrc",
+  "**/_netrc",
+  "**/.git-credentials",
+  "**/.htpasswd",
+  "**/credentials",
+  "**/credentials.json",
+  "**/client_secret*.json",
+  "**/service-account*.json",
+  "**/secrets.json",
+  "**/secrets.yaml",
+  "**/secrets.yml",
+  "**/secrets.toml",
+  "**/.config/gcloud",
+  "**/.config/gcloud/**",
+  "**/application_default_credentials.json",
+  "**/.config/gh/hosts.yml",
+  "**/.config/hub",
+  "**/.terraformrc",
+  "**/.terraform.d/credentials.tfrc.json",
+  "**/*.tfvars",
+  "**/*.tfstate",
+  "**/*.tfstate.*",
+];
 
-/** Never writable, whatever a task's scope says. */
-const PROTECTED = [...SECRET, ".vscode/settings.json", ".agentic/**"];
+/** More secret patterns from the user's setting agentic.protectedFiles. Treated like the built-in list. */
+let extraSecrets: string[] = [];
 
-/** Writable only with the user's approval. */
-const SENSITIVE = ["package.json", "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml", ".github/**"];
+export function setExtraSecretPatterns(globs: unknown): void {
+  extraSecrets = Array.isArray(globs) ? globs.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim().replace(/\\/g, "/")) : [];
+}
+
+/** Templates that only show which variables exist. They are safe to read and change. */
+const SECRET_EXCEPTIONS = ["**/.env.example", "**/.env.sample", "**/.env.template", "**/.env.dist"];
+
+/**
+ * Never writable, whatever a task's scope says or a switch allows: secrets,
+ * the extension's own state, and files that make VS Code change settings or
+ * run commands on its own.
+ */
+const PROTECTED_EXTRA = [".agentic", ".agentic/**", ".vscode/settings.json", ".vscode/tasks.json", "**/*.code-workspace"];
+
+/**
+ * Writable only with the user's approval (or the "sensitive files" switch):
+ * files that decide which commands run, such as package scripts, lockfiles,
+ * CI, dev containers, git hooks and the rest of .vscode.
+ */
+const SENSITIVE = [
+  "**/package.json",
+  "**/package-lock.json",
+  "**/npm-shrinkwrap.json",
+  "**/yarn.lock",
+  "**/pnpm-lock.yaml",
+  "**/bun.lock",
+  "**/bun.lockb",
+  ".github/**",
+  ".gitlab-ci.yml",
+  ".devcontainer/**",
+  ".husky/**",
+  ".githooks/**",
+  ".vscode/**",
+  ".gitmodules",
+];
+
+/**
+ * The form of a path used for matching against the lists above: Windows
+ * ignores trailing dots and spaces in names (".env." is ".env") and treats
+ * "name:stream" as the file "name".
+ */
+function matchForm(p: string): string {
+  return p
+    .split("/")
+    .map((seg) => seg.replace(/:.*$/, "").replace(/[. ]+$/, "") || seg)
+    .join("/");
+}
+
+function matchesNoCase(p: string, globs: string[]): boolean {
+  const m = matchForm(p);
+  return matchesAny(m, globs, { nocase: true }) || matchesAny(p, globs, { nocase: true });
+}
+
+/** Whether a workspace-relative path may hold secrets. Such files are never read, searched, copied to the scratch copy or written. */
+export function isSecretPath(path: string): boolean {
+  const p = normalizeWorkspacePath(path);
+  if (!p) return false;
+  if (extraSecrets.length && matchesNoCase(p, extraSecrets)) return true;
+  return matchesNoCase(p, SECRET) && !matchesAny(p, SECRET_EXCEPTIONS, { nocase: true });
+}
 
 export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecision {
   switch (call.tool) {
@@ -53,7 +172,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "read_file": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
-      if (matchesAny(p, SECRET)) {
+      if (isSecretPath(p)) {
         return { verdict: "deny", reason: `'${p}' may contain secrets and cannot be read` };
       }
       return { verdict: "allow", path: p };
@@ -62,7 +181,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "replace_in_file": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
-      if (matchesAny(p, PROTECTED)) return { verdict: "deny", reason: `'${p}' is protected` };
+      if (isProtectedPath(p)) return { verdict: "deny", reason: `'${p}' is protected` };
       if (!matchesAny(p, ctx.fileScope)) {
         return {
           verdict: "deny",
@@ -76,10 +195,10 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
 }
 
 
-/** package.json, lockfiles and CI files: accepted only by the user, or by the "sensitive files" switch. */
+/** package.json files, lockfiles, CI, dev containers, git hooks and .vscode: accepted only by the user, or by the "sensitive files" switch. */
 export function isSensitivePath(path: string): boolean {
   const p = normalizeWorkspacePath(path);
-  return p !== undefined && p !== null && matchesAny(p, SENSITIVE);
+  return p !== undefined && matchesNoCase(p, SENSITIVE);
 }
 
 /** The auto-approve switches, mirrored from settings. */
@@ -89,10 +208,10 @@ export interface AutoApprove {
   commands: boolean;
 }
 
-/** Never writable, whatever is accepted: .git, secrets, .agentic and VS Code settings. */
+/** Never writable, whatever is accepted: .git, secrets, .agentic, VS Code settings and tasks, workspace files. */
 export function isProtectedPath(path: string): boolean {
   const p = normalizeWorkspacePath(path);
-  return !p || matchesAny(p, PROTECTED);
+  return !p || isSecretPath(p) || matchesNoCase(p, PROTECTED_EXTRA);
 }
 
 /** Whether a pending change may be written without the user, given the switches. */
@@ -105,4 +224,13 @@ export function isAutoApproved(call: ToolCall, auto: AutoApprove): boolean {
   if (call.tool === "request_check") return auto.commands;
   if (call.tool === "write_file" || call.tool === "replace_in_file") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
   return false;
+}
+
+/**
+ * Whether a configured check may run without asking. The "Run commands"
+ * switch covers only commands from the user's own settings or ones the user
+ * approved; a command a project supplies in its own settings is always shown.
+ */
+export function isCheckAutoApproved(commandsSwitch: boolean, trusted: ReadonlySet<string>, command: string): boolean {
+  return commandsSwitch && trusted.has(command);
 }

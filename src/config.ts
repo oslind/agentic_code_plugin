@@ -2,20 +2,36 @@ import * as vscode from "vscode";
 import { OpenAICompatibleConfig, OpenAICompatibleProvider } from "./providers/openaiCompatible";
 import { StructuredOutputMode } from "./providers/types";
 import { CheckConfig } from "./checks/runner";
+import { safeLinkDirs } from "./changes/scratch";
 import { AutoApprove } from "./tools/policy";
+import { baseUrlFrom, legacyApiKeyFrom, PERMISSION_KEYS, permissionsFrom, USER_ONLY_MODEL_KEYS, workspaceOverrides } from "./userSettings";
+
+export { PERMISSION_KEYS } from "./userSettings";
+
+/** Where the API key is kept in VS Code's secret storage (the OS keychain), never in settings files. */
+export const API_KEY_SECRET = "agentic.model.apiKey";
+
+let secretApiKey: string | undefined;
+
+/** Keeps the API key from secret storage in memory, so building a request stays synchronous. */
+export function setSecretApiKey(key: string | undefined): void {
+  secretApiKey = key?.trim() || undefined;
+}
 
 /**
  * Reads the model settings fresh on every call, so changes apply to the next
  * request without a reload. Pass the workspace folder so folder-level
- * settings in a multi-root workspace are honoured too.
+ * settings in a multi-root workspace are honoured for the model name and
+ * tuning. The server address and the API key come from the user only: a
+ * project can never change where your code and key are sent.
  */
 export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
   const c = vscode.workspace.getConfiguration("agentic.model", scope);
   return {
     source: modelNameSource(scope),
-    baseUrl: c.get<string>("baseUrl", "http://localhost:11434/v1"),
+    baseUrl: baseUrlFrom(c),
     model: c.get<string>("name", "qwen3.8:27b"),
-    apiKey: c.get<string>("apiKey", "") || undefined,
+    apiKey: secretApiKey ?? legacyApiKeyFrom(c),
     contextWindow: c.get<number>("contextWindow", 32768),
     temperature: c.get<number>("temperature", 0.2),
     requestTimeoutMs: c.get<number>("requestTimeoutMs", 300000),
@@ -44,7 +60,10 @@ export function modelNameSource(scope?: vscode.Uri): string {
 }
 
 export interface RunConfig {
+  /** Checks from every settings level, including the project's own. Project checks are only suggestions. */
   checks: CheckConfig[];
+  /** Commands of the checks in the user's own settings. Only these may run without asking when "Run commands" is on. */
+  trustedCommands: Set<string>;
   maxParallel: number;
   maxTurns: number;
   maxFixRounds: number;
@@ -53,15 +72,17 @@ export interface RunConfig {
 
 export function readRunConfig(scope?: vscode.Uri): RunConfig {
   const c = vscode.workspace.getConfiguration("agentic", scope);
-  const checks = c
-    .get<CheckConfig[]>("checks", [])
-    .filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command);
+  const valid = (list: unknown): CheckConfig[] =>
+    (Array.isArray(list) ? (list as CheckConfig[]) : []).filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command);
+  const checks = valid(c.get<unknown>("checks", []));
   return {
     checks,
+    trustedCommands: new Set(valid(c.inspect<unknown>("checks")?.globalValue).map((x) => x.command)),
     maxParallel: Math.max(1, Math.min(8, c.get<number>("maxParallelWorkers", 2))),
     maxTurns: c.get<number>("worker.maxTurns", 40),
     maxFixRounds: c.get<number>("worker.maxFixRounds", 2),
-    linkDirs: c.get<string[]>("scratch.linkDirs", ["node_modules"]),
+    // User settings only: a project must not choose what gets linked into the scratch copy.
+    linkDirs: safeLinkDirs(c.inspect<unknown>("scratch.linkDirs")?.globalValue ?? ["node_modules"]),
   };
 }
 
@@ -79,13 +100,28 @@ export interface Permissions extends AutoApprove {
   commands: boolean;
 }
 
-export const PERMISSION_KEYS = ["editFiles", "sensitiveFiles", "commands"] as const;
+/**
+ * Extra secret file patterns. Values from every level are combined, so a
+ * project can add patterns but never remove the user's.
+ */
+export function readProtectedFiles(): string[] {
+  const i = vscode.workspace.getConfiguration("agentic").inspect<unknown>("protectedFiles");
+  const all = [i?.globalValue, i?.workspaceValue, i?.workspaceFolderValue].flatMap((v) => (Array.isArray(v) ? v : []));
+  return [...new Set(all.filter((g): g is string => typeof g === "string"))];
+}
 
+/** The switches from user settings only. A project's .vscode/settings.json cannot turn them on. */
 export function readPermissions(): Permissions {
-  const c = vscode.workspace.getConfiguration("agentic.autoApprove");
-  return {
-    editFiles: c.get<boolean>("editFiles", false),
-    sensitiveFiles: c.get<boolean>("sensitiveFiles", false),
-    commands: c.get<boolean>("commands", false),
-  };
+  return permissionsFrom(vscode.workspace.getConfiguration("agentic.autoApprove"));
+}
+
+/**
+ * Security settings that the open project tries to set, for a warning. Their
+ * values are ignored either way.
+ */
+export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
+  return [
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.autoApprove", scope), PERMISSION_KEYS).map((k) => `agentic.autoApprove.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.model", scope), USER_ONLY_MODEL_KEYS).map((k) => `agentic.model.${k}`),
+  ];
 }

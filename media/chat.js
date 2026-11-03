@@ -605,8 +605,8 @@
   let permsOpen = !!saved.permsOpen;
   const PERMS = [
     ["editFiles", "Edit files", "Sub-agents' changes are written to your project right away. When off, each change opens for review and is only written when you press Accept."],
-    ["sensitiveFiles", "Sensitive files", "The same for package.json, lockfiles and CI files."],
-    ["commands", "Run commands", "Check commands (tests, lint, ...) run without asking. When off, each command is shown to you first and only runs if you allow it. Commands always run inside the project folder."],
+    ["sensitiveFiles", "Sensitive files", "The same for package.json files, lockfiles, CI, dev containers, git hooks and .vscode files."],
+    ["commands", "Run commands", "Check commands (tests, lint, ...) run without asking. When off, each command is shown to you first and only runs if you allow it. Commands start in the project folder but run as you, so they can read files elsewhere and use the network. Only your user settings count; a project cannot turn this on."],
   ];
 
   function permissionsBar() {

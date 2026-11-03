@@ -2,6 +2,7 @@ import { constants, promises as fs } from "fs";
 import * as path from "path";
 import picomatch from "picomatch";
 import { normalizeWorkspacePath } from "./paths";
+import { isProtectedPath, isSecretPath, isSensitivePath } from "./policy";
 
 export class SandboxError extends Error {
   constructor(message: string) {
@@ -26,6 +27,11 @@ export interface ProjectFiles {
  * The only way agents touch the file system. Every path is resolved against
  * one workspace folder, and the real path on disk (after following symlinks)
  * must stay inside it. Nothing outside the folder open in VS Code is reachable.
+ *
+ * The secret and protected file rules are applied here to the real path as
+ * well as to the name asked for, so a harmless-looking link such as
+ * `src/build-info.txt -> ../.env` cannot be used to read or write a protected
+ * file.
  */
 export class WorkspaceSandbox implements ProjectFiles {
   private constructor(readonly root: string) {}
@@ -50,6 +56,11 @@ export class WorkspaceSandbox implements ProjectFiles {
       throw new SandboxError(`'${relPath}' is outside the workspace`);
     }
     return path.join(this.root, ...normal.split("/"));
+  }
+
+  /** A real absolute path inside the workspace as a workspace-relative POSIX path. */
+  private relative(real: string): string {
+    return path.relative(this.root, real).split(path.sep).join("/");
   }
 
   private async assertInside(absolute: string, shown: string): Promise<string> {
@@ -84,20 +95,53 @@ export class WorkspaceSandbox implements ProjectFiles {
     while (!(await exists(ancestor))) {
       ancestor = path.dirname(ancestor);
     }
-    await this.assertInside(ancestor, relPath);
+    const realAncestor = await this.assertInside(ancestor, relPath);
+    // Where the file really lands, with links in the folders on the way resolved.
+    let real = path.join(realAncestor, path.relative(ancestor, target));
     if (await exists(target)) {
-      await this.assertInside(target, relPath);
+      real = await this.assertInside(target, relPath);
+    }
+    const realRel = this.relative(real);
+    if (isProtectedPath(relPath) || isProtectedPath(realRel)) {
+      throw new SandboxError(`'${relPath}' is protected and is never written`);
+    }
+    // package.json, lockfiles, CI and git hooks have their own approval switch, which goes by the name of the change.
+    // A link with another name would slip past it, so such files are written only by their real name.
+    const lexicalRel = normalizeWorkspacePath(relPath);
+    if (realRel !== lexicalRel && isSensitivePath(realRel) && !isSensitivePath(lexicalRel ?? "")) {
+      throw new SandboxError(`'${relPath}' links to '${realRel}', which needs your approval to change. Change it by its real name, '${realRel}'.`);
     }
     return target;
   }
 
-  async readFile(relPath: string): Promise<string> {
+  /** Real path of a file that may be read: inside the workspace, and neither it nor what it links to may hold secrets. */
+  async resolveForRead(relPath: string): Promise<string> {
+    if (isSecretPath(relPath)) throw new SandboxError(`'${relPath}' may contain secrets and cannot be read`);
     const real = await this.resolveExisting(relPath);
+    if (isSecretPath(this.relative(real))) throw new SandboxError(`'${relPath}' links to a file that may contain secrets and cannot be read`);
+    return real;
+  }
+
+  async readFile(relPath: string): Promise<string> {
+    const real = await this.resolveForRead(relPath);
     const handle = await fs.open(real, constants.O_RDONLY | NOFOLLOW);
     try {
+      await this.assertSameFile(handle, relPath, () => this.resolveForRead(relPath));
       return await handle.readFile("utf8");
     } finally {
       await handle.close();
+    }
+  }
+
+  /**
+   * Checks after opening that the open file is still the one the path
+   * resolves to. Narrows the window in which a folder on the way could be
+   * swapped for a link between the check and the open.
+   */
+  private async assertSameFile(handle: fs.FileHandle, shown: string, resolve: () => Promise<string>): Promise<void> {
+    const [opened, again] = await Promise.all([handle.stat(), resolve().then((p) => fs.stat(p))]);
+    if (opened.dev !== again.dev || opened.ino !== again.ino) {
+      throw new SandboxError(`'${shown}' changed while it was being opened`);
     }
   }
 
@@ -107,8 +151,11 @@ export class WorkspaceSandbox implements ProjectFiles {
     // Re-check after mkdir in case a directory was swapped for a link meanwhile.
     await this.assertInside(path.dirname(target), relPath);
     // O_NOFOLLOW refuses to open the file if it was replaced by a symlink.
-    const handle = await fs.open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | NOFOLLOW, 0o644);
+    // Not truncated on open: it is emptied only after checking the open file is the one that was checked.
+    const handle = await fs.open(target, constants.O_WRONLY | constants.O_CREAT | NOFOLLOW, 0o644);
     try {
+      await this.assertSameFile(handle, relPath, () => this.resolveForWrite(relPath).then((t) => fs.realpath(t)));
+      await handle.truncate(0);
       await handle.writeFile(content, "utf8");
     } finally {
       await handle.close();
@@ -138,7 +185,8 @@ export class WorkspaceSandbox implements ProjectFiles {
           if (match(childRel)) out.push(childRel);
         } else if (e.isSymbolicLink()) {
           const real = await fs.realpath(childAbs).catch(() => undefined);
-          if (real && this.contains(real) && (await fs.stat(real)).isFile() && match(childRel)) out.push(childRel);
+          // A link to a secret file is left out, like the secret file itself would be unreadable.
+          if (real && this.contains(real) && !isSecretPath(this.relative(real)) && (await fs.stat(real)).isFile() && match(childRel)) out.push(childRel);
         }
       }
     };

@@ -1,7 +1,9 @@
 import { ChangeViews } from "./ui/changeViews";
 import * as vscode from "vscode";
 import { z } from "zod";
-import { createProvider, PERMISSION_KEYS, readModelConfig, readPermissions, readRunConfig } from "./config";
+import { setExtraSecretPatterns } from "./tools/policy";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readModelConfig, readPermissions, readRunConfig, setSecretApiKey } from "./config";
+import { legacyApiKeyFrom } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -38,8 +40,56 @@ async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined
   return vscode.window.showWorkspaceFolderPick({ placeHolder: "Which folder may the agents work in?" });
 }
 
+/**
+ * Loads the API key from secret storage. An older version kept it in user
+ * settings in plain text; that key is moved into secret storage and removed
+ * from the settings file.
+ */
+async function loadApiKey(context: vscode.ExtensionContext, output: vscode.LogOutputChannel): Promise<void> {
+  let key = await context.secrets.get(API_KEY_SECRET);
+  const legacy = legacyApiKeyFrom(vscode.workspace.getConfiguration("agentic.model"));
+  if (!key && legacy) {
+    await context.secrets.store(API_KEY_SECRET, legacy);
+    key = legacy;
+    output.info("Moved the API key from agentic.model.apiKey in your settings into VS Code's secret storage.");
+  }
+  if (legacy) {
+    await vscode.workspace
+      .getConfiguration("agentic.model")
+      .update("apiKey", undefined, vscode.ConfigurationTarget.Global)
+      .then(undefined, (err: Error) => output.warn(`Could not remove agentic.model.apiKey from your settings: ${err.message}`));
+  }
+  setSecretApiKey(key);
+}
+
+/** Says, once per folder and session, that the project's own settings tried to change security settings and were ignored. */
+function warnAboutProjectSettings(output: vscode.LogOutputChannel): vscode.Disposable {
+  const warned = new Set<string>();
+  const check = () => {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const keys = ignoredProjectSettings(folder.uri);
+      const id = `${folder.uri.toString()}|${keys.join(",")}`;
+      if (!keys.length || warned.has(id)) continue;
+      warned.add(id);
+      const message = `The project "${folder.name}" tries to set ${keys.join(", ")} in its own settings. Agentic Code ignores this: these settings only count in your user settings, so a project cannot approve work for you or redirect model requests.`;
+      output.warn(message);
+      void vscode.window.showWarningMessage(message);
+    }
+  };
+  check();
+  return vscode.Disposable.from(
+    vscode.workspace.onDidChangeWorkspaceFolders(check),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.model")) check();
+    }),
+  );
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Agentic Code", { log: true });
+  void loadApiKey(context, output).catch((err) => output.warn(`Could not read the API key from secret storage: ${(err as Error).message}`));
+  context.subscriptions.push(warnAboutProjectSettings(output));
+  setExtraSecretPatterns(readProtectedFiles());
   const store = new TaskStore(context.globalStorageUri.fsPath);
   const tree = new TaskTreeProvider(store);
 
@@ -116,6 +166,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     { dispose: () => chat.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("agentic.protectedFiles")) setExtraSecretPatterns(readProtectedFiles());
       if (e.affectsConfiguration("agentic.autoApprove")) chat.settingsChanged();
       if (!e.affectsConfiguration("agentic.model")) return;
       // The user may have switched model or server; try the configured format again.
@@ -148,6 +199,23 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.window.registerTreeDataProvider("agentic.tasks", tree),
     vscode.commands.registerCommand("agentic.refreshTasks", () => tree.refresh()),
+    context.secrets.onDidChange(async (e) => {
+      if (e.key !== API_KEY_SECRET) return;
+      setSecretApiKey(await context.secrets.get(API_KEY_SECRET));
+      chat.settingsChanged();
+    }),
+    vscode.commands.registerCommand("agentic.setApiKey", async () => {
+      const key = await vscode.window.showInputBox({
+        prompt: `API key for ${readModelConfig().baseUrl}. It is kept in VS Code's secret storage, not in a settings file. Leave empty to remove the key.`,
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (key === undefined) return;
+      if (key.trim()) await context.secrets.store(API_KEY_SECRET, key.trim());
+      else await context.secrets.delete(API_KEY_SECRET);
+      setSecretApiKey(key);
+      vscode.window.showInformationMessage(key.trim() ? "API key saved in secret storage." : "API key removed.");
+    }),
     vscode.commands.registerCommand("agentic.testModelConnection", async () => {
       const config = readModelConfig();
       const provider = createProvider(undefined, output);

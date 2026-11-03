@@ -1,6 +1,7 @@
 import { CheckConfig, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
 import { ToolCall } from "../tools/protocol";
+import { isSecretPath } from "../tools/policy";
 
 const MAX_READ_LINES = 300;
 const MAX_LIST = 200;
@@ -48,6 +49,8 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const hits: string[] = [];
         for (const f of files) {
           if (hits.length >= MAX_MATCHES) break;
+          // Secret files cannot be read, so they cannot be searched either.
+          if (isSecretPath(f)) continue;
           let text: string;
           try {
             text = await ctx.sandbox.readFile(f);
