@@ -560,10 +560,11 @@ export class ChatController {
       history,
       // Without a saved conversation (older runs), it gets what the chat shows of its work.
       context: history?.length ? undefined : earlierWork(task, conversation.entries, run.id),
-      approve: research ? async () => false : (reason, call, preview) => hooks.approveTool(task, reason, call, preview),
+      // Never auto-approved: its history may hold injected text from files it read, so the user decides every write and command.
+      approve: research ? async () => false : (reason, call, preview) => this.askFollowUpApproval(conversationId, run.id, task, reason, call, preview),
       approveCommand: research ? undefined : (check) => hooks.approveCommand(task, check),
       askUser: (q) => hooks.askUser(task, q),
-      beforeAsk: overlay ? async () => void (await publishDrafts(this.tasks, run.id, task, overlay, published, hooks.onChanges)) : undefined,
+      beforeAsk: overlay ? async () => void (await publishDrafts(this.tasks, run.id, task, overlay, published, (t, c) => this.announceFollowUpDrafts(conversationId, run.id, t, c))) : undefined,
       inbox: () => this.drainInbox(run.id, task.id),
       log: (type, message, data) => {
         // Its finish is a reply to the user here, or, when the conversation ends, its update for the coordinator.
@@ -606,6 +607,42 @@ export class ChatController {
     this.changed();
   }
 
+  /**
+   * A reopened sub-agent's write or new command. Always a card for the user,
+   * whatever the auto-approve switches say: its conversation may carry
+   * instructions planted in a file it read, so it never gets to act alone.
+   */
+  private async askFollowUpApproval(conversationId: string, runId: string, task: Task, reason: string, call: ToolCall, preview?: string): Promise<boolean> {
+    const isCommand = call.tool === "request_check";
+    const { decision } = await this.waitFor(conversationId, {
+      author: "agent",
+      kind: "approval",
+      runId,
+      taskId: task.id,
+      agentName: task.title,
+      preview,
+      text: isCommand
+        ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} In a reopened conversation every command needs your approval, even with Run commands on. It runs as you, so only allow it if you trust it.`
+        : `${reason}. In a reopened conversation every change needs your approval, even with Edit files on, and it stays a draft for review afterwards.`,
+    });
+    if (decision?.kind === "allow" && isCommand) this.allowedFor(runId).add(call.command);
+    return decision?.kind === "allow";
+  }
+
+  /** A reopened sub-agent's drafts: put up for review, and never written by an auto-approve switch. */
+  private async announceFollowUpDrafts(conversationId: string, runId: string, task: Task, changes: PendingChange[]): Promise<void> {
+    await this.append(conversationId, {
+      author: "agent",
+      kind: "review",
+      runId,
+      taskId: task.id,
+      agentName: task.title,
+      tone: "warning",
+      text: `I have ${changes.length} draft change(s) for you to review under Drafts. Changes from a reopened conversation are never accepted automatically: nothing is written until you accept.`,
+    });
+    for (const ch of changes.slice(0, 3)) await this.host.showChange(runId, ch.path).catch((err) => this.host.log("warn", (err as Error).message));
+  }
+
   /** Lets the reopened sub-agent's latest step land in the chat. */
   private async settleFollowUpLog(f: FollowUp): Promise<void> {
     await f.logged;
@@ -617,9 +654,7 @@ export class ChatController {
     const run = await this.tasks.load(f.runId);
     const task = run.tasks.find((t) => t.id === f.taskId);
     if (!task) return;
-    const workspaceRoot = run.workspaceRoot ?? (await this.conversations.load(f.conversationId)).workspaceRoot;
-    const hooks = this.hooksFor(f.conversationId, f.runId, [], workspaceRoot);
-    const changes = await publishDrafts(this.tasks, f.runId, task, f.overlay, f.published, hooks.onChanges);
+    const changes = await publishDrafts(this.tasks, f.runId, task, f.overlay, f.published, (t, c) => this.announceFollowUpDrafts(f.conversationId, f.runId, t, c));
     if (changes.length) {
       const files = [...new Set([...(task.changedFiles ?? []), ...changes.map((c) => c.path)])];
       await this.tasks.updateTask(f.runId, f.taskId, { changedFiles: files });

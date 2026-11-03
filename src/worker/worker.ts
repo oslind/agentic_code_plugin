@@ -75,7 +75,7 @@ const FOLLOW_UP_RULES = `Your task has ended, and the user has reopened the conv
 
 Follow-up rules:
 - Each new user message is a question or request from the user about your task.
-- Use the tools when you need to look at files again. Only draft changes if the user asks for them, and only in your files. Drafts wait for the user's review like before.
+- Use the tools when you need to look at files again. Only draft changes if the user asks for them, and only in your files. Every change and every new command now needs the user's explicit approval first, and drafts then wait for review like before.
 - When you have an answer, call finish. Its summary is shown to the user as your reply, so write it to them: answer the question directly, and do not repeat your old report.`;
 
 function researchPrompt(): string {
@@ -201,6 +201,7 @@ export class Worker {
         fileScope: task.fileScope,
         allowedChecks: this.opts.readOnly ? [] : checks.map((c) => c.name),
         knownCommands: new Map(checks.map((c) => [c.name, c.command])),
+        followUp: this.opts.followUp,
       });
       if (decision.verdict === "deny") {
         this.opts.log("denied", decision.reason, { call: turn.call });

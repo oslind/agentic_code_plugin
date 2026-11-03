@@ -38,3 +38,18 @@ describe("workerTurnSchema", () => {
     expect(workerTurnSchema.safeParse({ thought: "x", call: { tool: "shell", cmd: "ls" } }).success).toBe(false);
   });
 });
+
+describe("reopened sub-agents", () => {
+  it("must ask before every write and every command, even ones that are allowed in a run", () => {
+    const ctx = { fileScope: ["src/**"], allowedChecks: ["test"], knownCommands: new Map([["test", "npm test"]]) };
+    const write = { tool: "write_file" as const, path: "src/a.ts", content: "x" };
+    const edit = { tool: "replace_in_file" as const, path: "src/a.ts", search: "a", replace: "b" };
+    const known = { tool: "request_check" as const, name: "test", command: "npm test", reason: "verify" };
+    expect(checkToolCall(write, ctx).verdict).toBe("allow");
+    expect(checkToolCall(known, ctx).verdict).toBe("allow");
+    for (const call of [write, edit, known]) expect(checkToolCall(call, { ...ctx, followUp: true }).verdict).toBe("ask");
+    // Its file scope and the protected files still hold.
+    expect(checkToolCall({ ...write, path: "README.md" }, { ...ctx, followUp: true }).verdict).toBe("deny");
+    expect(checkToolCall({ ...write, path: "src/.env" }, { ...ctx, followUp: true }).verdict).toBe("deny");
+  });
+});
