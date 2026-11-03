@@ -98,16 +98,20 @@ export class ScratchCopy {
     }
     const target = path.join(this.dir, ...parts);
     await fs.mkdir(path.dirname(target), { recursive: true });
-    // Nothing on the way is a link any more; refuse if one appeared meanwhile.
-    const handle = await fs.open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+    // Nothing on the way is a link any more. Opened without truncating, and checked before anything is written:
+    // O_NOFOLLOW refuses a link as the file itself, and the checks below catch a folder on the way swapped for one.
+    const handle = await fs.open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
     try {
+      const realTarget = await fs.realpath(target);
+      const inside = path.relative(await fs.realpath(this.dir), realTarget);
+      if (inside.startsWith("..") || path.isAbsolute(inside)) throw new Error(`The scratch copy of '${rel}' resolves outside the scratch folder.`);
+      const [opened, reached] = await Promise.all([handle.stat(), fs.stat(realTarget)]);
+      if (opened.dev !== reached.dev || opened.ino !== reached.ino) throw new Error(`The scratch copy of '${rel}' changed while it was being opened.`);
+      await handle.truncate(0);
       await handle.writeFile(content, "utf8");
     } finally {
       await handle.close();
     }
-    const realTarget = await fs.realpath(target);
-    const inside = path.relative(await fs.realpath(this.dir), realTarget);
-    if (inside.startsWith("..") || path.isAbsolute(inside)) throw new Error(`The scratch copy of '${rel}' resolves outside the scratch folder.`);
   }
 
   private rel(absolute: string): string {
