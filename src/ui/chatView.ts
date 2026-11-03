@@ -20,6 +20,7 @@ type FromView =
   | { type: "review"; runId: string; action: "show" | "accept" | "reject"; path?: string; taskId?: string }
   | { type: "decide"; entryId: string; decision: unknown }
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
+  | { type: "endAgentChat"; runId: string; taskId: string }
   | { type: "setPermission"; key: string; value: boolean }
   | { type: "editChecks" };
 
@@ -127,6 +128,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "messageAgent":
           if (isId(m.runId) && isId(m.taskId) && typeof m.text === "string") await this.controller.messageAgent(m.runId, m.taskId, m.text.slice(0, 4000));
+          return;
+        case "endAgentChat":
+          if (isId(m.runId) && isId(m.taskId)) await this.controller.endAgentChat(m.runId, m.taskId);
           return;
         case "setPermission":
           if ((PERMISSION_KEYS as readonly string[]).includes(m.key) && typeof m.value === "boolean") {

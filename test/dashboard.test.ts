@@ -115,6 +115,25 @@ describe("buildDashboard", () => {
   });
 });
 
+describe("reopened sub-agents", () => {
+  it("lets you message a sub-agent whose task ended, unless its run is still working", () => {
+    const base = { entries: [entry({ author: "user" }), entry({ kind: "plan", runId: "r1" })], plans: { r1: plan() }, runIds: ["r1"], waiting: [], stopping: false };
+    const busy = buildDashboard({ ...base, runningRunId: "r1", busy: "x" });
+    expect(busy.agents[0]).toMatchObject({ state: "completed", reopenable: true, canMessage: false });
+    const idle = buildDashboard(base);
+    expect(idle.agents[0]).toMatchObject({ reopenable: true, canMessage: true });
+    expect(idle.agents[2]).toMatchObject({ reopenable: false, canMessage: false });
+  });
+
+  it("shows a reopened sub-agent as working while it answers, and as open when it waits for you", () => {
+    const base = { entries: [], plans: { r1: plan() }, runIds: ["r1"], waiting: [], stopping: false };
+    const working = buildDashboard({ ...base, followUps: { "r1:a": "working" } }).agents[0]!;
+    expect(working).toMatchObject({ state: "working", label: "Answering you", followUp: "working", canMessage: true });
+    expect(buildDashboard({ ...base, followUps: { "r1:a": "open" } }).agents[0]).toMatchObject({ state: "completed", label: "Chat open" });
+    expect(buildDashboard({ ...base, followUps: { "r1:a": "ending" } }).agents[0]).toMatchObject({ label: "Updating the coordinator", canMessage: false });
+  });
+});
+
 describe("relativeInside", () => {
   it("keeps only files inside the folder, after following links", async () => {
     const links: Record<string, string> = { "/p/link": "/etc/passwd" };

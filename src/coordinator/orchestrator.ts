@@ -171,6 +171,7 @@ export class Orchestrator {
     const signal = this.o.signal ? AbortSignal.any([this.o.signal, controller.signal]) : controller.signal;
     const scratch = new ScratchCopy(this.root, this.scratchDir(task.id), this.o.linkDirs);
     let files: OverlayFiles | undefined;
+    let worker: Worker | undefined;
     // Drafts already put up for review while the task ran, by path, so they are not announced twice.
     const published = new Map<string, string>();
     try {
@@ -183,7 +184,7 @@ export class Orchestrator {
       const overlay = files;
       const checkDir = () => scratch.sync(overlay.allChanges());
 
-      const worker = new Worker({
+      worker = new Worker({
         provider: this.o.provider,
         sandbox: overlay,
         checkDir,
@@ -201,11 +202,12 @@ export class Orchestrator {
         log: (type, message, data) => void this.log(type, message, task.id, data),
       });
 
-      let result = await worker.run();
-      for (let round = 0; worker.checks.length > 0 && overlay.writes.size > 0; round++) {
+      const w = worker;
+      let result = await w.run();
+      for (let round = 0; w.checks.length > 0 && overlay.writes.size > 0; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the checks decide. They run on a scratch copy.
-        const checks: CheckResult[] = await runAllChecks(worker.checks, await checkDir(), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)));
+        const checks: CheckResult[] = await runAllChecks(w.checks, await checkDir(), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)));
         signal.throwIfAborted();
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed, skipped: c.skipped })) });
@@ -214,7 +216,7 @@ export class Orchestrator {
           throw new OrchestratorError(`Checks failed: ${failed.map((c) => c.name).join(", ")}`);
         }
         await this.setStatus(task, "running");
-        result = await worker.run(
+        result = await w.run(
           `Your work is not done. These checks failed:\n\n${failed.map((c) => `## ${c.name}\n${c.output}`).join("\n\n")}\n\nFix the problems, then finish.`,
         );
       }
@@ -223,6 +225,9 @@ export class Orchestrator {
       const changedFiles = [...new Set([...published.keys(), ...overlay.pending(task.id).map((c) => c.path)])];
       await this.o.store.updateTask(this.o.runId, task.id, { summary: result.summary, changedFiles, unfinished: undefined });
       if (changedFiles.length === 0) await this.log("no_changes", "Task finished without changing files", task.id);
+      // Saved before "done", so a follow-up the user starts right away has it.
+      await this.o.store.saveHistory(this.o.runId, task.id, w.history()).catch(() => undefined);
+      worker = undefined;
       await this.setStatus(task, "done");
       if (changes.length) await this.o.onChanges?.(task, changes);
     } catch (err) {
@@ -240,6 +245,8 @@ export class Orchestrator {
       }
       await this.handleFailure(task, err, controller.signal.aborted, kept);
     } finally {
+      // Kept so the user can reopen this sub-agent later and it remembers its work.
+      if (worker) await this.o.store.saveHistory(this.o.runId, task.id, worker.history()).catch(() => undefined);
       this.taskControllers.delete(task.id);
       await scratch.remove().catch(() => undefined);
     }
@@ -251,19 +258,8 @@ export class Orchestrator {
    * auto-approve switches apply), which is what happens before a question.
    * Returns the changes it recorded.
    */
-  private async publishDrafts(task: Task, overlay: OverlayFiles, published: Map<string, string>, announce = true): Promise<PendingChange[]> {
-    const run = await this.o.store.load(this.o.runId);
-    // A draft the user already accepted is on disk now; later drafts of that file are edits on top of it.
-    for (const [p, text] of published) {
-      if (run.changes?.some((c) => c.path === p && c.taskId === task.id && c.status === "accepted" && c.proposed === text)) overlay.rebase(p, text);
-    }
-    const changes = overlay.pending(task.id).filter((c) => published.get(c.path) !== c.proposed);
-    if (changes.length === 0) return [];
-    await this.o.store.addChanges(this.o.runId, changes);
-    for (const c of changes) published.set(c.path, c.proposed);
-    await this.log("changes_pending", changes.map((c) => c.path).join(", "), task.id, { files: changes.map((c) => c.path) });
-    if (announce) await this.o.onChanges?.(task, changes);
-    return changes;
+  private publishDrafts(task: Task, overlay: OverlayFiles, published: Map<string, string>, announce = true): Promise<PendingChange[]> {
+    return publishDrafts(this.o.store, this.o.runId, task, overlay, published, announce ? this.o.onChanges : undefined);
   }
 
   private async handleFailure(task: Task, err: unknown, taskCancelled: boolean, kept: string[] = []): Promise<void> {
@@ -281,6 +277,34 @@ export class Orchestrator {
     await this.log(cancelled ? "cancelled" : "task_failed", message, task.id, cancelled && kept.length ? { kept } : undefined);
     await this.setStatus(task, cancelled ? "cancelled" : "failed", message);
   }
+}
+
+/**
+ * Records a sub-agent's drafts that are new since the last call as pending
+ * changes of its run, and hands them to `announce` (which shows them to the
+ * user and applies the auto-approve switches). `published` remembers what
+ * was already recorded, by path. Returns the changes it recorded.
+ */
+export async function publishDrafts(
+  store: TaskStore,
+  runId: string,
+  task: Task,
+  overlay: OverlayFiles,
+  published: Map<string, string>,
+  announce?: (task: Task, changes: PendingChange[]) => Promise<void>,
+): Promise<PendingChange[]> {
+  const run = await store.load(runId);
+  // A draft the user already accepted is on disk now; later drafts of that file are edits on top of it.
+  for (const [p, text] of published) {
+    if (run.changes?.some((c) => c.path === p && c.taskId === task.id && c.status === "accepted" && c.proposed === text)) overlay.rebase(p, text);
+  }
+  const changes = overlay.pending(task.id).filter((c) => published.get(c.path) !== c.proposed);
+  if (changes.length === 0) return [];
+  await store.addChanges(runId, changes);
+  for (const c of changes) published.set(c.path, c.proposed);
+  await store.log({ runId, taskId: task.id, type: "changes_pending", message: changes.map((c) => c.path).join(", "), data: { files: changes.map((c) => c.path) } });
+  await announce?.(task, changes);
+  return changes;
 }
 
 function isTransient(err: unknown): boolean {

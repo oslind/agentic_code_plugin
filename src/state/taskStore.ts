@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { Mutex } from "../util/mutex";
+import { ChatMessage } from "../providers/types";
 import { PendingChange, Run, RunEvent, Task, TaskStatus, TRANSITIONS } from "./types";
 
 export type NewTask = Pick<Task, "title" | "instructions"> &
@@ -103,6 +104,36 @@ export class TaskStore {
           return [];
         }
       });
+  }
+
+  private historyFile(runId: string, taskId: string): string {
+    if (!/^[\w-]+$/.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
+    return path.join(this.runDir(runId), "history", `${taskId}.json`);
+  }
+
+  /**
+   * Saves a sub-agent's conversation when it stops working, so the user can
+   * reopen it later and the sub-agent remembers what it did.
+   */
+  async saveHistory(runId: string, taskId: string, messages: ChatMessage[]): Promise<void> {
+    const file = this.historyFile(runId, taskId);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(messages), "utf8");
+    await fs.rename(tmp, file);
+  }
+
+  /** A sub-agent's saved conversation, or undefined if none was saved (older runs, or it never started). */
+  async loadHistory(runId: string, taskId: string): Promise<ChatMessage[] | undefined> {
+    try {
+      const parsed = JSON.parse(await fs.readFile(this.historyFile(runId, taskId), "utf8")) as unknown;
+      if (!Array.isArray(parsed)) return undefined;
+      return parsed.filter(
+        (m): m is ChatMessage => !!m && typeof m === "object" && ["system", "user", "assistant"].includes((m as ChatMessage).role) && typeof (m as ChatMessage).content === "string",
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   addTasks(runId: string, newTasks: NewTask[]): Promise<Task[]> {

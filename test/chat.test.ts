@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ChatController, ChatHost, RunHooks } from "../src/chat/chatController";
+import { ChatController, ChatHost, learnedSoFar, RunHooks } from "../src/chat/chatController";
 import { CheckConfig } from "../src/checks/runner";
 import { DetectedCheck, detectChecks } from "../src/checks/detect";
 import { AutoApprove, checkToolCall, isChangeAutoAccepted } from "../src/tools/policy";
@@ -873,6 +873,124 @@ describe("ChatController", () => {
     await controller.decide(card.id, { kind: "deny" });
     await sending;
     expect(allowed).toBe(false);
+  });
+
+  describe("reopening a sub-agent whose task ended", () => {
+    const step = (thought: string, call: object) => JSON.stringify({ thought, call });
+
+    /** Waits until no reopened conversation is answering. */
+    async function settled(controller: ChatController) {
+      for (let i = 0; i < 200; i++) {
+        const agents = (await controller.state()).dashboard?.agents ?? [];
+        if (!agents.some((a) => a.followUp === "working" || a.followUp === "ending")) return agents;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error("The follow-up never finished");
+    }
+
+    it("resumes a finished researcher with its history, and tells the coordinator what is new when you talk to it again", async () => {
+      await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+      await fs.writeFile(path.join(dir, "ws", "README.md"), "# Flight sim\nA flight simulator written in Rust.\n");
+      const { controller, provider, tasks } = setup(
+        [
+          JSON.stringify({ reply: "I'll have a sub-agent read the project.", action: "research", request: "", questions: ["What does this project do?"] }),
+          step("Read the README.", { tool: "read_file", path: "README.md" }),
+          step("Done.", { tool: "finish", summary: "It is a flight simulator, described in README.md." }),
+          turn("This project is a flight simulator."),
+          // The follow-up: the researcher answers from what it read before.
+          step("I read the README already.", { tool: "finish", summary: "It is written in Rust, says README.md." }),
+          // Ending it: its update for the coordinator.
+          step("Summing up.", { tool: "finish", summary: "The project is written in Rust (README.md)." }),
+          turn("Noted: it's Rust."),
+        ],
+        "plan",
+      );
+      await controller.send("What is this project?");
+      let state = await controller.state();
+      const researcher = state.dashboard!.agents[0]!;
+      expect(researcher).toMatchObject({ state: "completed", canMessage: true, reopenable: true });
+
+      await controller.messageAgent(researcher.runId, researcher.taskId, "Which language is it written in?");
+      const agents = await settled(controller);
+      expect(agents[0]).toMatchObject({ followUp: "open", label: "Chat open", canMessage: true });
+      // It resumed with its own conversation: the README it read is in the request.
+      const followUpRequest = provider.requests[4]!;
+      expect(followUpRequest.messages[0]!.content).toMatch(/reopened the conversation/);
+      expect(followUpRequest.messages.some((m) => /A flight simulator written in Rust/.test(m.content))).toBe(true);
+      expect(followUpRequest.messages.at(-1)!.content).toMatch(/Which language/);
+      state = await controller.state();
+      expect(state.current!.entries.some((e) => e.author === "agent" && e.tag === "reply" && /written in Rust/.test(e.text))).toBe(true);
+      expect(state.current!.entries.some((e) => e.kind === "direct" && /Which language/.test(e.text))).toBe(true);
+
+      // Talking to the coordinator again ends the follow-up, and the coordinator hears what came up first.
+      await controller.send("Thanks. Anything else?");
+      state = await controller.state();
+      const update = state.current!.entries.find((e) => e.tag === "update from follow-up")!;
+      expect(update).toMatchObject({ author: "coordinator", kind: "report", taskId: researcher.taskId });
+      expect(update.text).toMatch(/written in Rust/);
+      expect(provider.requests.at(-1)!.messages.some((m) => /Update from .* written in Rust/.test(m.content))).toBe(true);
+      expect(state.dashboard!.agents[0]!.followUp).toBeUndefined();
+      expect((await tasks.load(researcher.runId)).tasks[0]!.summary).toMatch(/After a follow-up with the user: The project is written in Rust/);
+      expect(learnedSoFar(state.current!.entries)).toMatch(/written in Rust/);
+    });
+
+    it("keeps a reopened sub-agent's edits as drafts for review, and End chat sends the update", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(path.join(ws, "src"), { recursive: true });
+      await fs.writeFile(path.join(ws, "src", "model.ts"), "export type User = { id: string };\n");
+      const { controller, provider, tasks, shown } = setup(
+        [
+          ...planReplies(),
+          step("Read it first.", { tool: "read_file", path: "src/model.ts" }),
+          step("Add the email field.", { tool: "replace_in_file", path: "src/model.ts", search: "id: string", replace: "id: string; email: string" }),
+          step("Done.", { tool: "finish", summary: "Added an email field to User. It is a draft for your review." }),
+          step("Summing up.", { tool: "finish", summary: "User now has an email field (draft in src/model.ts)." }),
+        ],
+        "act",
+        {
+          workspace: ws,
+          saved: [],
+          permissions: { editFiles: false },
+          during: async (_hooks, runId, store) => {
+            await store.setStatus(runId, "add-model", "running");
+            await store.updateTask(runId, "add-model", { summary: "Created src/model.ts with a User type." });
+            await store.setStatus(runId, "add-model", "done");
+          },
+        },
+      );
+      await controller.send("add users");
+      const agent = (await controller.state()).dashboard!.agents.find((a) => a.taskId === "add-model")!;
+      expect(agent.canMessage).toBe(true);
+
+      await controller.messageAgent(agent.runId, agent.taskId, "Please add an email field too.");
+      await settled(controller);
+      // No saved conversation for this run, so it was briefed from its report and its steps in the chat.
+      const briefed = provider.requests[2]!.messages.map((m) => m.content).join("\n");
+      expect(briefed).toMatch(/Created src\/model.ts with a User type/);
+      expect(briefed).toMatch(/Writing the model/);
+      // Nothing written: a draft waits for review, like any other.
+      expect(await fs.readFile(path.join(ws, "src", "model.ts"), "utf8")).toBe("export type User = { id: string };\n");
+      const run = await tasks.load(agent.runId);
+      expect(run.changes).toMatchObject([{ path: "src/model.ts", taskId: "add-model", status: "pending", proposed: "export type User = { id: string; email: string };\n" }]);
+      expect(shown).toEqual(["src/model.ts"]);
+
+      await controller.endAgentChat(agent.runId, agent.taskId);
+      const state = await controller.state();
+      expect(state.current!.entries.at(-1)).toMatchObject({ author: "coordinator", kind: "report", text: expect.stringMatching(/email field/) });
+      expect(state.dashboard!.agents.find((a) => a.taskId === "add-model")!.followUp).toBeUndefined();
+      // Its saved conversation now includes the follow-up, for the next time it is reopened.
+      expect((await tasks.loadHistory(agent.runId, "add-model"))!.some((m) => /email field too/.test(m.content))).toBe(true);
+    });
+
+    it("says why a sub-agent that has not started cannot get messages", async () => {
+      const { controller } = setup([turn("Plan below.", "plan", "Add a User model and an API that uses it."), plan], "plan");
+      await controller.send("add users");
+      const state = await controller.state();
+      const agent = state.dashboard!.agents[0]!;
+      expect(agent.canMessage).toBe(false);
+      await controller.messageAgent(agent.runId, agent.taskId, "hello?");
+      expect((await controller.state()).current!.entries.at(-1)!.text).toMatch(/has not started yet/);
+    });
   });
 
   it("lets a sub-agent ask the user, and delivers direct messages on its next step", async () => {
