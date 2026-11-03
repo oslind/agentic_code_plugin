@@ -62,7 +62,7 @@ function commandApprover(): (task: Task, check: CheckConfig) => Promise<boolean>
     if (readPermissions().commands || allowed.has(check.command)) return true;
     const choice = await vscode.window.showWarningMessage(
       `"${task.title}" wants to run \`${check.command}\``,
-      { modal: true, detail: `Check "${check.name}". It runs inside the project folder only.` },
+      { modal: true, detail: `Check "${check.name}". It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it.` },
       "Allow once",
       "Allow for this run",
     );

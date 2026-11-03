@@ -17,8 +17,8 @@ export function normalizeWorkspacePath(p: string): string | undefined {
   return normal.replace(/\/+$/, "");
 }
 
-export function matchesAny(file: string, globs: string[]): boolean {
-  return globs.length > 0 && picomatch(globs, { dot: true })(file);
+export function matchesAny(file: string, globs: string[], options: { nocase?: boolean } = {}): boolean {
+  return globs.length > 0 && picomatch(globs, { dot: true, nocase: options.nocase ?? false })(file);
 }
 
 /** The literal directory prefix of a glob, up to its first wildcard segment. */

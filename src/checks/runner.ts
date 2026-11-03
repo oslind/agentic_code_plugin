@@ -1,4 +1,4 @@
-import { exec, tail } from "../util/exec";
+import { exec, splitCommand, tail } from "../util/exec";
 import { commandLeavesProject } from "../tools/commandGuard";
 
 /** A check the user configured, such as `npm test`. Workers can only run these by name. */
@@ -26,7 +26,11 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
   const outside = commandLeavesProject(check.command);
   if (outside) return { name: check.name, passed: false, output: `Refused to run \`${check.command}\`: ${outside}`, durationMs: 0 };
   try {
-    const res = await exec(check.command, [], { cwd, shell: true, timeoutMs: check.timeoutMs ?? 600_000, signal });
+    // Simple commands run directly, without a shell, so nothing in them is expanded or chained.
+    // Pipes, `&&` and the like need a shell, and so does Windows, where npm and most tools are .cmd scripts.
+    const argv = process.platform === "win32" ? undefined : splitCommand(check.command);
+    const options = { cwd, timeoutMs: check.timeoutMs ?? 600_000, signal };
+    const res = argv ? await exec(argv[0]!, argv.slice(1), { ...options, shell: false }) : await exec(check.command, [], { ...options, shell: true });
     const combined = [res.stdout, res.stderr].filter(Boolean).join("\n");
     return {
       name: check.name,
@@ -35,7 +39,9 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
       durationMs: Date.now() - started,
     };
   } catch (err) {
-    return { name: check.name, passed: false, output: (err as Error).message, durationMs: Date.now() - started };
+    const e = err as NodeJS.ErrnoException;
+    const output = e.code === "ENOENT" ? `Command not found: ${check.command.trim().split(/\s+/)[0]}` : e.message;
+    return { name: check.name, passed: false, output, durationMs: Date.now() - started };
   }
 }
 

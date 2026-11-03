@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.3.5",
+  "version": "0.3.8",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -45,6 +45,10 @@
       {
         "command": "agentic.testModelConnection",
         "title": "Agentic: Test model connection"
+      },
+      {
+        "command": "agentic.setApiKey",
+        "title": "Agentic: Set API key"
       },
       {
         "command": "agentic.showLog",
@@ -119,7 +123,8 @@
         "agentic.model.baseUrl": {
           "type": "string",
           "default": "http://localhost:11434/v1",
-          "description": "Base URL of an OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp)."
+          "scope": "machine",
+          "markdownDescription": "Base URL of an OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp). Read from your user settings (or Remote settings in WSL/SSH) only: a project's `.vscode/settings.json` cannot change where your code and API key are sent."
         },
         "agentic.model.name": {
           "type": "string",
@@ -129,7 +134,9 @@
         "agentic.model.apiKey": {
           "type": "string",
           "default": "",
-          "description": "Optional API key. Local servers usually need none."
+          "scope": "machine",
+          "markdownDeprecationMessage": "Use the **Agentic: Set API key** command instead. It keeps the key in VS Code's secret storage. A key found here is moved there and removed from this file.",
+          "markdownDescription": "Deprecated. Use the **Agentic: Set API key** command, which keeps the key in VS Code's secret storage. Local servers usually need no key."
         },
         "agentic.model.contextWindow": {
           "type": "number",
@@ -219,17 +226,20 @@
         "agentic.autoApprove.editFiles": {
           "type": "boolean",
           "default": false,
-          "description": "Sub-agents' file changes are written to the project right away. When off, each change opens in VS Code (a new file as its own editor, an edit as a side-by-side diff) and is only written when you press Accept in the chat. Files outside the workspace, .git, secrets and .agentic are never writable."
+          "description": "Sub-agents' file changes are written to the project right away. When off, each change opens in VS Code (a new file as its own editor, an edit as a side-by-side diff) and is only written when you press Accept in the chat. Files outside the workspace, .git, secrets, .agentic and VS Code settings and tasks are never writable. Only your user settings count: a project cannot turn this on.",
+          "scope": "machine"
         },
         "agentic.autoApprove.sensitiveFiles": {
           "type": "boolean",
           "default": false,
-          "description": "Changes to package.json, lockfiles and .github files are written right away too. When off, they always wait for your Accept."
+          "description": "Changes to package.json files, lockfiles, CI (.github), dev containers, git hooks and .vscode files are written right away too. When off, they always wait for your Accept. Only your user settings count: a project cannot turn this on.",
+          "scope": "machine"
         },
         "agentic.autoApprove.commands": {
           "type": "boolean",
           "default": false,
-          "description": "Check commands (tests, lint, and ones a sub-agent requests) run without asking. Turn off to see each command first; nothing runs until you allow it. Commands always run inside the open folder, and commands that point outside it are refused."
+          "description": "Check commands (tests, lint, and ones a sub-agent requests) run without asking. When off, each command is shown first and nothing runs until you allow it. Commands start in the project folder, but they run as you: a command or the script it starts can read files elsewhere and use the network, so only turn this on for projects you trust. Only your user settings count: a project cannot turn this on.",
+          "scope": "machine"
         },
         "agentic.delegation.maxTasks": {
           "type": "number",
@@ -260,7 +270,7 @@
           "default": [
             "node_modules"
           ],
-          "description": "Folders linked, not copied, into the scratch copy inside .agentic where checks run against pending changes, so dependencies need no reinstall."
+          "description": "Top-level folders linked, not copied, into the scratch copy inside .agentic where checks run against pending changes, so dependencies need no reinstall. Only plain folder names count. Files that may hold secrets (.env, keys, credentials) are never copied there."
         }
       }
     },

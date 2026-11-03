@@ -459,7 +459,7 @@ export class ChatController {
           rememberLabel: isCommand ? "Allow, and keep it for this folder" : undefined,
           preview,
           text: isCommand
-            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} It runs inside the project folder only, and nothing runs until you allow it.`
+            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} Nothing runs until you allow it. It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it.`
             : `${reason}. Nothing is written until you allow it.`,
         });
         if (decision?.kind !== "allow") return false;
@@ -505,7 +505,7 @@ export class ChatController {
           agentName: task.title,
           rememberable: true,
           rememberLabel: "Allow for the rest of this run",
-          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. It runs inside the project folder only. Turn on "Run commands" to stop being asked.`,
+          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
         });
         if (decision?.kind !== "allow") return false;
         if (decision.remember) this.allowedFor(runId).add(check.command);
@@ -558,7 +558,7 @@ export class ChatController {
       await this.append(conversationId, {
         author: "system",
         tone: "warning",
-        text: `The check "${c.name}" (\`${c.command}\`) was left out: ${commandLeavesProject(c.command)} Commands always run inside the project folder.`,
+        text: `The check "${c.name}" (\`${c.command}\`) was left out: ${commandLeavesProject(c.command)}`,
       });
     }
     if (decision.kind === "checks" && decision.remember) await this.host.saveChecks(workspaceRoot, checks);
