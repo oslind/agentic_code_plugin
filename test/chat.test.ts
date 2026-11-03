@@ -193,6 +193,8 @@ describe("ChatController", () => {
     workspace?: string;
     /** Runs inside the fake run, with the hooks the chat passed. */
     during?: (hooks: RunHooks, runId: string, tasks: TaskStore) => Promise<void>;
+    /** Research rounds one message may use. */
+    maxResearchRounds?: number;
   }
 
   function setup(replies: string[], mode: ChatMode, opts: SetupOptions = {}) {
@@ -225,7 +227,7 @@ describe("ChatController", () => {
       log: () => {},
       openFolder: async () => path.join(dir, "ws"),
       researchLimits: () => ({ maxTurns: 10, maxParallel: 1 }),
-      delegationLimits: () => ({ maxTasks: 12, maxResearchers: 5 }),
+      delegationLimits: () => ({ maxTasks: 12, maxResearchers: 5, maxResearchRounds: opts.maxResearchRounds }),
       checksFor: async () => ({ saved, defaults: [], detected: opts.detected ?? [] }),
       saveChecks: async (_root, checks) => {
         saved = checks;
@@ -343,7 +345,7 @@ describe("ChatController", () => {
         worker("Read the README.", { tool: "read_file", path: "README.md" }),
         worker("Try to edit, which must be refused.", { tool: "write_file", path: "README.md", content: "hacked" }),
         worker("Done.", { tool: "finish", summary: "It is a flight simulator, described in README.md." }),
-        JSON.stringify({ thought: "Answer from the report.", reply: "This project is a flight simulator (see README.md).", action: "research", request: "", questions: ["More?"] }),
+        JSON.stringify({ thought: "Answer from the report.", reply: "This project is a flight simulator (see README.md).", action: "none", request: "" }),
       ],
       "plan",
     );
@@ -358,7 +360,7 @@ describe("ChatController", () => {
     expect(entries.some((e) => e.kind === "spawn" && /Read-only/.test(e.text))).toBe(true);
     expect(entries.some((e) => e.author === "agent" && /Blocked/.test(e.text))).toBe(true);
     expect(entries.some((e) => e.kind === "report" && /flight simulator/.test(e.text))).toBe(true);
-    // The final answer comes from the reports, and cannot start more work.
+    // The final answer comes from the reports.
     expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "This project is a flight simulator (see README.md)." });
     expect(entries.filter((e) => e.kind === "plan")).toHaveLength(0);
     // Research never ends with a run summary or Apply buttons.
@@ -511,6 +513,107 @@ describe("ChatController", () => {
     expect(entries.some((e) => e.author === "agent" && e.text === "Writing the model." && e.agentName === "Add model")).toBe(true);
     expect(entries.at(-1)).toMatchObject({ kind: "outcome", tone: "success" });
     expect(entries.at(-1)!.text).toMatch(/What the sub-agents did:\n✓ Add model/);
+  });
+
+  describe("digging deeper after a first research round (Oskar's log)", () => {
+    const report = (summary: string) => JSON.stringify({ thought: "Done.", call: { tool: "finish", summary } });
+    const firstRound = [
+      JSON.stringify({ reply: "I'll have sub-agents look at the project.", action: "research", request: "", questions: ["What is the structure of the project?"] }),
+      report("A Flask app in app.py with a front end in static/main.js."),
+    ];
+    const userText = "Find dead code, unused variables and refactoring opportunities in this project";
+    beforeEach(async () => {
+      await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    });
+
+    it("sends one researcher per file when the first reports are too general", async () => {
+      const { controller, started, provider } = setup(
+        [
+          ...firstRound,
+          // What qwen said after the first round; now it can act on it.
+          JSON.stringify({
+            thought: "The initial research gave me a high-level overview. Let me send researchers to analyze the key files.",
+            reply: "I'll analyze the main code files for issues like dead code, unused variables, and refactoring opportunities.",
+            action: "research",
+            request: "",
+            questions: [
+              "In app.py, list every function and module-level variable and where each is used. Mark the unused ones.",
+              "In static/main.js, list every function and variable and where each is used. Mark the unused ones.",
+            ],
+          }),
+          report("app.py: old_handler() is never called; DEBUG_PORT is unused."),
+          report("static/main.js: drawLegacy() is never called."),
+          turn("Dead code: old_handler() and DEBUG_PORT in app.py, drawLegacy() in static/main.js.", "none"),
+        ],
+        "plan",
+      );
+      await controller.send(userText);
+      const entries = (await controller.state()).current!.entries;
+      expect(started).toEqual([]);
+      const rounds = entries.filter((e) => e.kind === "research");
+      expect(rounds).toHaveLength(2);
+      expect(rounds[1]!.text).toMatch(/Sending 2 read-only/);
+      expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: expect.stringMatching(/old_handler/) });
+      // The second round's researchers were told what the first one found.
+      const secondRoundPrompt = provider.requests.find((r) => r.messages.some((m) => /static\/main\.js, list every/.test(m.content)));
+      expect(secondRoundPrompt!.messages.map((m) => m.content).join("\n")).toMatch(/Flask app in app\.py/);
+    });
+
+    it("keeps the promise to look deeper when the model forgets the action", async () => {
+      const { controller } = setup(
+        [
+          ...firstRound,
+          JSON.stringify({
+            thought: "I need to examine the actual code content. Let me send researchers to analyze the key files.",
+            reply: "I'll analyze the main code files for issues like dead code, unused variables, and refactoring opportunities.",
+            action: "none",
+            request: "",
+          }),
+          report("app.py: old_handler() is never called."),
+          turn("old_handler() in app.py is dead code.", "none"),
+        ],
+        "plan",
+      );
+      await controller.send(userText);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.filter((e) => e.kind === "research")).toHaveLength(2);
+      expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "old_handler() in app.py is dead code." });
+    });
+
+    it("sends new researchers for a later message, whatever earlier ones did", async () => {
+      const { controller } = setup(
+        [
+          ...firstRound,
+          turn("It is a Flask app with a JavaScript front end.", "none"),
+          // Second message in the same conversation: a fresh round, not blocked by the finished one.
+          JSON.stringify({ reply: "I'll send researchers per file.", action: "research", request: "", questions: ["In app.py, list unused functions."] }),
+          report("app.py: old_handler() is never called."),
+          turn("old_handler() in app.py is unused.", "none"),
+        ],
+        "plan",
+        { maxResearchRounds: 1 },
+      );
+      await controller.send("What does this project do?");
+      await controller.send(userText);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.filter((e) => e.kind === "research")).toHaveLength(2);
+      expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "old_handler() in app.py is unused." });
+    });
+
+    it("stops after the last allowed round and says so", async () => {
+      const { controller } = setup(
+        [
+          ...firstRound,
+          JSON.stringify({ reply: "I'll send more researchers.", action: "research", request: "", questions: ["List the functions in app.py."] }),
+        ],
+        "plan",
+        { maxResearchRounds: 1 },
+      );
+      await controller.send(userText);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.filter((e) => e.kind === "research")).toHaveLength(1);
+      expect(entries.at(-1)).toMatchObject({ author: "system", tone: "warning", text: expect.stringMatching(/maxResearchRounds/) });
+    });
   });
 
   describe("Act mode does what it is asked (Oskar's log)", () => {
@@ -956,6 +1059,11 @@ describe("questions about the project become research", () => {
     expect(keepPromise(answer, "what is it?", true)).toBe(answer);
     // After research, a question is answered, not planned.
     expect(keepPromise({ ...promise, reply: "I'll have the sub-agents look into it." }, "what does it do?", true).action).toBe("none");
+    // ...unless more research rounds are left: then looking deeper is a research round.
+    const deeper = keepPromise({ ...promise, reply: "I'll analyze the main code files for dead code." }, "find dead code", true, true);
+    expect(deeper).toMatchObject({ action: "research", questions: [expect.stringMatching(/find dead code[\s\S]*Dig deeper/)] });
+    // A promise to change something is still a plan.
+    expect(keepPromise(promise, "alter the summary to use less formal language", true, true).action).toBe("plan");
   });
 
   it("knows a go-ahead", () => {

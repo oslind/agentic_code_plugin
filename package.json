@@ -240,10 +240,17 @@
         },
         "agentic.delegation.maxResearchers": {
           "type": "number",
-          "default": 5,
+          "default": 8,
           "minimum": 1,
           "maximum": 10,
-          "description": "Most read-only sub-agents the coordinator may send to answer one question about the project."
+          "description": "Most read-only sub-agents the coordinator may send in one research round. How many run at the same time is agentic.maxParallelWorkers."
+        },
+        "agentic.delegation.maxResearchRounds": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Research rounds one message may use. After a broad first round, the coordinator can send narrower researchers (for example one per file) when the reports are too general to answer from."
         },
         "agentic.scratch.linkDirs": {
           "type": "array",
