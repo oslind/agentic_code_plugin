@@ -176,7 +176,7 @@ describe("eventToEntry", () => {
     const plain = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "cancelled", message: "Cancelled" }, tasks);
     expect(plain).toMatchObject({ tag: "stopped", text: "Stopped. Nothing was written to your project." });
     const kept = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "cancelled", message: "Cancelled", data: { kept: ["src/a.ts"] } }, tasks);
-    expect(kept!.text).toMatch(/drafts of src\/a\.ts are kept.*Files changed/);
+    expect(kept!.text).toMatch(/drafts of src\/a\.ts are kept.*Drafts/);
   });
 
   it("ignores bookkeeping events", () => {
@@ -273,7 +273,7 @@ describe("ChatController", () => {
       const state = await controller.state();
       const card = state.current!.entries.find((e) => e.kind === "review")!;
       expect(card).toMatchObject({ author: "agent", taskId: "add-model", agentName: "Add model" });
-      expect(card.text).toMatch(/2 change\(s\) for you to review/);
+      expect(card.text).toMatch(/2 draft change\(s\) for you to review/);
       // The receipt: every file with the sub-agent that changed it.
       expect(state.plans[runId]!.changes.map((c) => c.agentName)).toEqual(["Add model", "Add model"]);
       expect(state.plans[runId]!.changes.map((c) => [c.path, c.kind, c.status])).toEqual([
@@ -391,6 +391,7 @@ describe("ChatController", () => {
       expect(state.busy).toBeUndefined();
       expect(state.current!.entries.at(-1)).toMatchObject({ author: "system", text: "Stopped.", tone: "warning" });
       expect(started).toEqual([]);
+      expect(state.done).toMatchObject({ status: "stopped", text: "Stopped" });
     });
 
     it("stops read-only research sub-agents and does not go on to answer", async () => {
@@ -426,6 +427,46 @@ describe("ChatController", () => {
       const { controller } = setup([], "act");
       controller.cancel();
       expect((await controller.state()).busy).toBeUndefined();
+    });
+  });
+
+  describe("the Finished bar", () => {
+    it("is green once a prompt is answered, and gone while the next prompt runs", async () => {
+      const { controller, provider } = setup([turn("Hello! What should I work on?")], "plan");
+      await controller.send("hi");
+      expect((await controller.state()).done).toMatchObject({ status: "finished", text: "Finished" });
+
+      let started!: () => void;
+      const thinking = new Promise<void>((r) => (started = r));
+      provider.chat = (req) =>
+        new Promise((_, reject) => {
+          started();
+          req.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      const sending = controller.send("add users");
+      await thinking;
+      expect((await controller.state()).done).toBeUndefined();
+      controller.cancel();
+      await sending;
+    });
+
+    it("shows after a run's summary, not when the coordinator hands off to sub-agents", async () => {
+      let seenWhileRunning: unknown = "unset";
+      const { controller } = setup([turn("On it.", "plan", "Add a User model and an API that uses it."), plan], "act", {
+        during: async () => {
+          seenWhileRunning = (await controller.state()).done;
+        },
+      });
+      await controller.send("add users");
+      expect(seenWhileRunning).toBeUndefined();
+      expect((await controller.state()).done).toMatchObject({ status: "finished", text: "Finished." });
+    });
+
+    it("belongs to its conversation", async () => {
+      const { controller } = setup([turn("Hello!")], "plan");
+      await controller.send("hi");
+      controller.newTask();
+      expect((await controller.state()).done).toBeUndefined();
     });
   });
 
@@ -915,9 +956,9 @@ describe("describeOutcome", () => {
     const text = describeOutcome(r, { done: ["a", "b"], failed: [], blocked: [] } as unknown as RunOutcome);
     expect(text).toMatch(/^All 2 task\(s\) are done\./);
     expect(text).toMatch(/✓ Task a: Added the model\./);
-    expect(text).toMatch(/Changed files: src\/api\.ts, src\/user\.ts\./);
-    expect(text).toMatch(/1 change\(s\) wait for your review/);
-    expect(text).toMatch(/until you press Accept\. 1 already written/);
+    expect(text).toMatch(/Files with drafts: src\/api\.ts, src\/user\.ts\./);
+    expect(text).toMatch(/1 draft\(s\) wait for your review/);
+    expect(text).toMatch(/until you press Accept\. 1 already accepted and written/);
     expect(text).not.toMatch(/integration|branch|merge/i);
     expect(changedFilesOf(r)).toEqual(["src/api.ts", "src/user.ts"]);
   });
@@ -933,7 +974,7 @@ describe("describeOutcome", () => {
     const text = describeOutcome(r, { done: ["a"], failed: ["b"], blocked: ["c"] } as unknown as RunOutcome);
     expect(text).toMatch(/1 of 3 task\(s\) are done\. 1 failed\. 1 could not start/);
     expect(text).toMatch(/✕ Task b: Model gave up\./);
-    expect(text).toMatch(/No files were changed\./);
+    expect(text).toMatch(/No files were drafted\./);
   });
 });
 

@@ -1,4 +1,6 @@
 import { ChangeViews } from "./ui/changeViews";
+import { promises as fs } from "fs";
+import { relativeInside } from "./tools/paths";
 import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
@@ -107,6 +109,13 @@ export function activate(context: vscode.ExtensionContext): void {
       return `${c.model} at ${c.baseUrl} · v${context.extension.packageJSON.version as string}`;
     },
     pickWorkspace: async () => (await pickWorkspaceFolder())?.uri.fsPath,
+    // Only paths inside the conversation's folder can be attached, and only the paths are sent.
+    pickFiles: async (root) => {
+      const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
+      if (!folder) return [];
+      const picked = await vscode.window.showOpenDialog({ defaultUri: folder.uri, canSelectMany: true, canSelectFiles: true, canSelectFolders: false, openLabel: "Attach" });
+      return relativeInside(await fs.realpath(folder.uri.fsPath), (picked ?? []).map((u) => u.fsPath));
+    },
     // The coordinator only ever sees the file list of a folder that is open right now.
     fileTree: async (root) => {
       const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
