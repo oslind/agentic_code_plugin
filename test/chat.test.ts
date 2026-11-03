@@ -172,6 +172,13 @@ describe("eventToEntry", () => {
     expect(e?.thinking).toBeUndefined();
   });
 
+  it("says a stopped sub-agent wrote nothing and where its kept drafts are", () => {
+    const plain = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "cancelled", message: "Cancelled" }, tasks);
+    expect(plain).toMatchObject({ tag: "stopped", text: "Stopped. Nothing was written to your project." });
+    const kept = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "cancelled", message: "Cancelled", data: { kept: ["src/a.ts"] } }, tasks);
+    expect(kept!.text).toMatch(/drafts of src\/a\.ts are kept.*Files changed/);
+  });
+
   it("ignores bookkeeping events", () => {
     expect(eventToEntry({ time: "", runId: "r", taskId: "t1", type: "worktree", message: "/x" }, tasks)).toBeUndefined();
   });
@@ -356,6 +363,68 @@ describe("ChatController", () => {
     expect(entries.filter((e) => e.kind === "plan")).toHaveLength(0);
     // Research never ends with a run summary or Apply buttons.
     expect(entries.some((e) => e.kind === "outcome")).toBe(false);
+  });
+
+  describe("the Stop button", () => {
+    function hangUntilStopped(provider: ModelProvider) {
+      let started!: () => void;
+      const thinking = new Promise<void>((r) => (started = r));
+      provider.chat = (req) =>
+        new Promise((_, reject) => {
+          started();
+          req.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      return thinking;
+    }
+
+    it("aborts the coordinator's model call right away and says it stopped", async () => {
+      const { controller, provider, started } = setup([], "act");
+      const thinking = hangUntilStopped(provider);
+      const sending = controller.send("add users");
+      await thinking;
+      controller.cancel();
+      expect((await controller.state()).busy).toBe("Stopping…");
+      await sending;
+      const state = await controller.state();
+      expect(state.busy).toBeUndefined();
+      expect(state.current!.entries.at(-1)).toMatchObject({ author: "system", text: "Stopped.", tone: "warning" });
+      expect(started).toEqual([]);
+    });
+
+    it("stops read-only research sub-agents and does not go on to answer", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const { controller, provider } = setup(
+        [JSON.stringify({ reply: "I'll have a sub-agent read the project.", action: "research", request: "", questions: ["What does this project do?"] })],
+        "plan",
+        { workspace: ws },
+      );
+      const first = provider.chat.bind(provider);
+      let calls = 0;
+      let researching!: () => void;
+      const subAgentStarted = new Promise<void>((r) => (researching = r));
+      provider.chat = (req) => {
+        if (calls++ === 0) return first(req);
+        researching();
+        return new Promise((_, reject) => req.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      };
+      const sending = controller.send("what does this project do?");
+      await subAgentStarted;
+      controller.cancel();
+      await sending;
+      const state = await controller.state();
+      expect(state.busy).toBeUndefined();
+      const runId = state.current!.entries.find((e) => e.kind === "research")!.runId!;
+      expect(state.plans[runId]!.tasks.map((t) => t.status)).toEqual(["cancelled"]);
+      expect(state.current!.entries.some((e) => e.tag === "from research")).toBe(false);
+      expect(calls).toBe(2);
+    });
+
+    it("does nothing when nothing is running", async () => {
+      const { controller } = setup([], "act");
+      controller.cancel();
+      expect((await controller.state()).busy).toBeUndefined();
+    });
   });
 
   it("Plan mode proposes a plan and does not start sub-agents", async () => {
@@ -730,6 +799,12 @@ describe("describeOutcome", () => {
     expect(text).toMatch(/until you press Accept\. 1 already written/);
     expect(text).not.toMatch(/integration|branch|merge/i);
     expect(changedFilesOf(r)).toEqual(["src/api.ts", "src/user.ts"]);
+  });
+
+  it("says when the user stopped the run", () => {
+    const r = run([task("a", "done", { summary: "Read it." }), task("b", "cancelled", { error: "Cancelled" })]);
+    const text = describeOutcome(r, { done: ["a"], failed: ["b"], blocked: [] } as unknown as RunOutcome, true);
+    expect(text).toMatch(/^You stopped the run\. 1 of 2 task\(s\) had finished\./);
   });
 
   it("says when nothing changed and counts failures", () => {

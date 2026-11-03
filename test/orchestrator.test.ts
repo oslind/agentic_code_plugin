@@ -196,6 +196,59 @@ describe("Orchestrator without git", () => {
   });
 });
 
+describe("Stop", () => {
+  it("stopping the run keeps a sub-agent's drafts pending for review, and writes nothing", async () => {
+    const runId = await setup([task("a", ["a.txt", "README.md"])]);
+    const controller = new AbortController();
+    let started!: () => void;
+    const working = new Promise<void>((r) => (started = r));
+    const hang = (req: ChatRequest) =>
+      new Promise<Turn>((_, reject) => {
+        started();
+        req.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const { o, proposed } = make(runId, scripted({ a: [write("a.txt", "A"), write("README.md", "changed\n"), hang] }), { signal: controller.signal });
+    const running = o.run();
+    await working;
+    controller.abort();
+    const outcome = await running;
+    expect(outcome.failed).toEqual(["a"]);
+    const run = await store.load(runId);
+    expect(run.tasks[0]!.status).toBe("cancelled");
+    expect(run.tasks[0]!.changedFiles).toEqual(["a.txt", "README.md"]);
+    expect(run.changes!.map((c) => [c.path, c.status])).toEqual([
+      ["a.txt", "pending"],
+      ["README.md", "pending"],
+    ]);
+    // Not announced, so the auto-approve switches cannot write them.
+    expect(proposed).toEqual([]);
+    expect(onDisk("a.txt")).toBeUndefined();
+    expect(onDisk("README.md")).toBe("hello\nworld\n");
+    const events = await store.readLog(runId);
+    expect(events.find((e) => e.type === "cancelled")?.data).toEqual({ kept: ["a.txt", "README.md"] });
+  });
+
+  it("kills a running check command and everything it started", async () => {
+    const runId = await setup([task("a", ["a.txt"])]);
+    const controller = new AbortController();
+    // A shell that starts a long child: killing only the shell would leave the child running and the run waiting.
+    const checks: CheckConfig[] = [{ name: "slow", command: "sleep 30; echo done" }];
+    const { o } = make(runId, scripted({ a: [write("a.txt", "A"), finish] }), {
+      signal: controller.signal,
+      checks,
+      approveCommand: async () => {
+        setTimeout(() => controller.abort(), 200);
+        return true;
+      },
+    });
+    const t0 = Date.now();
+    const outcome = await o.run();
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(outcome.failed).toEqual(["a"]);
+    expect((await store.load(runId)).changes!.map((c) => c.status)).toEqual(["pending"]);
+  });
+});
+
 describe("recovery", () => {
   it("retries a failed task and tells the worker what the last attempt wrote", async () => {
     const checks = [{ name: "test", command: node("process.exit(require('fs').readFileSync('v.txt','utf8')==='ok'?0:1)") }];

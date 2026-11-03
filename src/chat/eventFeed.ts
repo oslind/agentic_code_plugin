@@ -85,8 +85,16 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       return agent({ text: `Model server trouble, retrying: ${short(event.message)}`, tag: "retry", tone: "warning" });
     case "task_failed":
       return agent({ text: `Failed: ${short(event.message)}`, tag: "failed", tone: "error" });
-    case "cancelled":
-      return agent({ text: "Cancelled. Nothing was written to your project.", tag: "cancelled", tone: "warning" });
+    case "cancelled": {
+      const kept = Array.isArray(data.kept) ? (data.kept as string[]) : [];
+      return agent({
+        text: kept.length
+          ? `Stopped. Nothing was written to your project. My drafts of ${kept.join(", ")} are kept: review them under Files changed, and Accept or Reject as usual.`
+          : "Stopped. Nothing was written to your project.",
+        tag: "stopped",
+        tone: "warning",
+      });
+    }
     case "change_accepted":
       return { author: "system", text: `Wrote ${event.message} to your project.`, tone: "success" };
     case "change_rejected":
