@@ -71,6 +71,19 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       const what = target(call);
       return agent({ text: thought || `${event.message} ${what}`.trim(), thought: thought || undefined, thinking, tag: what ? `${event.message} ${what}` : event.message });
     }
+    case "followup_opened":
+      return agent({
+        text:
+          event.message === "with history"
+            ? "Reopened. I remember my task and what I did, and I'm answering your message."
+            : "Reopened. My earlier conversation was not saved, so I'm going by my report and the steps shown here.",
+        tag: "reopened",
+      });
+    case "followup_reply": {
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
+      const thought = typeof data.thought === "string" ? short(data.thought) : "";
+      return agent({ text: event.message, tag: "reply", thought: thought || undefined, thinking });
+    }
     case "denied":
       return agent({ text: `Blocked: ${short(event.message)}`, tag: "policy", tone: "warning" });
     case "checks":

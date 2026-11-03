@@ -100,6 +100,10 @@ describe("Orchestrator without git", () => {
     // No git, and the scratch copies are gone.
     expect(existsSync(path.join(repo, ".git"))).toBe(false);
     expect(existsSync(path.join(repo, ".agentic", "scratch", runId.slice(0, 8)))).toBe(false);
+    // Each sub-agent's conversation is saved, so the user can reopen it later; the system prompt is rebuilt then.
+    const history = (await store.loadHistory(runId, "c"))!;
+    expect(history[0]).toMatchObject({ role: "user" });
+    expect(history.some((m) => m.role === "assistant" && m.content.includes('"finish"'))).toBe(true);
   });
 
   it("lets a dependent task see what an earlier task proposed", async () => {

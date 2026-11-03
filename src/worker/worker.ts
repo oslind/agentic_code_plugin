@@ -41,6 +41,16 @@ export interface WorkerOptions {
    * is about before answering.
    */
   beforeAsk?: () => Promise<void>;
+  /**
+   * The sub-agent's earlier conversation, without its system prompt. Given
+   * when the user reopens a sub-agent whose task already ended.
+   */
+  history?: ChatMessage[];
+  /**
+   * The user reopened this sub-agent after its task ended. Each run answers
+   * one message from the user, and its finish summary is the reply.
+   */
+  followUp?: boolean;
 }
 
 export interface WorkerResult {
@@ -57,6 +67,16 @@ export class WorkerError extends Error {
 }
 
 const REPLY_RESERVE = 4096;
+
+/** The most of a conversation saved for a later follow-up, in estimated tokens. Older tool output goes first. */
+const SAVED_HISTORY_TOKENS = 24000;
+
+const FOLLOW_UP_RULES = `Your task has ended, and the user has reopened the conversation with you to revisit it. You remember everything above.
+
+Follow-up rules:
+- Each new user message is a question or request from the user about your task.
+- Use the tools when you need to look at files again. Only draft changes if the user asks for them, and only in your files. Drafts wait for the user's review like before.
+- When you have an answer, call finish. Its summary is shown to the user as your reply, so write it to them: answer the question directly, and do not repeat your old report.`;
 
 function researchPrompt(): string {
   return `You are a research agent. You investigate one question about a project by reading its files. You cannot change files or run commands.
@@ -114,10 +134,23 @@ export class Worker {
   private turns = 0;
 
   constructor(private readonly opts: WorkerOptions) {
+    const system = opts.readOnly ? researchPrompt() : systemPrompt(opts.task, opts.checks);
+    const earlier = (opts.history ?? []).filter((m) => m.role !== "system");
     this.messages = [
-      { role: "system", content: opts.readOnly ? researchPrompt() : systemPrompt(opts.task, opts.checks) },
-      { role: "user", content: `Task: ${opts.task.title}\n\n${opts.task.instructions}${opts.context ? `\n\n${opts.context}` : ""}` },
+      { role: "system", content: opts.followUp ? `${system}\n\n${FOLLOW_UP_RULES}` : system },
+      ...(earlier.length
+        ? earlier
+        : [{ role: "user" as const, content: `Task: ${opts.task.title}\n\n${opts.task.instructions}${opts.context ? `\n\n${opts.context}` : ""}` }]),
     ];
+  }
+
+  /**
+   * The conversation so far without the system prompt, cut to a size worth
+   * saving. The prompt is rebuilt when the conversation is reopened, so it
+   * always has the current rules.
+   */
+  history(): ChatMessage[] {
+    return compactHistory(this.messages, SAVED_HISTORY_TOKENS).slice(1);
   }
 
   /** Configured checks plus any the user approved for this task. A later approval replaces one with the same name. */
@@ -133,8 +166,10 @@ export class Worker {
     if (followUp) this.messages.push({ role: "user", content: followUp });
     let lastCall = "";
     let repeats = 0;
+    // A follow-up gets a fresh turn budget for every message; a task's fix rounds share one.
+    const start = this.opts.followUp ? this.turns : 0;
 
-    while (this.turns < maxTurns) {
+    while (this.turns - start < maxTurns) {
       signal?.throwIfAborted();
       this.turns++;
       for (const m of this.opts.inbox?.() ?? []) {

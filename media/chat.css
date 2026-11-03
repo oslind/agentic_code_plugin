@@ -809,6 +809,10 @@ ul.mini-files li {
   white-space: nowrap;
 }
 
+.follow-note {
+  margin-top: 8px;
+}
+
 .agent-input {
   position: sticky;
   bottom: calc(-1 * var(--pad));

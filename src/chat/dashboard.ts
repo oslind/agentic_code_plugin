@@ -1,6 +1,6 @@
 import { AGENT_LABEL, AgentState, agentState, COORDINATOR_LABEL, CoordinatorState, coordinatorState, isActiveAgent } from "./lifecycle";
 import { ChatEntry } from "./types";
-import type { DoneBar, PlanView } from "./chatController";
+import type { DoneBar, FollowUpState, PlanView } from "./chatController";
 
 /** One sub-agent as a card in the Agents view. */
 export interface AgentCard {
@@ -24,6 +24,10 @@ export interface AgentCard {
   research: boolean;
   /** Whether it can get a direct message right now. */
   canMessage: boolean;
+  /** Set while the user has reopened the conversation with it after its task ended. */
+  followUp?: FollowUpState;
+  /** Its task ended, so a message reopens the conversation with it. */
+  reopenable: boolean;
 }
 
 export interface CoordinatorCard {
@@ -59,7 +63,15 @@ export interface DashboardInput {
   stopping: boolean;
   runningRunId?: string;
   done?: DoneBar;
+  /** Reopened conversations with sub-agents whose task ended, by "runId:taskId". */
+  followUps?: Record<string, FollowUpState>;
 }
+
+const FOLLOW_UP_LABEL: Record<FollowUpState, string> = {
+  working: "Answering you",
+  open: "Chat open",
+  ending: "Updating the coordinator",
+};
 
 function oneLine(text: string | undefined, max = 140): string {
   const flat = (text ?? "").replace(/\s+/g, " ").trim();
@@ -99,11 +111,16 @@ export function buildDashboard(input: DashboardInput): DashboardView {
     for (const t of plan.tasks) {
       const mine = entries.filter((e) => e.runId === runId && e.taskId === t.id && e.author === "agent");
       const latest = mine.at(-1);
-      const state = agentState(t.status, {
-        planStarted: plan.started,
-        hasActivity: mine.length > 0,
-        waitingOnUser: waitingEntries.some((e) => e.runId === runId && e.taskId === t.id),
-      });
+      const waitingOnUser = waitingEntries.some((e) => e.runId === runId && e.taskId === t.id);
+      const followUp = input.followUps?.[`${runId}:${t.id}`];
+      const ended = t.status === "done" || t.status === "failed" || t.status === "cancelled";
+      // A reopened sub-agent shows as working while it answers, whatever its task's status.
+      const state =
+        followUp && followUp !== "open"
+          ? waitingOnUser
+            ? "needs_you"
+            : "working"
+          : agentState(t.status, { planStarted: plan.started, hasActivity: mine.length > 0, waitingOnUser });
       const changes = plan.changes.filter((c) => c.taskId === t.id);
       const report = last(mine, (e) => e.kind === "report");
       const withThinking = last(mine, (e) => !!e.thinking);
@@ -111,14 +128,14 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       if (state === "planned") activity = "Waiting for the plan to run";
       else if (state === "queued") activity = "Waiting for a free slot or for the tasks it depends on";
       else if (state === "initializing") activity = "Starting up";
-      else if (state === "completed" && report) activity = oneLine(report.text);
+      else if (state === "completed" && report && !followUp) activity = oneLine(report.text);
       else activity = oneLine(latest?.thought || latest?.text) || AGENT_LABEL[state];
       agents.push({
         runId,
         taskId: t.id,
         title: t.title,
         state,
-        label: AGENT_LABEL[state],
+        label: followUp && state !== "needs_you" ? FOLLOW_UP_LABEL[followUp] : AGENT_LABEL[state],
         activity,
         fileScope: t.fileScope,
         drafts: changes.filter((c) => c.status === "pending").length,
@@ -126,7 +143,11 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         thinking: withThinking?.thinking,
         report: report?.text,
         research: plan.kind === "research",
-        canMessage: t.status === "running" || t.status === "verifying",
+        // A running sub-agent reads messages on its next step. One whose task ended is reopened by a message,
+        // unless its run is still going (other sub-agents may be drafting the same files).
+        canMessage: t.status === "running" || t.status === "verifying" || (ended && followUp !== "ending" && input.runningRunId !== runId),
+        followUp,
+        reopenable: ended,
       });
     }
   }

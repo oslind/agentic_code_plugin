@@ -1,6 +1,9 @@
 import { planRequest } from "../coordinator/planner";
 import { parallelWaves } from "../coordinator/plan";
-import { RunOutcome } from "../coordinator/orchestrator";
+import * as path from "path";
+import { AGENT_DIR, publishDrafts, RunOutcome } from "../coordinator/orchestrator";
+import { OverlayFiles, pendingBase } from "../changes/overlay";
+import { ScratchCopy } from "../changes/scratch";
 import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
@@ -160,6 +163,39 @@ function isUnstarted(run: Run): boolean {
   return run.tasks.length > 0 && run.tasks.every((t) => t.status === "pending" && t.attempts === 0);
 }
 
+/** What the user's reopened conversation with a finished sub-agent is doing. */
+export type FollowUpState = "working" | "open" | "ending";
+
+/**
+ * A conversation the user reopened with a sub-agent whose task had ended.
+ * The sub-agent resumes with its saved history. Its drafts become pending
+ * changes of its run, and when the conversation ends it reports what is new
+ * to the coordinator.
+ */
+interface FollowUp {
+  key: string;
+  runId: string;
+  taskId: string;
+  title: string;
+  conversationId: string;
+  worker: Worker;
+  abort: AbortController;
+  /** This sub-agent's view of the project, for one that may change files. */
+  overlay?: OverlayFiles;
+  scratch?: ScratchCopy;
+  published: Map<string, string>;
+  /** The replies it gave, used if the closing summary cannot be made. */
+  replies: string[];
+  /** Answering a message right now. */
+  working?: Promise<void>;
+  /** Writing its update for the coordinator. */
+  ending?: Promise<void>;
+  /** The last step it logged, so its reply is in the chat before it counts as done. */
+  logged?: Promise<void>;
+}
+
+const FOLLOW_UP_END = `The user ended this conversation. Call finish now, without other tools. The summary is your update for the coordinator, who plans the next work: in a few sentences, say only what is new since your original report (findings, answers, decisions the user made, drafts you made). If nothing new came up, say "Nothing new."`;
+
 /**
  * Drives the chat: one coordinator per conversation that talks with the user
  * and delegates all project work to sub-agents through plans. The coordinator
@@ -184,13 +220,15 @@ export class ChatController {
   private readonly ready: Promise<void>;
   private readonly eventQueue = new Mutex();
   /** Cards waiting for the user, by entry id. */
-  private readonly pending = new Map<string, { conversationId: string; resolve: (d: Decision | undefined) => void }>();
+  private readonly pending = new Map<string, { conversationId: string; resolve: (d: Decision | undefined) => void; runId?: string; taskId?: string }>();
   /** Messages the user sent to a sub-agent, waiting for its next step. Keyed by run and task. */
   private readonly inboxes = new Map<string, string[]>();
   /** Why an Accept did not go through, by "runId:path". Cleared once the change is decided. */
   private readonly changeNotes = new Map<string, string>();
   /** Commands the user allowed for the rest of a run, keyed by run id. */
   private readonly allowedCommands = new Map<string, Set<string>>();
+  /** Conversations the user reopened with finished sub-agents, by "runId:taskId". */
+  private readonly followUps = new Map<string, FollowUp>();
 
   constructor(
     private readonly conversations: ConversationStore,
@@ -206,6 +244,7 @@ export class ChatController {
   dispose(): void {
     this.stopEvents();
     this.abort?.abort();
+    for (const f of this.followUps.values()) f.abort.abort();
   }
 
   onChange(listener: () => void): () => void {
@@ -289,6 +328,7 @@ export class ChatController {
             stopping: this.stopping,
             runningRunId: this.runningRunId,
             done,
+            followUps: this.followUpStates(),
           })
         : undefined,
       attachRoot: current ? undefined : this.attachRoot,
@@ -339,6 +379,8 @@ export class ChatController {
    * review; nothing is written.
    */
   cancel(): void {
+    // Stop also ends reopened sub-agent conversations; what they said is still passed on.
+    for (const f of [...this.followUps.values()]) void this.endFollowUp(f, false);
     if (!this.busy && this.pending.size === 0) return;
     if (this.busy) {
       this.busy = "Stopping…";
@@ -376,7 +418,7 @@ export class ChatController {
   /** Posts a card and waits until the user decides on it (or stops everything). */
   private async waitFor(conversationId: string, entry: Omit<ChatEntry, "id" | "time">): Promise<{ entry: ChatEntry; decision?: Decision }> {
     const full = await this.append(conversationId, entry);
-    const decision = await new Promise<Decision | undefined>((resolve) => this.pending.set(full.id, { conversationId, resolve }));
+    const decision = await new Promise<Decision | undefined>((resolve) => this.pending.set(full.id, { conversationId, resolve, runId: entry.runId, taskId: entry.taskId }));
     return { entry: full, decision };
   }
 
@@ -440,20 +482,228 @@ export class ChatController {
     this.changed();
   }
 
-  /** Sends a message straight to a running sub-agent. It reads it before its next step. */
+  /**
+   * Sends a message straight to a sub-agent. A running one reads it before
+   * its next step. One whose task has ended is reopened: it resumes with its
+   * saved conversation and answers, until the user ends the conversation.
+   */
   async messageAgent(runId: string, taskId: string, text: string): Promise<void> {
     const conversationId = this.runOwner.get(runId);
     if (!conversationId || !text.trim()) return;
     const run = await this.tasks.load(runId);
     const task = run.tasks.find((t) => t.id === taskId);
     if (!task) return;
-    if (task.status !== "running" && task.status !== "verifying") {
-      await this.append(conversationId, { author: "system", text: `"${task.title}" is not working right now, so it cannot get messages. Retry it to start it again.`, tone: "warning" });
+    const key = `${runId}:${taskId}`;
+    const follow = this.followUps.get(key);
+    const warn = (msg: string) => this.append(conversationId, { author: "system", runId, taskId, agentName: task.title, text: msg, tone: "warning" });
+    if (task.status === "running" || task.status === "verifying" || follow?.working) {
+      this.inboxes.set(key, [...(this.inboxes.get(key) ?? []), text.trim()]);
+      await this.append(conversationId, { author: "user", kind: "direct", runId, taskId, agentName: task.title, text: text.trim() });
       return;
     }
-    const key = `${runId}:${taskId}`;
-    this.inboxes.set(key, [...(this.inboxes.get(key) ?? []), text.trim()]);
+    if (follow?.ending) {
+      await warn(`"${task.title}" is passing what it learned to the coordinator. Send your message again in a moment to start a new conversation.`);
+      return;
+    }
+    if (task.status === "pending" || task.status === "awaiting_approval") {
+      await warn(`"${task.title}" has not started yet, so it cannot get messages.`);
+      return;
+    }
+    if (this.runningRunId === runId) {
+      await warn(`The other sub-agents of "${task.title}"'s run are still working. You can talk with it again once the run is done.`);
+      return;
+    }
     await this.append(conversationId, { author: "user", kind: "direct", runId, taskId, agentName: task.title, text: text.trim() });
+    try {
+      const f = follow ?? (await this.openFollowUp(conversationId, run, task));
+      this.answerFollowUp(f, text.trim());
+    } catch (err) {
+      await this.append(conversationId, { author: "system", kind: "error", runId, taskId, agentName: task.title, text: `Could not reopen "${task.title}": ${(err as Error).message}`, tone: "error" });
+    }
+  }
+
+  /** What each reopened sub-agent conversation is doing, by "runId:taskId". */
+  private followUpStates(): Record<string, FollowUpState> {
+    const out: Record<string, FollowUpState> = {};
+    for (const [key, f] of this.followUps) out[key] = f.ending ? "ending" : f.working ? "working" : "open";
+    return out;
+  }
+
+  /** Brings a sub-agent whose task ended back, with its saved conversation, under the usual permissions. */
+  private async openFollowUp(conversationId: string, run: Run, task: Task): Promise<FollowUp> {
+    const workspaceRoot = run.workspaceRoot ?? (await this.conversations.load(conversationId)).workspaceRoot;
+    const root = await this.host.openFolder(workspaceRoot);
+    if (!root) throw new Error(`${workspaceRoot} is not open in VS Code, so the sub-agent cannot read it.`);
+    const research = run.kind === "research" || task.fileScope.length === 0;
+    const key = `${run.id}:${task.id}`;
+    const abort = new AbortController();
+    const disk = await WorkspaceSandbox.create(root);
+    // Like during its task: the project as on disk, plus the drafts still waiting for review.
+    const overlay = research ? undefined : new OverlayFiles(disk, pendingBase(run.changes));
+    const scratch = overlay ? new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `followup-${run.id.slice(0, 8)}`, task.id), ["node_modules"]) : undefined;
+    const checks = research ? [] : ((await this.host.checksFor(workspaceRoot)).saved ?? []);
+    const hooks = this.hooksFor(conversationId, run.id, checks, workspaceRoot);
+    const history = await this.tasks.loadHistory(run.id, task.id);
+    const published = new Map<string, string>();
+    const f: FollowUp = { key, runId: run.id, taskId: task.id, title: task.title, conversationId, abort, overlay, scratch, published, replies: [], worker: undefined as unknown as Worker };
+    const conversation = await this.conversations.load(conversationId);
+    f.worker = new Worker({
+      provider: this.host.provider(workspaceRoot),
+      sandbox: overlay ?? disk,
+      checkDir: overlay && scratch ? () => scratch.sync(overlay.allChanges()) : undefined,
+      task,
+      checks,
+      maxTurns: this.host.researchLimits().maxTurns,
+      signal: abort.signal,
+      readOnly: research,
+      followUp: true,
+      history,
+      // Without a saved conversation (older runs), it gets what the chat shows of its work.
+      context: history?.length ? undefined : earlierWork(task, conversation.entries, run.id),
+      approve: research ? async () => false : (reason, call, preview) => hooks.approveTool(task, reason, call, preview),
+      approveCommand: research ? undefined : (check) => hooks.approveCommand(task, check),
+      askUser: (q) => hooks.askUser(task, q),
+      beforeAsk: overlay ? async () => void (await publishDrafts(this.tasks, run.id, task, overlay, published, hooks.onChanges)) : undefined,
+      inbox: () => this.drainInbox(run.id, task.id),
+      log: (type, message, data) => {
+        // Its finish is a reply to the user here, or, when the conversation ends, its update for the coordinator.
+        if (type === "tool_call" && message === "finish") type = f.ending ? "followup_summary" : "followup_reply";
+        const summary = (data?.call as { summary?: unknown } | undefined)?.summary;
+        f.logged = this.tasks
+          .log({ runId: run.id, taskId: task.id, type, message: type.startsWith("followup_") && typeof summary === "string" ? summary : message, data })
+          .catch(() => undefined);
+      },
+    });
+    this.followUps.set(key, f);
+    await this.tasks.log({ runId: run.id, taskId: task.id, type: "followup_opened", message: history?.length ? "with history" : "from the chat" });
+    this.changed();
+    return f;
+  }
+
+  /** Lets a reopened sub-agent answer, then any messages that came in meanwhile. */
+  private answerFollowUp(f: FollowUp, text: string): void {
+    const task = async () => {
+      let next: string | undefined = text;
+      while (next !== undefined && !f.abort.signal.aborted) {
+        const result = await f.worker.run(`Message from the user: ${next}`);
+        f.replies.push(result.summary);
+        await this.settleFollowUpLog(f);
+        await this.publishFollowUpDrafts(f);
+        await this.tasks.saveHistory(f.runId, f.taskId, f.worker.history()).catch(() => undefined);
+        const more = this.drainInbox(f.runId, f.taskId);
+        next = more.length ? more.join("\n\n") : undefined;
+      }
+    };
+    f.working = task()
+      .catch(async (err) => {
+        if (f.abort.signal.aborted) return;
+        await this.append(f.conversationId, { author: "system", kind: "error", runId: f.runId, taskId: f.taskId, agentName: f.title, text: `"${f.title}" could not answer: ${(err as Error).message}`, tone: "error" });
+      })
+      .finally(() => {
+        f.working = undefined;
+        this.changed();
+      });
+    this.changed();
+  }
+
+  /** Lets the reopened sub-agent's latest step land in the chat. */
+  private async settleFollowUpLog(f: FollowUp): Promise<void> {
+    await f.logged;
+    await this.eventQueue.run(async () => {});
+  }
+
+  private async publishFollowUpDrafts(f: FollowUp): Promise<void> {
+    if (!f.overlay) return;
+    const run = await this.tasks.load(f.runId);
+    const task = run.tasks.find((t) => t.id === f.taskId);
+    if (!task) return;
+    const workspaceRoot = run.workspaceRoot ?? (await this.conversations.load(f.conversationId)).workspaceRoot;
+    const hooks = this.hooksFor(f.conversationId, f.runId, [], workspaceRoot);
+    const changes = await publishDrafts(this.tasks, f.runId, task, f.overlay, f.published, hooks.onChanges);
+    if (changes.length) {
+      const files = [...new Set([...(task.changedFiles ?? []), ...changes.map((c) => c.path)])];
+      await this.tasks.updateTask(f.runId, f.taskId, { changedFiles: files });
+    }
+  }
+
+  /** The "End chat" button: the sub-agent sends what is new to the coordinator, and the conversation closes. */
+  async endAgentChat(runId: string, taskId: string): Promise<void> {
+    const f = this.followUps.get(`${runId}:${taskId}`);
+    if (f) await this.endFollowUp(f, true);
+  }
+
+  /**
+   * Ends a reopened conversation. What came up is added to the chat as an
+   * update for the coordinator, which it sees in its next turn and passes to
+   * the planner and later sub-agents. With `summarize`, the sub-agent writes
+   * it; otherwise (Stop) its replies are passed on as they are.
+   */
+  private endFollowUp(f: FollowUp, summarize: boolean): Promise<void> {
+    if (f.ending) return f.ending;
+    f.ending = (async () => {
+      this.changed();
+      // Still answering: it is stopped rather than waited for, and its replies so far are passed on as they are.
+      if (f.working) summarize = false;
+      if (!summarize) {
+        f.abort.abort();
+        for (const [id, p] of [...this.pending]) {
+          if (p.runId !== f.runId || p.taskId !== f.taskId) continue;
+          this.pending.delete(id);
+          void this.markDecided(p.conversationId, id, "Closed: the conversation ended");
+          p.resolve(undefined);
+        }
+      }
+      await f.working;
+      let update: string | undefined;
+      if (summarize && f.replies.length && !f.abort.signal.aborted) {
+        try {
+          update = (await f.worker.run(FOLLOW_UP_END)).summary.trim();
+          await this.settleFollowUpLog(f);
+          await this.publishFollowUpDrafts(f);
+          await this.tasks.saveHistory(f.runId, f.taskId, f.worker.history()).catch(() => undefined);
+        } catch (err) {
+          this.host.log("warn", `Follow-up summary failed: ${(err as Error).message}`);
+        }
+      }
+      if (!update && f.replies.length) update = f.replies.map((r) => r.replace(/\s+/g, " ").trim()).join(" ").slice(0, 1500);
+      f.abort.abort();
+      await f.scratch?.remove().catch(() => undefined);
+      this.followUps.delete(f.key);
+      if (update) {
+        const run = await this.tasks.load(f.runId).catch(() => undefined);
+        const task = run?.tasks.find((t) => t.id === f.taskId);
+        if (task) {
+          // Later plans and the sub-agents that build on this task see it in its report.
+          const followUpNote = `After a follow-up with the user: ${update}`;
+          await this.tasks.updateTask(f.runId, f.taskId, { summary: task.summary ? `${task.summary}\n\n${followUpNote}` : followUpNote }).catch(() => undefined);
+        }
+        await this.append(f.conversationId, {
+          author: "coordinator",
+          kind: "report",
+          runId: f.runId,
+          taskId: f.taskId,
+          agentName: f.title,
+          tag: "update from follow-up",
+          text: `Update from "${f.title}" after you talked with it again: ${update}`,
+        });
+      } else {
+        this.changed();
+      }
+    })();
+    return f.ending;
+  }
+
+  /** Ends every reopened conversation of a conversation, so the coordinator knows what came up before it answers. */
+  private async endFollowUpsOf(conversationId: string): Promise<void> {
+    const open = [...this.followUps.values()].filter((f) => f.conversationId === conversationId);
+    if (open.length === 0) return;
+    this.busy = `Collecting what ${open.length === 1 ? `"${open[0]!.title}"` : `${open.length} sub-agents`} learned in your follow-up…`;
+    this.changed();
+    try {
+      await Promise.all(open.map((f) => this.endFollowUp(f, true)));
+    } finally {
+      this.busy = undefined;
+    }
   }
 
   private drainInbox(runId: string, taskId: string): string[] {
@@ -598,7 +848,7 @@ export class ChatController {
       kind: "checks",
       checks: proposed,
       text: proposed.length
-        ? "These commands will verify the sub-agents' work. Edit, add or remove them, then approve. Sub-agents can also ask you for more checks while they work."
+        ? "These commands will verify the sub-agents' work. Edit, add or remove them, then press Use these checks. Sub-agents can also ask you for more checks while they work."
         : "I found no test, lint or type-check commands for this project. Add the ones you use, or run without checks. Sub-agents can also ask you for checks while they work.",
     });
     if (!decision || (decision.kind !== "checks" && decision.kind !== "skip")) return undefined;
@@ -671,6 +921,8 @@ export class ChatController {
     }
     // A new prompt: the bar goes away until this one is dealt with.
     this.done = undefined;
+    // Talking to the coordinator again ends any reopened sub-agent conversation, so it hears what came up first.
+    await this.endFollowUpsOf(c.id);
     await this.append(c.id, { author: "user", text: text.trim() });
 
     const waiting = isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
@@ -842,6 +1094,8 @@ export class ChatController {
       return;
     }
     if (this.mode !== "act") await this.setMode("act");
+    // The plan's sub-agents may work on the same files; reopened conversations pass on what they found first.
+    await this.endFollowUpsOf(conversationId);
 
     this.busy = "Waiting for you to approve the checks…";
     this.runningRunId = runId;
@@ -937,8 +1191,9 @@ export class ChatController {
           continue;
         }
         await this.tasks.setStatus(run.id, task.id, "running");
+        let worker: Worker | undefined;
         try {
-          const worker = new Worker({
+          worker = new Worker({
             provider,
             sandbox,
             task,
@@ -953,12 +1208,16 @@ export class ChatController {
           });
           const result = await worker.run();
           await this.tasks.updateTask(run.id, task.id, { summary: result.summary, changedFiles: [] });
+          await this.tasks.saveHistory(run.id, task.id, worker.history()).catch(() => undefined);
+          worker = undefined;
           await this.tasks.setStatus(run.id, task.id, "done");
         } catch (err) {
           const stopped = signal.aborted;
           await this.tasks.setStatus(run.id, task.id, stopped ? "cancelled" : "failed", stopped ? "Stopped" : (err as Error).message);
           if (!stopped) await this.tasks.log({ runId: run.id, taskId: task.id, type: "task_failed", message: (err as Error).message });
         }
+        // Kept so the user can reopen this researcher later.
+        if (worker) await this.tasks.saveHistory(run.id, task.id, worker.history()).catch(() => undefined);
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, Math.min(maxParallel, added.length)) }, workerLoop));
@@ -1011,7 +1270,8 @@ export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | un
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
     let line: string | undefined;
-    if (e.kind === "report") line = `- ${e.agentName ?? "A sub-agent"} reported: ${e.text}`;
+    if (e.kind === "report" && e.author === "coordinator") line = `- ${e.text}`;
+    else if (e.kind === "report") line = `- ${e.agentName ?? "A sub-agent"} reported: ${e.text}`;
     // The coordinator's answer right after research reports sums them up.
     else if (e.author === "coordinator" && e.tag === "from research") line = `- Coordinator concluded: ${e.text}`;
     if (!line) continue;
@@ -1023,3 +1283,21 @@ export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | un
   return lines.length ? lines.join("\n") : undefined;
 }
 
+
+/**
+ * What a sub-agent did, rebuilt from the chat, for reopening one whose
+ * conversation was not saved (runs from before follow-ups existed).
+ */
+export function earlierWork(task: Task, entries: ChatEntry[], runId: string, maxChars = 4000): string {
+  const steps = entries
+    .filter((e) => e.runId === runId && e.taskId === task.id && e.kind !== "spawn" && e.kind !== "report")
+    .map((e) => (e.author === "user" ? `- The user said: ${e.text}` : `- ${e.tag ? `${e.tag}: ` : ""}${e.thought || e.text}`).replace(/\s+/g, " ").slice(0, 300));
+  let shown = steps.join("\n");
+  if (shown.length > maxChars) shown = `[… earlier steps left out]\n${shown.slice(-maxChars)}`;
+  return [
+    task.summary ? `Your report when you finished:\n${task.summary}` : task.error ? `Your task ended with: ${task.error}` : "",
+    shown ? `Your steps:\n${shown}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}

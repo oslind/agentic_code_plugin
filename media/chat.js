@@ -507,7 +507,17 @@
     const entries = state.current.entries.filter((e) => e.runId === a.runId && e.taskId === a.taskId && e.kind !== "spawn");
     const back = el("button", { class: "ghost back", onclick: () => { agentView = null; persist(); render(); } }, "‹ All agents");
     const id = `m-${a.runId}-${a.taskId}`;
-    const input = el("textarea", { id, rows: "2", class: "card-input", placeholder: a.canMessage ? "Message this sub-agent (Enter to send)" : "It is not working right now, so it cannot get messages.", disabled: !a.canMessage });
+    const reopen = a.reopenable && !a.followUp;
+    const placeholder = !a.canMessage
+      ? a.followUp === "ending"
+        ? "It is passing what it learned to the coordinator…"
+        : a.reopenable
+          ? "You can talk with it again once its run is done."
+          : "It has not started yet, so it cannot get messages."
+      : reopen
+        ? "Ask a follow-up question to reopen this conversation (Enter to send)"
+        : "Message this sub-agent (Enter to send)";
+    const input = el("textarea", { id, rows: "2", class: "card-input", placeholder, disabled: !a.canMessage });
     input.value = drafts[id] || "";
     input.addEventListener("input", () => (drafts[id] = input.value));
     const sendIt = () => {
@@ -537,7 +547,32 @@
         entries.length === 0 ? el("div", { class: "empty" }, "Nothing yet.") : null,
         entries.map((e) => (isWaiting(e) ? waitingCard(e, "ag") : streamItem(e))),
       ),
-      el("div", { class: "agent-input" }, input, el("div", { class: "row end" }, el("button", { class: "primary", disabled: !a.canMessage, onclick: sendIt }, "Send"))),
+      a.reopenable
+        ? el(
+            "div",
+            { class: "muted small follow-note" },
+            a.followUp
+              ? "This conversation is open again. Edits stay drafts for your review, as usual. When you are done, press End chat (or message the coordinator) and it sends what is new to the coordinator."
+              : "Its task has ended. Send a message to reopen the conversation: it remembers its work and can answer, look again or draft more changes for your review.",
+          )
+        : null,
+      el(
+        "div",
+        { class: "agent-input" },
+        input,
+        el(
+          "div",
+          { class: "row end" },
+          a.followUp
+            ? el(
+                "button",
+                { class: "ghost", disabled: a.followUp === "ending", title: "Close this conversation and send what is new to the coordinator", onclick: () => post({ type: "endAgentChat", runId: a.runId, taskId: a.taskId }) },
+                "End chat and update coordinator",
+              )
+            : null,
+          el("button", { class: "primary", disabled: !a.canMessage, onclick: sendIt }, reopen ? "Reopen and send" : "Send"),
+        ),
+      ),
     ];
   }
 
@@ -673,22 +708,27 @@
     );
   }
 
+  const CHECKS_EXPLAINED =
+    "Checks are commands such as tests, lint or a type check. After a sub-agent finishes, they run on a scratch copy of the project with its drafts, so your files are not touched. If one fails, the sub-agent gets the error and fixes its work. Each command asks before it runs unless Commands is set to Auto-approve below.";
+
   function checksTab() {
     const entries = state.current.entries;
     const lastChecks = [...entries].reverse().find((e) => e.kind === "checks" && !isWaiting(e));
     const results = entries.filter((e) => e.author === "agent" && e.tag === "checks").slice(-10).reverse();
     return [
       attentionSection("ck", (e) => e.kind === "checks" || (e.kind === "approval" && e.rememberable)),
-      el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Project checks")),
+      el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Checks for this folder")),
+      // A checks card waiting above already explains them.
+      entries.some((e) => e.kind === "checks" && isWaiting(e)) ? null : el("div", { class: "muted small" }, CHECKS_EXPLAINED),
       lastChecks
         ? el(
             "section",
             { class: "card" },
             checkList(lastChecks),
             lastChecks.decided ? el("div", { class: "muted small" }, lastChecks.decided) : null,
-            el("div", { class: "row end" }, el("button", { class: "ghost", disabled: !!state.busy, onclick: () => post({ type: "editChecks" }) }, "Change checks")),
+            el("div", { class: "row end" }, el("button", { class: "ghost", disabled: !!state.busy, onclick: () => post({ type: "editChecks" }) }, "Edit checks")),
           )
-        : el("div", { class: "empty" }, "No checks chosen yet. They are proposed from the project's files when a plan first runs, and always need your approval once."),
+        : el("div", { class: "empty" }, "No checks chosen yet. When a plan first runs here, you get a list of commands found in the project's files to approve or edit."),
       results.length
         ? [
             el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Recent results")),
@@ -715,7 +755,7 @@
     let body;
     if (entry.kind === "checks") {
       title = "Checks to verify the work";
-      body = checksForm(entry, scope);
+      body = [el("div", { class: "muted small" }, CHECKS_EXPLAINED.replace(" below.", ".")), checksForm(entry, scope)];
     } else if (entry.kind === "approval") {
       const cmd = /`([^`]+)`/.exec(entry.text || "");
       title = entry.rememberable ? "Command" : "Permission";
@@ -776,8 +816,8 @@
         { class: "check-row" },
         el("input", { type: "checkbox", checked: r.on, title: "Use this check", onchange: (e) => (r.on = e.target.checked) }),
         el("div", { class: "check-fields" },
-          el("input", { id: `${scope}-cn-${entry.id}-${i}`, class: "check-name-input", value: r.name, placeholder: "name", oninput: (e) => (r.name = e.target.value) }),
-          el("input", { id: `${scope}-cc-${entry.id}-${i}`, class: "check-cmd", value: r.command, placeholder: "command", title: r.source ? "Suggested from " + r.source : "", oninput: (e) => (r.command = e.target.value) }),
+          el("input", { id: `${scope}-cn-${entry.id}-${i}`, class: "check-name-input", value: r.name, placeholder: "Name, e.g. test", "aria-label": "Check name", oninput: (e) => (r.name = e.target.value) }),
+          el("input", { id: `${scope}-cc-${entry.id}-${i}`, class: "check-cmd", value: r.command, placeholder: "Command, e.g. npm test", "aria-label": "Command to run", title: r.source ? "Suggested from " + r.source : "", oninput: (e) => (r.command = e.target.value) }),
         ),
         el("button", { class: "icon-btn", title: "Remove", onclick: () => { list.rows.splice(i, 1); render(); } }, "✕"),
       ),
@@ -789,14 +829,14 @@
       el(
         "div",
         { class: "row wrap" },
-        el("button", { class: "ghost", onclick: () => { list.rows.push({ on: true, name: "", command: "" }); render(); } }, "+ Add check"),
+        el("button", { class: "ghost", onclick: () => { list.rows.push({ on: true, name: "", command: "" }); render(); } }, "+ Add a command"),
         el("label", { class: "remember" }, el("input", { type: "checkbox", checked: list.remember, onchange: (e) => (list.remember = e.target.checked) }), " Remember for this folder"),
       ),
       el(
         "div",
         { class: "row end wrap" },
         el("button", { class: "ghost", onclick: () => decide(entry, { kind: "skip" }) }, "Run without checks"),
-        el("button", { class: "primary", onclick: () => decide(entry, { kind: "checks", remember: list.remember, checks: list.rows.filter((r) => r.on && r.name.trim() && r.command.trim()).map((r) => ({ name: r.name, command: r.command })) }) }, "Approve checks"),
+        el("button", { class: "primary", onclick: () => decide(entry, { kind: "checks", remember: list.remember, checks: list.rows.filter((r) => r.on && r.name.trim() && r.command.trim()).map((r) => ({ name: r.name, command: r.command })) }) }, "Use these checks"),
       ),
     );
   }
