@@ -416,3 +416,67 @@ describe("sensitive files behind symlinks", () => {
     expect(isSensitivePath("package.json")).toBe(true);
   });
 });
+
+describe("pending changes never reach the real project through the scratch copy", () => {
+  const unix = process.platform !== "win32";
+  async function project(): Promise<string> {
+    const root = await tempDir();
+    for (const [rel, content] of Object.entries({
+      "src/main.cpp": "original main",
+      "lib/x.ts": "original x",
+      "node_modules/pkg/index.js": "original index",
+    })) {
+      await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+      await fs.writeFile(path.join(root, rel), content);
+    }
+    await fs.symlink(path.join("..", "lib"), path.join(root, "src", "lib-link"));
+    await fs.symlink("main.cpp", path.join(root, "src", "main-link.cpp"));
+    return root;
+  }
+
+  it.skipIf(!unix)("writes changes into the copy only, even inside linked folders and through project links", async () => {
+    const root = await project();
+    const scratch = new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), ["node_modules", "src"]);
+    const dir = await scratch.sync(
+      new Map([
+        ["src/main.cpp", "changed main"],
+        ["node_modules/pkg/index.js", "changed index"],
+        ["src/lib-link/x.ts", "changed x"],
+        ["src/main-link.cpp", "changed via link"],
+      ]),
+    );
+    expect(await fs.readFile(path.join(root, "src", "main.cpp"), "utf8")).toBe("original main");
+    expect(await fs.readFile(path.join(root, "node_modules", "pkg", "index.js"), "utf8")).toBe("original index");
+    expect(await fs.readFile(path.join(root, "lib", "x.ts"), "utf8")).toBe("original x");
+    expect(await fs.readFile(path.join(dir, "node_modules", "pkg", "index.js"), "utf8")).toBe("changed index");
+    expect(await fs.readFile(path.join(dir, "src", "lib-link", "x.ts"), "utf8")).toBe("changed x");
+    expect(await fs.readFile(path.join(dir, "src", "main-link.cpp"), "utf8")).toBe("changed via link");
+    // Later syncs, after the folders were made real, still leave the project alone.
+    await scratch.sync(new Map([["node_modules/pkg/index.js", "changed again"]]));
+    expect(await fs.readFile(path.join(root, "node_modules", "pkg", "index.js"), "utf8")).toBe("original index");
+  });
+
+  it.skipIf(!unix)("looks into linked folders inside linked folders when deciding what may be linked", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "source", "credentials"), { recursive: true });
+    await fs.writeFile(path.join(root, "source", "credentials", ".env"), "SECRET=1");
+    await fs.mkdir(path.join(root, "wrapper"));
+    await fs.symlink(path.join("..", "source"), path.join(root, "wrapper", "inner"));
+    await fs.mkdir(path.join(root, "docs"));
+    await fs.symlink(path.join("..", "wrapper"), path.join(root, "docs", "outer"));
+    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), []).sync(new Map());
+    await expect(fs.lstat(path.join(dir, "docs", "outer"))).rejects.toThrow();
+  });
+
+  it.skipIf(!unix)("classifies package.json behind a linked parent folder as sensitive", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "config"));
+    await fs.writeFile(path.join(root, "config", "package.json"), "{}");
+    await fs.symlink("config", path.join(root, "safe-dir"));
+    const overlay = new OverlayFiles(await WorkspaceSandbox.create(root));
+    await overlay.writeFile("safe-dir/package.json", '{"scripts":{}}');
+    const [change] = overlay.pending("t");
+    expect(isChangeAutoAccepted(change!.path, { editFiles: true, sensitiveFiles: false, commands: false })).toBe(false);
+    expect(await fs.readFile(path.join(root, "config", "package.json"), "utf8")).toBe("{}");
+  });
+});
