@@ -391,6 +391,7 @@ describe("ChatController", () => {
       expect(state.busy).toBeUndefined();
       expect(state.current!.entries.at(-1)).toMatchObject({ author: "system", text: "Stopped.", tone: "warning" });
       expect(started).toEqual([]);
+      expect(state.done).toEqual({ status: "stopped", text: "Stopped" });
     });
 
     it("stops read-only research sub-agents and does not go on to answer", async () => {
@@ -426,6 +427,46 @@ describe("ChatController", () => {
       const { controller } = setup([], "act");
       controller.cancel();
       expect((await controller.state()).busy).toBeUndefined();
+    });
+  });
+
+  describe("the Finished bar", () => {
+    it("is green once a prompt is answered, and gone while the next prompt runs", async () => {
+      const { controller, provider } = setup([turn("Hello! What should I work on?")], "plan");
+      await controller.send("hi");
+      expect((await controller.state()).done).toEqual({ status: "finished", text: "Finished" });
+
+      let started!: () => void;
+      const thinking = new Promise<void>((r) => (started = r));
+      provider.chat = (req) =>
+        new Promise((_, reject) => {
+          started();
+          req.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      const sending = controller.send("add users");
+      await thinking;
+      expect((await controller.state()).done).toBeUndefined();
+      controller.cancel();
+      await sending;
+    });
+
+    it("shows after a run's summary, not when the coordinator hands off to sub-agents", async () => {
+      let seenWhileRunning: unknown = "unset";
+      const { controller } = setup([turn("On it.", "plan", "Add a User model and an API that uses it."), plan], "act", {
+        during: async () => {
+          seenWhileRunning = (await controller.state()).done;
+        },
+      });
+      await controller.send("add users");
+      expect(seenWhileRunning).toBeUndefined();
+      expect((await controller.state()).done).toEqual({ status: "finished", text: "Finished." });
+    });
+
+    it("belongs to its conversation", async () => {
+      const { controller } = setup([turn("Hello!")], "plan");
+      await controller.send("hi");
+      controller.newTask();
+      expect((await controller.state()).done).toBeUndefined();
     });
   });
 

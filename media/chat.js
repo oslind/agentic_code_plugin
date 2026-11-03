@@ -703,6 +703,14 @@
     );
   }
 
+  // Green "Finished" bar at the bottom once the last prompt is dealt with. Gone while a new prompt runs.
+  const DONE_ICON = { finished: "✓", partial: "!", stopped: "■", failed: "✕" };
+  function doneBar() {
+    const d = state.done;
+    if (!d || state.busy || !state.current) return null;
+    return el("div", { class: "done-bar done-" + d.status, role: "status" }, el("span", { class: "done-icon" }, DONE_ICON[d.status] || "✓"), d.text);
+  }
+
   function render() {
     if (!state) return;
     const old = document.getElementById("messages");
@@ -718,6 +726,7 @@
       permissionsBar(),
       state.busy ? el("div", { class: "busy" }, el("span", { class: "spinner" }), el("span", { class: "spacer" }, state.busy), stopButton()) : null,
       state.current ? conversation() : welcome(),
+      doneBar(),
     ];
     app.replaceChildren(...parts.filter(Boolean));
 
