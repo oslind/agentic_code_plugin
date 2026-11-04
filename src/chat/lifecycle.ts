@@ -41,12 +41,14 @@ export function draftState(status: PendingChange["status"]): DraftState {
  * A sub-agent:
  *
  *   planned → queued → initializing → working ⇄ verifying ⇄ needs_you
+ *                                       working ⇄ asking
  *                                            → completed | failed | stopped
  *
  * "planned" is a task in a plan that has not been run yet. "needs_you" is a
- * sub-agent waiting on an approval or an answer.
+ * sub-agent waiting on an approval or an answer from the user. "asking" is a
+ * sub-agent waiting for the coordinator to answer its question.
  */
-export type AgentState = "planned" | "queued" | "initializing" | "working" | "verifying" | "needs_you" | "completed" | "failed" | "stopped";
+export type AgentState = "planned" | "queued" | "initializing" | "working" | "verifying" | "asking" | "needs_you" | "completed" | "failed" | "stopped";
 
 export const AGENT_LABEL: Record<AgentState, string> = {
   planned: "Not started",
@@ -54,18 +56,23 @@ export const AGENT_LABEL: Record<AgentState, string> = {
   initializing: "Starting",
   working: "Working",
   verifying: "Running checks",
+  asking: "Asking the coordinator",
   needs_you: "Needs you",
   completed: "Completed",
   failed: "Failed",
   stopped: "Stopped",
 };
 
-export function agentState(status: TaskStatus, opts: { planStarted: boolean; hasActivity: boolean; waitingOnUser: boolean }): AgentState {
+export function agentState(
+  status: TaskStatus,
+  opts: { planStarted: boolean; hasActivity: boolean; waitingOnUser: boolean; askingCoordinator?: boolean },
+): AgentState {
   switch (status) {
     case "pending":
       return opts.planStarted ? "queued" : "planned";
     case "running":
       if (opts.waitingOnUser) return "needs_you";
+      if (opts.askingCoordinator) return "asking";
       return opts.hasActivity ? "working" : "initializing";
     case "verifying":
       return opts.waitingOnUser ? "needs_you" : "verifying";
@@ -81,7 +88,7 @@ export function agentState(status: TaskStatus, opts: { planStarted: boolean; has
 }
 
 export function isActiveAgent(s: AgentState): boolean {
-  return s === "initializing" || s === "working" || s === "verifying" || s === "needs_you";
+  return s === "initializing" || s === "working" || s === "verifying" || s === "asking" || s === "needs_you";
 }
 
 /**

@@ -28,6 +28,7 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
     reason: z.string().max(300).describe("Why this check verifies your task"),
   }),
   z.object({ tool: z.literal("ask_user"), question: z.string().min(5).max(1000) }),
+  z.object({ tool: z.literal("ask_coordinator"), question: z.string().min(5).max(1000) }),
   z.object({ tool: z.literal("finish"), summary: z.string().min(1) }),
 ]);
 

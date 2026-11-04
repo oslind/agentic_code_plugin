@@ -1,4 +1,5 @@
 import { ContextSection, estimateTokens, fitToBudget } from "../context/budget";
+import { untrustedSection } from "../context/untrusted";
 import { callStructured } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
 import { DEFAULT_MAX_TASKS, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
@@ -58,7 +59,7 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
     sections.push({ name: "notes", text: `Project notes:\n${input.notes}`, priority: 10 });
   }
   if (input.learned) {
-    sections.push({ name: "learned", text: `What we know so far (from earlier research and sub-agent reports):\n${input.learned}`, priority: 40 });
+    sections.push({ name: "learned", text: untrustedSection("What we know so far (from earlier research and sub-agent reports):", "earlier research and sub-agent reports", input.learned), priority: 40 });
   }
   const system = systemPrompt(taskLimit(input));
   const user = fitToBudget(sections, budget - estimateTokens(system));
