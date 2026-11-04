@@ -1,4 +1,7 @@
 import * as path from "path";
+import { escapeTerminalLine, escapeTerminalText, TerminalSanitizer } from "./terminalText";
+
+export { toTerminalText } from "./terminalText";
 
 /**
  * Where commands show up while they run. The extension puts them in its own
@@ -44,11 +47,6 @@ export interface ScreenEvents {
 
 export type ScreenFactory = (name: string, events: ScreenEvents) => TerminalScreen;
 
-/** Terminals expect \r\n; child processes print \n. */
-export function toTerminalText(text: string): string {
-  return text.replace(/\r?\n/g, "\r\n");
-}
-
 /** How a folder is shown in the terminal: relative to the project, since that is the only place commands run. */
 export function shownFolder(projectRoot: string, cwd: string): string {
   const rel = path.relative(projectRoot, cwd);
@@ -60,19 +58,23 @@ export function shownFolder(projectRoot: string, cwd: string): string {
 const SCRATCH = /(^|\/)\.agentic\/scratch(\/|$)/;
 
 export function commandHeader(projectRoot: string, cwd: string, command: string): string {
-  const folder = shownFolder(projectRoot, cwd);
+  // The command and the folder come from the project: shown as text, never acted on by the terminal.
+  const folder = escapeTerminalLine(shownFolder(projectRoot, cwd));
   const note = SCRATCH.test(folder) ? "\x1b[2m  (a copy of the project with the pending changes; your files are not touched)\x1b[0m\r\n" : "";
-  return `\x1b[1;36m${folder}\x1b[0m\r\n${note}\x1b[1m$ ${command}\x1b[0m\r\n`;
+  return `\x1b[1;36m${folder}\x1b[0m\r\n${note}\x1b[1m$ ${escapeTerminalLine(command)}\x1b[0m\r\n`;
 }
 
 export function commandFooter(end: CommandEnd): string {
   const secs = `${(end.durationMs / 1000).toFixed(1)}s`;
-  if (end.error) return `\x1b[31m${toTerminalText(end.error)}\x1b[0m\r\n\r\n`;
+  if (end.error) return `\x1b[31m${escapeTerminalText(end.error)}\x1b[0m\r\n\r\n`;
   if (end.stopped) return `\x1b[33mStopped after ${secs}.\x1b[0m\r\n\r\n`;
   if (end.timedOut) return `\x1b[31mTimed out after ${secs}.\x1b[0m\r\n\r\n`;
   if (end.code === 0) return `\x1b[32mPassed in ${secs}.\x1b[0m\r\n\r\n`;
   return `\x1b[31mFailed (exit code ${end.code ?? "none"}) after ${secs}.\x1b[0m\r\n\r\n`;
 }
+
+/** How long output is collected before it is written, so a flood of small chunks becomes a few writes. */
+const FLUSH_MS = 30;
 
 interface Slot {
   screen?: TerminalScreen;
@@ -102,14 +104,30 @@ export class CommandTerminals implements CommandSink {
     screen.show();
     screen.write(commandHeader(this.projectRoot, cwd, command));
     let ended = false;
+    // Output is untrusted: it is filtered so it cannot clear the screen, fake results or add links.
+    const sanitizer = new TerminalSanitizer();
+    let pending = "";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      if (pending) slot.screen?.write(pending);
+      pending = "";
+    };
     return {
       signal: abort.signal,
       output: (chunk) => {
-        if (!ended) slot.screen?.write(toTerminalText(chunk));
+        if (ended) return;
+        pending += sanitizer.write(chunk);
+        timer ??= setTimeout(flush, FLUSH_MS);
       },
       end: (result) => {
         if (ended) return;
         ended = true;
+        pending += sanitizer.end();
+        // Reset styles the output may have left on, so the result line looks as it should.
+        pending += "\x1b[0m";
+        flush();
         slot.screen?.write(commandFooter(result));
         if (slot.busy === abort) slot.busy = undefined;
       },

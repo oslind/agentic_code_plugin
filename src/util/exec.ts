@@ -18,7 +18,12 @@ export interface ExecOptions {
   env?: NodeJS.ProcessEnv;
   /** Receives output as it arrives, for example to show it in a terminal. */
   onOutput?: (chunk: string) => void;
+  /** How many characters of both streams together go to onOutput; after that, one notice and nothing more. */
+  maxStreamed?: number;
 }
+
+/** Default for how much output one command may stream to the terminal (about 1 MB). */
+export const MAX_STREAMED = 1_000_000;
 
 export function exec(command: string, args: string[], options: ExecOptions): Promise<ExecResult> {
   const max = options.maxOutput ?? 200_000;
@@ -51,13 +56,29 @@ export function exec(command: string, args: string[], options: ExecOptions): Pro
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
     };
-    child.stdout.on("data", (d: Buffer) => {
-      stdout = cap(stdout + d.toString(), max);
-      options.onOutput?.(d.toString());
+    const streamMax = options.maxStreamed ?? MAX_STREAMED;
+    let streamed = 0;
+    const stream = (text: string) => {
+      if (!options.onOutput || streamed > streamMax) return;
+      const room = streamMax - streamed;
+      streamed += text.length;
+      if (text.length <= room) return options.onOutput(text);
+      if (room > 0) options.onOutput(text.slice(0, room));
+      options.onOutput(
+        `\n[... more output not shown: this command printed over ${streamMax.toLocaleString("en-US")} characters. It keeps running, and its result and the end of its output are still checked ...]\n`,
+      );
+      streamed = streamMax + 1;
+    };
+    // Decoded as UTF-8 by the stream, so a character split between two chunks is not garbled.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d: string) => {
+      stdout = cap(stdout + d, max);
+      stream(d);
     });
-    child.stderr.on("data", (d: Buffer) => {
-      stderr = cap(stderr + d.toString(), max);
-      options.onOutput?.(d.toString());
+    child.stderr.on("data", (d: string) => {
+      stderr = cap(stderr + d, max);
+      stream(d);
     });
     child.on("error", (err) => {
       cleanup();
