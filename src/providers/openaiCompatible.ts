@@ -7,11 +7,14 @@ export interface OpenAICompatibleConfig {
   contextWindow: number;
   temperature: number;
   /**
-   * How long the server may stay silent, in ms. The clock restarts with every
-   * piece of the reply that arrives, so a long reply that keeps streaming is
-   * never cut off. 0 means no limit.
+   * How long the server may stay silent, in ms, before the request is
+   * stopped. The clock restarts with every piece of the reply that arrives,
+   * so a long reply that keeps streaming is never cut off. 0 (the default)
+   * means never: the user is warned instead and can press Stop.
    */
   requestTimeoutMs: number;
+  /** Silence, in ms, after which the user is told the server may have dropped the request. 0 means no warning. */
+  silenceWarningMs?: number;
   structuredOutput: StructuredOutputMode;
   /**
    * Ask the server to stream the reply. Bytes then arrive while the model
@@ -25,6 +28,14 @@ export interface OpenAICompatibleConfig {
   maxOutputTokens?: number;
   /** Where the model name came from, named in errors so a wrong setting is easy to find. */
   source?: string;
+}
+
+export interface SilenceEvent {
+  /** How long nothing has arrived, in ms. */
+  silentMs: number;
+  /** False when the silence is first noticed, true when data arrives again after a warning. */
+  resumed: boolean;
+  baseUrl: string;
 }
 
 export class ProviderError extends Error {
@@ -57,6 +68,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     private readonly fetchFn: FetchFn = fetch,
     /** Called when the server rejects a structured output mode and a weaker one is used. */
     private readonly onFallback?: (from: StructuredOutputMode, to: StructuredOutputMode, error: string) => void,
+    /** Called when the server has been silent for silenceWarningMs, and again if it answers after that. Nothing is stopped. */
+    private readonly onSilence?: (event: SilenceEvent) => void,
   ) {
     this.model = config.model;
     this.contextWindow = config.contextWindow;
@@ -154,7 +167,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body.response_format = { type: "json_object" };
     }
 
-    const timeout = new IdleTimer(this.config.requestTimeoutMs);
+    const timeout = new IdleTimer(
+      this.config.requestTimeoutMs,
+      this.config.silenceWarningMs ?? 0,
+      this.onSilence && ((ms) => this.onSilence?.({ silentMs: ms, resumed: false, baseUrl: this.config.baseUrl })),
+      this.onSilence && ((ms) => this.onSilence?.({ silentMs: ms, resumed: true, baseUrl: this.config.baseUrl })),
+    );
     try {
       return await this.exchange(request, body, timeout);
     } finally {
@@ -254,7 +272,7 @@ function describeNetworkError(baseUrl: string, timeoutMs: number, err: unknown, 
     return new ProviderError(
       `The model server sent nothing for ${Math.round(timeoutMs / 1000)} s (agentic.model.requestTimeoutMs), so the request was stopped. ` +
         `A reply that keeps arriving is never cut off; this means the server was silent, for example stuck, overloaded, or still reading a very long prompt. ` +
-        `Raise the setting, or set it to 0 for no limit.`,
+        `Raise the setting, or set it to 0 to never stop and only be warned.`,
       undefined,
       false,
     );
@@ -453,15 +471,25 @@ async function errorText(res: Response): Promise<string> {
 }
 
 /**
- * Aborts when nothing has arrived for `ms`. Every piece of the reply calls
- * touch(), which restarts the clock. 0 or less never aborts.
+ * Watches for silence from the server. Every piece of the reply calls
+ * touch(), which restarts the clock. After `warnMs` of silence onSilent is
+ * called once (and onResumed if data arrives again later); after `stopMs`
+ * of silence the request is aborted. 0 or less turns either off.
  */
 export class IdleTimer {
   private readonly controller = new AbortController();
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private stopTimer: ReturnType<typeof setTimeout> | undefined;
+  private warnTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastData = Date.now();
+  private warned = false;
   fired = false;
 
-  constructor(private readonly ms: number) {
+  constructor(
+    private readonly stopMs: number,
+    private readonly warnMs = 0,
+    private readonly onSilent?: (silentMs: number) => void,
+    private readonly onResumed?: (silentMs: number) => void,
+  ) {
     this.touch();
   }
 
@@ -470,17 +498,36 @@ export class IdleTimer {
   }
 
   readonly touch = (): void => {
-    if (this.timer) clearTimeout(this.timer);
-    if (this.ms <= 0 || this.fired) return;
-    this.timer = setTimeout(() => {
-      this.fired = true;
-      this.controller.abort(new DOMException("The model server sent nothing in time", "TimeoutError"));
-    }, this.ms);
+    this.clear();
+    if (this.fired) return;
+    const now = Date.now();
+    if (this.warned) {
+      this.warned = false;
+      this.onResumed?.(now - this.lastData);
+    }
+    this.lastData = now;
+    if (this.warnMs > 0 && this.onSilent) {
+      this.warnTimer = setTimeout(() => {
+        this.warned = true;
+        this.onSilent?.(Date.now() - this.lastData);
+      }, this.warnMs);
+    }
+    if (this.stopMs > 0) {
+      this.stopTimer = setTimeout(() => {
+        this.fired = true;
+        this.controller.abort(new DOMException("The model server sent nothing in time", "TimeoutError"));
+      }, this.stopMs);
+    }
   };
 
   stop(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = undefined;
+    this.clear();
+  }
+
+  private clear(): void {
+    if (this.stopTimer) clearTimeout(this.stopTimer);
+    if (this.warnTimer) clearTimeout(this.warnTimer);
+    this.stopTimer = this.warnTimer = undefined;
   }
 }
 

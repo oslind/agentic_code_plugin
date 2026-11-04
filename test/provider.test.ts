@@ -367,4 +367,28 @@ describe("request timeout", () => {
     const res = await new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 0 }, fetchWith(() => slowStream(3, 30))).chat({ messages: [] });
     expect(res.content).toBe("xxx");
   });
+
+  it("by default never stops: warns once when the server goes silent, and again when it answers", async () => {
+    const events: { silentMs: number; resumed: boolean }[] = [];
+    // Three events, then 150 ms of silence before the rest, with a 50 ms warning.
+    let sent = 0;
+    const make = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(c) {
+            if (sent >= 6) return c.close();
+            await new Promise((r) => setTimeout(r, sent === 3 ? 150 : 5));
+            sent++;
+            c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`));
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    const p = new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 0, silenceWarningMs: 50 }, fetchWith(make), undefined, (e) => events.push(e));
+    const res = await p.chat({ messages: [] });
+    expect(res.content).toBe("xxxxxx");
+    expect(events.map((e) => e.resumed)).toEqual([false, true]);
+    expect(events[0]!.silentMs).toBeGreaterThanOrEqual(45);
+    expect(events[1]!.silentMs).toBeGreaterThanOrEqual(events[0]!.silentMs);
+  });
 });
