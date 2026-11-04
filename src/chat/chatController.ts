@@ -61,6 +61,8 @@ export interface ChatHost {
   researchLimits(): { maxTurns: number; maxParallel: number };
   /** How heavily the coordinator may delegate. */
   delegationLimits(): { maxTasks: number; maxResearchers: number; maxResearchRounds?: number; checkIns?: number };
+  /** Most tokens of earlier conversation sent with each coordinator message. 0 or unset: as much as fits. */
+  coordinatorHistoryTokens?(): number;
   /** Opens a pending change in VS Code: a new file as its own editor, an edit as a side-by-side diff. */
   showChange(runId: string, filePath: string): Promise<void>;
   /** Closes the editors showing a change once it is decided. */
@@ -1180,7 +1182,14 @@ export class ChatController {
       const pending = await this.pendingPlan(c);
       const turn = await coordinatorTurn(
         provider,
-        { mode: this.mode, entries: c.entries, fileTree, pendingPlan: pending && describePlan(pending), maxResearchers: this.host.delegationLimits().maxResearchers },
+        {
+          mode: this.mode,
+          entries: c.entries,
+          fileTree,
+          pendingPlan: pending && describePlan(pending),
+          maxResearchers: this.host.delegationLimits().maxResearchers,
+          historyTokens: this.host.coordinatorHistoryTokens?.(),
+        },
         { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
       );
       this.host.log(
@@ -1216,6 +1225,7 @@ export class ChatController {
             answerFromResearch: true,
             researchRoundsLeft: maxRounds - round,
             maxResearchers: this.host.delegationLimits().maxResearchers,
+            historyTokens: this.host.coordinatorHistoryTokens?.(),
           },
           { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
         );

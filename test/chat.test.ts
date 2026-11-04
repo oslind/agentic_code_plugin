@@ -125,6 +125,23 @@ describe("coordinator turn", () => {
     expect(msgs).toHaveLength(2);
     expect(msgs[1]!.content.length).toBeLessThan(long.length);
   });
+
+  it("sends at most historyTokens of earlier conversation, newest first", () => {
+    const entries: ChatEntry[] = Array.from({ length: 40 }, (_, i) => ({
+      id: String(i),
+      time: "",
+      author: i % 2 ? ("coordinator" as const) : ("user" as const),
+      text: `message ${i} ` + "word ".repeat(200),
+    }));
+    entries.push({ id: "last", time: "", author: "user", text: "latest question" });
+    const full = buildCoordinatorMessages({ mode: "act", entries }, 32768);
+    const capped = buildCoordinatorMessages({ mode: "act", entries, historyTokens: 2000 }, 32768);
+    expect(capped.length).toBeLessThan(full.length);
+    expect(capped.at(-1)!.content).toBe("latest question");
+    expect(capped[1]!.role).toBe("user");
+    const historyChars = capped.slice(1).reduce((n, m) => n + m.content.length, 0);
+    expect(historyChars).toBeLessThan(2000 * 5);
+  });
 });
 
 describe("thinking", () => {

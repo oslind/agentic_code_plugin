@@ -4,7 +4,18 @@ import { StructuredOutputMode } from "./providers/types";
 import { CheckConfig } from "./checks/runner";
 import { safeLinkDirs } from "./changes/scratch";
 import { AutoApprove } from "./tools/policy";
-import { baseUrlFrom, legacyApiKeyFrom, PERMISSION_KEYS, permissionsFrom, USER_ONLY_MODEL_KEYS, workspaceOverrides } from "./userSettings";
+import {
+  baseUrlFrom,
+  coordinatorHistoryTokensFrom,
+  legacyApiKeyFrom,
+  maxConcurrentRequestsFrom,
+  maxOutputTokensFrom,
+  PERMISSION_KEYS,
+  permissionsFrom,
+  USER_ONLY_CHAT_KEYS,
+  USER_ONLY_MODEL_KEYS,
+  workspaceOverrides,
+} from "./userSettings";
 
 export { PERMISSION_KEYS } from "./userSettings";
 
@@ -36,6 +47,9 @@ export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
     temperature: c.get<number>("temperature", 0.2),
     requestTimeoutMs: c.get<number>("requestTimeoutMs", 300000),
     structuredOutput: c.get<StructuredOutputMode>("structuredOutput", "json_schema"),
+    stream: c.get<boolean>("stream", true),
+    maxConcurrentRequests: maxConcurrentRequestsFrom(c),
+    maxOutputTokens: maxOutputTokensFrom(c),
   };
 }
 
@@ -123,5 +137,11 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
   return [
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.autoApprove", scope), PERMISSION_KEYS).map((k) => `agentic.autoApprove.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.model", scope), USER_ONLY_MODEL_KEYS).map((k) => `agentic.model.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.chat", scope), USER_ONLY_CHAT_KEYS).map((k) => `agentic.chat.${k}`),
   ];
+}
+
+/** Most tokens of earlier conversation sent with each coordinator message. User settings only, so a project cannot raise it. */
+export function readCoordinatorHistoryTokens(): number {
+  return coordinatorHistoryTokensFrom(vscode.workspace.getConfiguration("agentic.chat"));
 }

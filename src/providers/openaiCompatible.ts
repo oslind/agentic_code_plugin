@@ -8,6 +8,16 @@ export interface OpenAICompatibleConfig {
   temperature: number;
   requestTimeoutMs: number;
   structuredOutput: StructuredOutputMode;
+  /**
+   * Ask the server to stream the reply. Bytes then arrive while the model
+   * thinks and writes, so a proxy in front of the server does not give up on
+   * a silent connection (the usual cause of a 504). Default true.
+   */
+  stream?: boolean;
+  /** Most requests sent to this server at the same time. Others wait their turn. Default 1. */
+  maxConcurrentRequests?: number;
+  /** Longest reply, in tokens, sent as max_tokens. 0 or unset means no limit. */
+  maxOutputTokens?: number;
   /** Where the model name came from, named in errors so a wrong setting is easy to find. */
   source?: string;
 }
@@ -19,6 +29,8 @@ export class ProviderError extends Error {
     readonly retryable = false,
     /** True when the failed request asked for a response format. */
     readonly sentFormat = false,
+    /** How long the server asked us to wait before trying again (Retry-After), in ms. */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "ProviderError";
@@ -59,6 +71,23 @@ export class OpenAICompatibleProvider implements ModelProvider {
     OpenAICompatibleProvider.degraded.clear();
   }
 
+  /**
+   * One queue per server, shared by every provider in this session, so the
+   * coordinator, sub-agents and check-ins never send more requests at once
+   * than the server is set to take. A local server that runs one request at a
+   * time would otherwise queue the rest itself, and the time spent waiting
+   * there counts against any proxy timeout in front of it.
+   */
+  private static readonly queues = new Map<string, Limiter>();
+
+  private get queue(): Limiter {
+    const key = this.config.baseUrl.replace(/\/+$/, "");
+    let q = OpenAICompatibleProvider.queues.get(key);
+    if (!q) OpenAICompatibleProvider.queues.set(key, (q = new Limiter()));
+    q.limit = Math.max(1, Math.floor(this.config.maxConcurrentRequests ?? 1));
+    return q;
+  }
+
   private get key(): string {
     return `${this.config.baseUrl}|${this.config.model}`;
   }
@@ -75,7 +104,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const order = OpenAICompatibleProvider.FALLBACK;
     for (let mode = this.structuredOutput; ; ) {
       try {
-        return await this.send(request, mode);
+        const release = await this.queue.acquire(request.signal);
+        try {
+          return await this.send(request, mode);
+        } finally {
+          release();
+        }
       } catch (err) {
         const next = order[order.indexOf(mode) + 1];
         // Some servers and models (for example Ollama with certain GGUFs) cannot
@@ -89,15 +123,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
   }
 
+  private networkError(err: unknown, signal: AbortSignal | undefined, timeout: AbortSignal): ProviderError {
+    return describeNetworkError(this.config.baseUrl, this.config.requestTimeoutMs, err, !!signal?.aborted, timeout.aborted);
+  }
+
   private async send(request: ChatRequest, mode: StructuredOutputMode): Promise<ChatResponse> {
     const body: Record<string, unknown> = {
       model: this.config.model,
       messages: request.messages,
       temperature: request.temperature ?? this.config.temperature,
-      stream: false,
+      stream: this.config.stream ?? true,
     };
-    if (request.maxTokens !== undefined) {
-      body.max_tokens = request.maxTokens;
+    if (body.stream) body.stream_options = { include_usage: true };
+    const limit = this.config.maxOutputTokens && this.config.maxOutputTokens > 0 ? this.config.maxOutputTokens : undefined;
+    const maxTokens = request.maxTokens !== undefined && limit !== undefined ? Math.min(request.maxTokens, limit) : (request.maxTokens ?? limit);
+    if (maxTokens !== undefined) {
+      body.max_tokens = maxTokens;
     }
     if (request.jsonSchema && mode === "json_schema") {
       body.response_format = {
@@ -124,15 +165,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
         signal,
       });
     } catch (err) {
-      if (request.signal?.aborted) {
-        throw new ProviderError("Request cancelled");
-      }
-      throw new ProviderError(`Could not reach ${this.config.baseUrl}: ${(err as Error).message}`, undefined, true);
+      throw this.networkError(err, request.signal, timeout);
     }
 
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
+      const text = await errorText(res);
       const retryable = res.status === 429 || res.status >= 500;
+      const hint =
+        res.status === 504 || res.status === 502
+          ? " Something between the extension and the model (a proxy or gateway) gave up waiting. Raise its timeout, or make prompts smaller (agentic.chat.coordinatorHistoryTokens)."
+          : "";
       if (res.status === 404) {
         throw new ProviderError(
           `Model "${this.config.model}" was not found at ${this.config.baseUrl} (404). ` +
@@ -142,13 +184,39 @@ export class OpenAICompatibleProvider implements ModelProvider {
           false,
         );
       }
-      throw new ProviderError(`Model server returned ${res.status}: ${text.slice(0, 500)}`, res.status, retryable, body.response_format !== undefined);
+      throw new ProviderError(
+        `Model server returned ${res.status}: ${text.slice(0, 500)}${hint}`,
+        res.status,
+        retryable,
+        body.response_format !== undefined,
+        retryAfter(res.headers.get("retry-after")),
+      );
     }
 
-    const json = (await res.json()) as {
-      choices?: { message?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }[];
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    };
+    // A server that ignores "stream" answers with plain JSON, which is read as before.
+    if ((res.headers.get("content-type") ?? "").includes("text/event-stream") && res.body) {
+      try {
+        return await readStream(res.body, res.status);
+      } catch (err) {
+        if (err instanceof ProviderError) throw err;
+        throw this.networkError(err, request.signal, timeout);
+      }
+    }
+
+    let text: string;
+    try {
+      text = res.body ? await readLimited(res.body, MAX_REPLY_CHARS, res.status) : await res.text();
+    } catch (err) {
+      if (err instanceof ProviderError) throw err;
+      throw this.networkError(err, request.signal, timeout);
+    }
+    if (/^\s*data:/.test(text)) return parseEvents(text.split(/\r?\n/), new StreamResult(), res.status).finish(res.status);
+    let json: Json;
+    try {
+      json = JSON.parse(text) as Json;
+    } catch {
+      throw new ProviderError(`Model server returned a reply that is not JSON: ${text.slice(0, 200)}`, res.status, true);
+    }
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
       throw new ProviderError("Model server returned no message content", res.status, true);
@@ -161,6 +229,234 @@ export class OpenAICompatibleProvider implements ModelProvider {
       promptTokens: json.usage?.prompt_tokens,
       completionTokens: json.usage?.completion_tokens,
     };
+  }
+}
+
+/** Why a request could not finish: the user stopped it, our own timeout, or the server could not be reached. */
+function describeNetworkError(baseUrl: string, timeoutMs: number, err: unknown, cancelled: boolean, timedOut: boolean): ProviderError {
+  if (cancelled) return new ProviderError("Request cancelled");
+  // Our own limit. Sending the same request again would most likely time out again, so it is not retried.
+  if (timedOut) {
+    return new ProviderError(`The model did not finish within ${Math.round(timeoutMs / 1000)} s (agentic.model.requestTimeoutMs).`, undefined, false);
+  }
+  return new ProviderError(`Could not reach ${baseUrl}: ${(err as Error)?.message ?? String(err)}`, undefined, true);
+}
+
+/** Retry-After in seconds or as a date, in ms. Capped at two minutes. */
+export function retryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const secs = Number(header);
+  const ms = Number.isFinite(secs) ? secs * 1000 : Date.parse(header) - Date.now();
+  return Number.isFinite(ms) && ms >= 0 ? Math.min(ms, 120_000) : undefined;
+}
+
+type Json = {
+  choices?: { message?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+};
+
+type StreamChunk = {
+  choices?: { delta?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+  error?: { message?: string; type?: string; code?: string | number; status?: number } | string;
+};
+
+/**
+ * Most characters of reply (content and thinking together) read from the
+ * server, and the longest single event. A broken or hostile server could
+ * otherwise send data until the extension runs out of memory. Far above any
+ * real reply: 32k tokens are roughly 130k characters.
+ */
+export const MAX_REPLY_CHARS = 4_000_000;
+export const MAX_EVENT_CHARS = 1_000_000;
+/**
+ * Most bytes received for one streamed reply, counting everything the server
+ * sends (event framing, comments, fields that are ignored). Each token comes
+ * in its own event of a few hundred bytes, so this is set well above
+ * MAX_REPLY_CHARS.
+ */
+export const MAX_STREAM_BYTES = 32_000_000;
+/** Most bytes of an error reply read for its message. */
+export const MAX_ERROR_BYTES = 64_000;
+
+function tooLarge(status: number): ProviderError {
+  return new ProviderError(`Model server sent more than ${MAX_REPLY_CHARS / 1_000_000} million characters. The reply was stopped.`, status, false);
+}
+
+/**
+ * Whether an error the server reports inside a stream is worth trying
+ * again. Only overload, rate limits and timeouts are; context too long, an
+ * unknown model or a bad request would fail the same way again.
+ */
+export function isTransientStreamError(error: StreamChunk["error"]): boolean {
+  if (!error) return false;
+  if (typeof error === "string") return TRANSIENT.test(error);
+  const code = Number(error.code ?? error.status);
+  if (Number.isFinite(code) && code > 0) return code === 429 || (code >= 500 && code <= 599);
+  return TRANSIENT.test(`${error.type ?? ""} ${error.message ?? ""}`);
+}
+const TRANSIENT = /overload|unavailable|busy|capacity|rate.?limit|too many requests|timed? ?out|timeout|try again|temporar/i;
+
+class StreamResult {
+  content = "";
+  reasoning = "";
+  sawContent = false;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+
+  finish(status: number): ChatResponse {
+    if (!this.sawContent) throw new ProviderError("Model server returned no message content", status, true);
+    return {
+      content: this.content,
+      reasoning: this.reasoning || undefined,
+      promptTokens: this.usage?.prompt_tokens,
+      completionTokens: this.usage?.completion_tokens,
+    };
+  }
+}
+
+/** Adds server-sent event lines ("data: {...}") to the result. */
+function parseEvents(lines: string[], out: StreamResult, status: number): StreamResult {
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") continue;
+    let chunk: StreamChunk;
+    try {
+      chunk = JSON.parse(data) as StreamChunk;
+    } catch {
+      continue;
+    }
+    if (chunk.error) {
+      const msg = typeof chunk.error === "string" ? chunk.error : (chunk.error.message ?? "unknown error");
+      throw new ProviderError(`Model server failed while answering: ${msg.slice(0, 500)}`, status, isTransientStreamError(chunk.error));
+    }
+    const delta = chunk.choices?.[0]?.delta;
+    if (typeof delta?.content === "string") {
+      out.content += delta.content;
+      out.sawContent = true;
+    }
+    const thought = delta?.reasoning ?? delta?.reasoning_content;
+    if (typeof thought === "string") out.reasoning += thought;
+    if (chunk.usage) out.usage = chunk.usage;
+    if (out.content.length + out.reasoning.length > MAX_REPLY_CHARS) throw tooLarge(status);
+  }
+  return out;
+}
+
+/** Reads a streamed reply as it arrives. */
+async function readStream(body: ReadableStream<Uint8Array>, status: number): Promise<ChatResponse> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const out = new StreamResult();
+  let buffer = "";
+  let bytes = 0;
+  // Size of the event being received: all its lines up to the blank line that ends it.
+  let eventChars = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      // Everything received counts, before parsing, so comments, heartbeats and
+      // fields the parser ignores cannot keep the download going without limit.
+      bytes += value?.byteLength ?? 0;
+      if (bytes > MAX_STREAM_BYTES) throw streamTooLarge(status);
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = done ? "" : (lines.pop() ?? "");
+      for (const line of lines) {
+        eventChars = line === "" ? 0 : eventChars + line.length;
+        if (eventChars > MAX_EVENT_CHARS) throw eventTooLarge(status);
+      }
+      if (eventChars + buffer.length > MAX_EVENT_CHARS) throw eventTooLarge(status);
+      parseEvents(lines, out, status);
+      if (done) return out.finish(status);
+    }
+  } catch (err) {
+    // Stop the download, so a failed reply does not keep the connection and the server busy.
+    await reader.cancel().catch(() => undefined);
+    throw err;
+  }
+}
+
+function eventTooLarge(status: number): ProviderError {
+  return new ProviderError(`Model server sent one event longer than ${MAX_EVENT_CHARS / 1_000_000} million characters. The reply was stopped.`, status, false);
+}
+
+function streamTooLarge(status: number): ProviderError {
+  return new ProviderError(`Model server sent more than ${MAX_STREAM_BYTES / 1_000_000} MB. The reply was stopped.`, status, false);
+}
+
+/**
+ * Reads a whole reply body as text, at most `maxBytes` bytes. Past the limit
+ * the download is cancelled and the body is either refused (`truncate`
+ * false) or cut off there (`truncate` true, for error messages).
+ */
+async function readLimited(body: ReadableStream<Uint8Array>, maxBytes: number, status: number, truncate = false): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (value && bytes + value.byteLength > maxBytes) {
+        if (!truncate) throw tooLarge(status);
+        text += decoder.decode(value.subarray(0, maxBytes - bytes));
+        await reader.cancel().catch(() => undefined);
+        return text;
+      }
+      bytes += value?.byteLength ?? 0;
+      text += decoder.decode(value, { stream: !done });
+      if (done) return text;
+    }
+  } catch (err) {
+    await reader.cancel().catch(() => undefined);
+    throw err;
+  }
+}
+
+/** The start of an error reply, for the message. Never more than MAX_ERROR_BYTES is read. */
+async function errorText(res: Response): Promise<string> {
+  try {
+    return res.body ? await readLimited(res.body, MAX_ERROR_BYTES, res.status, true) : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Lets at most `limit` callers run at once; the rest wait in order. */
+export class Limiter {
+  limit = 1;
+  private active = 0;
+  private readonly waiting: (() => void)[] = [];
+
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) return Promise.reject(new ProviderError("Request cancelled"));
+    return new Promise((resolve, reject) => {
+      const start = () => {
+        signal?.removeEventListener("abort", onAbort);
+        this.active++;
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          this.active--;
+          this.next();
+        });
+      };
+      const onAbort = () => {
+        const i = this.waiting.indexOf(start);
+        if (i >= 0) this.waiting.splice(i, 1);
+        reject(new ProviderError("Request cancelled"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.waiting.push(start);
+      this.next();
+    });
+  }
+
+  private next(): void {
+    while (this.active < this.limit && this.waiting.length > 0) this.waiting.shift()!();
   }
 }
 

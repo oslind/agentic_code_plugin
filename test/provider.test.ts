@@ -1,5 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { OpenAICompatibleConfig, OpenAICompatibleProvider, ProviderError } from "../src/providers/openaiCompatible";
+import {
+  isTransientStreamError,
+  Limiter,
+  MAX_ERROR_BYTES,
+  MAX_EVENT_CHARS,
+  MAX_REPLY_CHARS,
+  MAX_STREAM_BYTES,
+  OpenAICompatibleConfig,
+  OpenAICompatibleProvider,
+  ProviderError,
+  retryAfter,
+} from "../src/providers/openaiCompatible";
 
 const base: OpenAICompatibleConfig = {
   baseUrl: "http://localhost:11434/v1/",
@@ -9,6 +20,19 @@ const base: OpenAICompatibleConfig = {
   requestTimeoutMs: 1000,
   structuredOutput: "json_schema",
 };
+
+/** A reply streamed as server-sent events, split into small byte chunks to test line joining. */
+function sse(events: unknown[], chunkSize = 7): Response {
+  const text = events.map((e) => `data: ${typeof e === "string" ? e : JSON.stringify(e)}\n\n`).join("");
+  const bytes = new TextEncoder().encode(text);
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      for (let i = 0; i < bytes.length; i += chunkSize) c.enqueue(bytes.slice(i, i + chunkSize));
+      c.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
 
 function fakeFetch(status: number, body: unknown) {
   const calls: { url: string; init: RequestInit }[] = [];
@@ -98,5 +122,195 @@ describe("OpenAICompatibleProvider", () => {
     const p = new OpenAICompatibleProvider(base, fakeFetch(400, "bad").fn);
     const err = await p.chat({ messages: [] }).catch((e) => e);
     expect(err.retryable).toBe(false);
+  });
+
+  it("streams by default and joins content, reasoning and usage from the events", async () => {
+    let sent: Record<string, unknown> = {};
+    const fn = (async (_url: string, init: RequestInit) => {
+      sent = JSON.parse(init.body as string);
+      return sse([
+        { choices: [{ delta: { reasoning: "Think " } }] },
+        { choices: [{ delta: { reasoning_content: "first." } }] },
+        { choices: [{ delta: { content: '{"a":' } }] },
+        { choices: [{ delta: { content: "1}" } }] },
+        { choices: [], usage: { prompt_tokens: 12, completion_tokens: 5 } },
+        "[DONE]",
+      ]);
+    }) as unknown as typeof fetch;
+    const res = await new OpenAICompatibleProvider(base, fn).chat({ messages: [] });
+    expect(sent.stream).toBe(true);
+    expect(res).toEqual({ content: '{"a":1}', reasoning: "Think first.", promptTokens: 12, completionTokens: 5 });
+  });
+
+  it("reads a plain JSON reply from a server that ignores stream, and can turn streaming off", async () => {
+    const f = fakeFetch(200, { choices: [{ message: { content: "hi" } }] });
+    expect((await new OpenAICompatibleProvider(base, f.fn).chat({ messages: [] })).content).toBe("hi");
+    await new OpenAICompatibleProvider({ ...base, stream: false }, f.fn).chat({ messages: [] });
+    const body = JSON.parse(f.calls[1]!.init.body as string);
+    expect(body.stream).toBe(false);
+    expect(body.stream_options).toBeUndefined();
+  });
+
+  it("fails a stream that carries an error or no content, retrying only temporary errors", async () => {
+    const withError = (async () => sse([{ error: { message: "server overloaded, try again" } }])) as unknown as typeof fetch;
+    const e1 = await new OpenAICompatibleProvider(base, withError).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(e1.message).toMatch(/overloaded/);
+    expect(e1.retryable).toBe(true);
+    const permanent = (async () => sse([{ error: { message: "prompt exceeds the context length", type: "invalid_request_error" } }])) as unknown as typeof fetch;
+    const e3 = await new OpenAICompatibleProvider(base, permanent).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(e3.retryable).toBe(false);
+    const empty = (async () => sse(["[DONE]"])) as unknown as typeof fetch;
+    const e2 = await new OpenAICompatibleProvider(base, empty).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(e2.message).toMatch(/no message content/);
+  });
+
+  it("sends max_tokens from the setting, keeping a smaller per-request limit", async () => {
+    const f = fakeFetch(200, { choices: [{ message: { content: "{}" } }] });
+    await new OpenAICompatibleProvider({ ...base, maxOutputTokens: 4000 }, f.fn).chat({ messages: [] });
+    await new OpenAICompatibleProvider({ ...base, maxOutputTokens: 4000 }, f.fn).chat({ messages: [], maxTokens: 500 });
+    await new OpenAICompatibleProvider(base, f.fn).chat({ messages: [] });
+    expect(f.calls.map((c) => JSON.parse(c.init.body as string).max_tokens)).toEqual([4000, 500, undefined]);
+  });
+
+  it("explains a 504 and carries Retry-After", async () => {
+    const fn = (async () => new Response("model server timed out", { status: 504, headers: { "retry-after": "3" } })) as unknown as typeof fetch;
+    const err = await new OpenAICompatibleProvider(base, fn).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.retryable).toBe(true);
+    expect(err.retryAfterMs).toBe(3000);
+    expect(err.message).toMatch(/proxy or gateway/);
+    expect(retryAfter("999")).toBe(120_000);
+    expect(retryAfter("soon")).toBeUndefined();
+  });
+
+  it("reports its own timeout plainly and does not mark it retryable", async () => {
+    const fn = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)))) as unknown as typeof fetch;
+    const err = await new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 20 }, fn).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(/did not finish within/);
+    expect(err.retryable).toBe(false);
+  });
+
+  it("sends one request at a time to a server by default", async () => {
+    let active = 0;
+    let peak = 0;
+    const fn = (async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+    }) as unknown as typeof fetch;
+    const cfg = { ...base, baseUrl: "http://queue-test:1/v1" };
+    await Promise.all([1, 2, 3].map(() => new OpenAICompatibleProvider(cfg, fn).chat({ messages: [] })));
+    expect(peak).toBe(1);
+    peak = 0;
+    await Promise.all([1, 2, 3, 4].map(() => new OpenAICompatibleProvider({ ...cfg, maxConcurrentRequests: 2 }, fn).chat({ messages: [] })));
+    expect(peak).toBe(2);
+  });
+});
+
+describe("Limiter", () => {
+  it("drops a waiting caller that is cancelled", async () => {
+    const l = new Limiter();
+    const release = await l.acquire();
+    const ac = new AbortController();
+    const waiting = l.acquire(ac.signal);
+    ac.abort();
+    await expect(waiting).rejects.toThrow("Request cancelled");
+    release();
+    const next = await l.acquire();
+    next();
+  });
+});
+
+describe("stream errors and size limits", () => {
+  it("retries only overload, rate limits and timeouts", () => {
+    expect(isTransientStreamError({ code: 503, message: "x" })).toBe(true);
+    expect(isTransientStreamError({ code: 429 })).toBe(true);
+    expect(isTransientStreamError({ code: 600, message: "x" })).toBe(false);
+    expect(isTransientStreamError({ code: 400, message: "timeout" })).toBe(false);
+    expect(isTransientStreamError({ type: "rate_limit_error" })).toBe(true);
+    expect(isTransientStreamError("request timed out")).toBe(true);
+    expect(isTransientStreamError({ message: "model not found" })).toBe(false);
+    expect(isTransientStreamError({ message: "context length exceeded" })).toBe(false);
+  });
+
+  /** A stream that keeps sending the given text until it is cancelled, and says whether it was. */
+  function endless(piece: string) {
+    const state = { cancelled: false };
+    const bytes = new TextEncoder().encode(piece);
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        c.enqueue(bytes);
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    });
+    return { state, response: new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }) };
+  }
+
+  it("stops a streamed reply that grows too large, and cancels the download", async () => {
+    const event = `data: ${JSON.stringify({ choices: [{ delta: { content: "x".repeat(100_000) } }] })}\n\n`;
+    const { state, response } = endless(event);
+    const err = await new OpenAICompatibleProvider(base, (async () => response) as unknown as typeof fetch).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(/more than 4 million characters/);
+    expect(err.retryable).toBe(false);
+    expect(state.cancelled).toBe(true);
+    expect(MAX_REPLY_CHARS).toBe(4_000_000);
+  });
+
+  it("stops one event that never ends", async () => {
+    const { state, response } = endless("data: " + "y".repeat(64_000));
+    const err = await new OpenAICompatibleProvider(base, (async () => response) as unknown as typeof fetch).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(/one event longer than/);
+    expect(state.cancelled).toBe(true);
+    expect(MAX_EVENT_CHARS).toBe(1_000_000);
+  });
+
+  it("stops a plain reply that grows too large", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        c.enqueue(new TextEncoder().encode("z".repeat(500_000)));
+      },
+    });
+    const fn = (async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const err = await new OpenAICompatibleProvider(base, fn).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(/more than 4 million characters/);
+  });
+
+  it("counts everything the server sends, so endless heartbeats or comments are stopped", async () => {
+    const { state, response } = endless(`: heartbeat ${"h".repeat(60_000)}\n\n`);
+    const err = await new OpenAICompatibleProvider(base, (async () => response) as unknown as typeof fetch).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(new RegExp(`more than ${MAX_STREAM_BYTES / 1_000_000} MB`));
+    expect(err.retryable).toBe(false);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("limits one event made of many lines, not only each line", async () => {
+    const { state, response } = endless(`data: ${"d".repeat(10_000)}\n`);
+    const err = await new OpenAICompatibleProvider(base, (async () => response) as unknown as typeof fetch).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(/one event longer than/);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("reads only the start of a huge error reply and stops the download", async () => {
+    const state = { cancelled: false, sent: 0 };
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        state.sent += 16_000;
+        c.enqueue(new TextEncoder().encode("e".repeat(16_000)));
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    });
+    const fn = (async () => new Response(body, { status: 500 })) as unknown as typeof fetch;
+    const err = await new OpenAICompatibleProvider(base, fn).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.status).toBe(500);
+    expect(err.message).toMatch(/^Model server returned 500: e+$/);
+    expect(err.message.length).toBeLessThan(600);
+    expect(state.cancelled).toBe(true);
+    expect(state.sent).toBeLessThanOrEqual(MAX_ERROR_BYTES + 32_000);
   });
 });
