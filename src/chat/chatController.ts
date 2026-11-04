@@ -9,6 +9,7 @@ import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
 import { PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
 import { CheckConfig } from "../checks/runner";
+import { CommandSink } from "../checks/commandTerminal";
 import { DetectedCheck } from "../checks/detect";
 import { ToolCall } from "../tools/protocol";
 import { AutoApprove, isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted } from "../tools/policy";
@@ -54,6 +55,8 @@ export interface ChatHost {
   log(level: "info" | "warn" | "error", message: string): void;
   /** The real path of the folder if it is open in VS Code right now, else undefined. Research may only read there. */
   openFolder(workspaceRoot: string): Promise<string | undefined>;
+  /** The extension's terminal for a project folder, where commands are shown as they run. */
+  terminal?(workspaceRoot: string): CommandSink;
   /** Limits for read-only research sub-agents. */
   researchLimits(): { maxTurns: number; maxParallel: number };
   /** How heavily the coordinator may delegate. */
@@ -590,6 +593,7 @@ export class ChatController {
       provider: this.host.provider(workspaceRoot),
       sandbox: overlay ?? disk,
       checkDir: overlay && scratch ? () => scratch.sync(overlay.allChanges()) : undefined,
+      terminal: this.host.terminal?.(workspaceRoot),
       task,
       checks,
       maxTurns: this.host.researchLimits().maxTurns,

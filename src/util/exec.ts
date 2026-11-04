@@ -16,6 +16,8 @@ export interface ExecOptions {
   /** Output beyond this many characters per stream is dropped from the middle. */
   maxOutput?: number;
   env?: NodeJS.ProcessEnv;
+  /** Receives output as it arrives, for example to show it in a terminal. */
+  onOutput?: (chunk: string) => void;
 }
 
 export function exec(command: string, args: string[], options: ExecOptions): Promise<ExecResult> {
@@ -49,8 +51,14 @@ export function exec(command: string, args: string[], options: ExecOptions): Pro
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
     };
-    child.stdout.on("data", (d: Buffer) => (stdout = cap(stdout + d.toString(), max)));
-    child.stderr.on("data", (d: Buffer) => (stderr = cap(stderr + d.toString(), max)));
+    child.stdout.on("data", (d: Buffer) => {
+      stdout = cap(stdout + d.toString(), max);
+      options.onOutput?.(d.toString());
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderr = cap(stderr + d.toString(), max);
+      options.onOutput?.(d.toString());
+    });
     child.on("error", (err) => {
       cleanup();
       reject(err);

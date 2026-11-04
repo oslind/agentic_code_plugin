@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
+import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { ProviderError } from "../providers/openaiCompatible";
@@ -30,6 +31,8 @@ export interface OrchestratorOptions {
   /** Folders linked, not copied, into the scratch copy where checks run, such as node_modules. */
   linkDirs?: string[];
   signal?: AbortSignal;
+  /** The extension's terminal for this project, where every command is shown as it runs. */
+  terminal?: CommandSink;
   /** Called when a task has finished with file changes. They are pending: nothing is written until accepted. */
   onChanges?: (task: Task, changes: PendingChange[]) => Promise<void>;
   /** The user's go-ahead for a call the policy flagged, such as a new check command. */
@@ -63,7 +66,7 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges" | "askCoordinator";
+type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges" | "askCoordinator" | "terminal";
 
 /**
  * Runs a planned run to completion, without git. Each sub-agent works on the
@@ -192,6 +195,7 @@ export class Orchestrator {
         provider: this.o.provider,
         sandbox: overlay,
         checkDir,
+        terminal: this.o.terminal,
         task,
         context: note,
         checks: this.o.checks,
@@ -212,7 +216,7 @@ export class Orchestrator {
       for (let round = 0; w.checks.length > 0 && overlay.writes.size > 0; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the checks decide. They run on a scratch copy.
-        const checks: CheckResult[] = await runAllChecks(w.checks, await checkDir(), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)));
+        const checks: CheckResult[] = await runAllChecks(w.checks, await checkDir(), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)), this.o.terminal);
         signal.throwIfAborted();
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed, skipped: c.skipped })) });

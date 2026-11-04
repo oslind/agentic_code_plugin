@@ -1,5 +1,6 @@
 import { exec, splitCommand, tail } from "../util/exec";
 import { commandLeavesProject } from "../tools/commandGuard";
+import { CommandSink } from "./commandTerminal";
 
 /** A check the user configured, such as `npm test`. Workers can only run these by name. */
 export interface CheckConfig {
@@ -58,16 +59,34 @@ export function checkEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEn
 /** Asks whether a check may run now. Resolving false skips it. */
 export type ApproveCommand = (check: CheckConfig) => Promise<boolean>;
 
-export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSignal, maxChars = 4000): Promise<CheckResult> {
+/**
+ * Runs one check. The process always starts in `cwd`, a folder inside the
+ * project, never in whatever folder a terminal happens to be in. With a
+ * `terminal`, the command and its output are shown there as it runs.
+ */
+export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSignal, maxChars = 4000, terminal?: CommandSink): Promise<CheckResult> {
   const started = Date.now();
+  const view = terminal?.start(check.command, cwd);
   const outside = commandLeavesProject(check.command);
-  if (outside) return { name: check.name, passed: false, output: `Refused to run \`${check.command}\`: ${outside}`, durationMs: 0 };
+  if (outside) {
+    const output = `Refused to run \`${check.command}\`: ${outside}`;
+    view?.end({ code: null, error: output, durationMs: 0 });
+    return { name: check.name, passed: false, output, durationMs: 0 };
+  }
+  const stop = view?.signal ? (signal ? AbortSignal.any([signal, view.signal]) : view.signal) : signal;
   try {
     // Simple commands run directly, without a shell, so nothing in them is expanded or chained.
     // Pipes, `&&` and the like need a shell, and so does Windows, where npm and most tools are .cmd scripts.
     const argv = process.platform === "win32" ? undefined : splitCommand(check.command);
-    const options = { cwd, timeoutMs: check.timeoutMs ?? 600_000, signal, env: checkEnv() };
+    const options = {
+      cwd,
+      timeoutMs: check.timeoutMs ?? 600_000,
+      signal: stop,
+      env: checkEnv(),
+      onOutput: view && ((chunk: string) => view.output(chunk)),
+    };
     const res = argv ? await exec(argv[0]!, argv.slice(1), { ...options, shell: false }) : await exec(check.command, [], { ...options, shell: true });
+    view?.end({ code: res.code, timedOut: res.timedOut, durationMs: Date.now() - started });
     const combined = [res.stdout, res.stderr].filter(Boolean).join("\n");
     return {
       name: check.name,
@@ -77,12 +96,27 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
     };
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
-    const output = e.code === "ENOENT" ? `Command not found: ${check.command.trim().split(/\s+/)[0]}` : e.message;
+    const stopped = e.name === "AbortError";
+    // Stopped from the terminal only (Ctrl+C there): the check failed, but the run goes on.
+    const output = stopped
+      ? signal?.aborted
+        ? e.message
+        : "Stopped from the terminal."
+      : e.code === "ENOENT"
+        ? `Command not found: ${check.command.trim().split(/\s+/)[0]}`
+        : e.message;
+    view?.end({ code: null, stopped, error: stopped ? undefined : output, durationMs: Date.now() - started });
     return { name: check.name, passed: false, output, durationMs: Date.now() - started };
   }
 }
 
-export async function runAllChecks(checks: CheckConfig[], cwd: string, signal?: AbortSignal, approve?: ApproveCommand): Promise<CheckResult[]> {
+export async function runAllChecks(
+  checks: CheckConfig[],
+  cwd: string,
+  signal?: AbortSignal,
+  approve?: ApproveCommand,
+  terminal?: CommandSink,
+): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const c of checks) {
     if (signal?.aborted) break;
@@ -90,7 +124,7 @@ export async function runAllChecks(checks: CheckConfig[], cwd: string, signal?: 
       results.push({ name: c.name, passed: true, skipped: true, output: "Skipped: you did not approve running it.", durationMs: 0 });
       continue;
     }
-    results.push(await runCheck(c, cwd, signal));
+    results.push(await runCheck(c, cwd, signal, undefined, terminal));
   }
   return results;
 }

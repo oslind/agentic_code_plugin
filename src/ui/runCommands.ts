@@ -11,6 +11,7 @@ import { isAutoApproved, isChangeAutoAccepted, isCheckAutoApproved } from "../to
 import { ChangeViews } from "./changeViews";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
+import { ProjectTerminals } from "./projectTerminal";
 import { RunHooks } from "../chat/chatController";
 
 export interface RunControl {
@@ -98,6 +99,8 @@ export function registerRunCommands(
   tree: TaskTreeProvider,
   output: vscode.LogOutputChannel,
   views: ChangeViews,
+  // Commands are shown in the extension's own terminal, opened at the project folder.
+  terminals: ProjectTerminals,
 ): RunControl {
   const active = new Map<string, { abort: AbortController; orchestrator: Orchestrator }>();
 
@@ -132,6 +135,7 @@ export function registerRunCommands(
       maxFixRounds: config.maxFixRounds,
       linkDirs: config.linkDirs,
       signal: abort.signal,
+      terminal: terminals.for(folder.uri.fsPath),
       approveTool: hooks?.approveTool ?? approveTool,
       approveCommand: hooks?.approveCommand ?? commandApprover(config.trustedCommands),
       onChanges: hooks?.onChanges ?? (async (_task, changes) => {

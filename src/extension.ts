@@ -20,6 +20,7 @@ import { ConversationStore } from "./chat/conversationStore";
 import { ChatMode } from "./chat/types";
 import { ChatViewProvider } from "./ui/chatView";
 import { confinedFolder, offerResume, registerRunCommands } from "./ui/runCommands";
+import { ProjectTerminals } from "./ui/projectTerminal";
 import { TaskTreeProvider } from "./ui/taskTree";
 
 const FILE_LIMIT = 2000;
@@ -96,7 +97,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const tree = new TaskTreeProvider(store);
 
   const views = ChangeViews.register(context, store);
-  const runs = registerRunCommands(context, store, tree, output, views);
+  const terminals = new ProjectTerminals();
+  context.subscriptions.push(terminals);
+  const runs = registerRunCommands(context, store, tree, output, views, terminals);
 
   const conversations = new ConversationStore(context.globalStorageUri.fsPath, () =>
     vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),
@@ -165,6 +168,7 @@ export function activate(context: vscode.ExtensionContext): void {
         checkIns: c.get<number>("checkIns", 2),
       };
     },
+    terminal: (workspaceRoot) => terminals.for(workspaceRoot),
     researchLimits: () => {
       const c = readRunConfig();
       return { maxTurns: Math.min(c.maxTurns, 30), maxParallel: c.maxParallel };
