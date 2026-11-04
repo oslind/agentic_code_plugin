@@ -98,6 +98,7 @@
     initializing: "info",
     working: "info",
     verifying: "info",
+    asking: "info",
     needs_you: "attention",
     completed: "success",
     failed: "error",
@@ -119,7 +120,7 @@
   const DRAFT_LABEL = { proposed: "Proposed", draft: "Draft", applied: "Accepted", discarded: "Rejected" };
 
   function stateIcon(s) {
-    if (s === "initializing" || s === "working" || s === "verifying") return el("span", { class: "spinner", "aria-hidden": "true" });
+    if (s === "initializing" || s === "working" || s === "verifying" || s === "asking") return el("span", { class: "spinner", "aria-hidden": "true" });
     return el("span", { class: "state-icon tone-" + (AGENT_TONE[s] || "muted"), "aria-hidden": "true" }, AGENT_ICON[s] || "○");
   }
 
@@ -306,7 +307,7 @@
   function feedEntry(e) {
     if (isWaiting(e)) return false;
     if (e.kind === "spawn" || e.kind === "direct") return false;
-    if (e.author === "agent") return e.kind === "question" || e.kind === "approval";
+    if (e.author === "agent") return e.kind === "question" || e.kind === "approval" || e.kind === "consult";
     return true;
   }
 
@@ -373,11 +374,15 @@
     if (kind === "question") label = who + " asks";
     if (kind === "approval") label = who + " asked for permission";
     if (kind === "checks") label = "Coordinator · checks";
+    if (kind === "consult") label = entry.author === "agent" ? who + " asks the coordinator" : "Coordinator → " + (entry.agentName || "sub-agent");
+    if (kind === "checkin") label = "Coordinator · checked on " + (entry.agentName || "a sub-agent");
+    if (kind === "question" && entry.author === "coordinator" && entry.agentName) label = "Coordinator asks, for " + entry.agentName;
     return el(
       "div",
       { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${kind}` },
       el("div", { class: "msg-head" }, el("span", { class: "who" }, label), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(entry.time))),
       entry.thought && entry.thought !== entry.text ? el("div", { class: "thought" }, entry.thought) : null,
+      entry.quote ? el("div", { class: "quote" }, entry.quote) : null,
       // The answer that combines the research reports is what the user asked for, so it is never folded.
       kind === "answer" ? el("div", { class: "msg-text" }, entry.text) : longText("x:" + entry.id, entry.text),
       entry.thinking && String(entry.thinking).trim() ? details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking)) : null,
@@ -398,9 +403,36 @@
       el("div", { class: "card-head" }, el("span", { class: "card-title" }, "Coordinator"), el("span", { class: "spacer" }), pill(COORD_TONE[c.state], c.label)),
       el("div", { class: "muted small" }, "Plans, delegates and reviews results. It can add tasks while sub-agents run."),
       el("div", { class: "activity" }, ["thinking", "supervising"].includes(c.state) ? el("span", { class: "spinner" }) : null, c.activity),
+      oversightLine(c.oversight),
       c.thinking ? details("ct", "Latest thinking", el("pre", { class: "thinking-text" }, c.thinking)) : null,
       el("div", { class: "row end" }, el("button", { class: "ghost", onclick: () => setTab("overview") }, "Open conversation")),
     );
+  }
+
+  /** How the coordinator kept tabs on its sub-agents, in one line. Nothing when it had nothing to do. */
+  function oversightLine(o) {
+    if (!o) return null;
+    const parts = [
+      o.answered ? plural(o.answered, "question") + " answered" : "",
+      o.askedYou ? plural(o.askedYou, "question") + " passed to you" : "",
+      o.checkIns ? plural(o.checkIns, "check-in") : "",
+      o.notes ? plural(o.notes, "note") + " sent" : "",
+      o.stopped ? plural(o.stopped, "sub-agent") + " stopped" : "",
+    ].filter(Boolean);
+    if (parts.length === 0) return null;
+    return el("div", { class: "muted small oversight", title: "Sub-agents can ask the coordinator questions, and it checks on any that seem stuck" }, "Keeping tabs: " + parts.join(" · "));
+  }
+
+  /** A sub-agent's exchanges with the coordinator, in one line. */
+  function exchangeLine(a) {
+    const x = a.coordinator;
+    if (!x || (!x.questions && !x.notes && !x.stopped)) return null;
+    const parts = [
+      x.questions ? "asked the coordinator " + (x.questions === 1 ? "once" : x.questions + " times") : "",
+      x.notes ? plural(x.notes, "note") + " from the coordinator" : "",
+      x.stopped ? "stopped by the coordinator" : "",
+    ].filter(Boolean);
+    return el("div", { class: "muted small exchange" }, "↔ " + parts.join(" · "));
   }
 
   function agentKey(a) {
@@ -435,6 +467,7 @@
         pill(AGENT_TONE[a.state], a.label),
       ),
       el("div", { class: "activity" }, a.activity),
+      exchangeLine(a),
       el(
         "div",
         { class: "row-between" },
@@ -579,11 +612,14 @@
 
   function streamItem(e) {
     const mine = e.author === "user";
+    const coord = e.author === "coordinator";
+    const tag = mine ? "You" : e.kind === "report" ? "Report" : coord ? "Coordinator · " + (e.tag || "message") : e.tag || e.kind || "step";
     return el(
       "div",
-      { class: "step" + (mine ? " from-user" : "") + (e.tone ? " tone-" + e.tone : "") },
-      el("div", { class: "step-head" }, el("span", { class: "step-tag" }, mine ? "You" : e.kind === "report" ? "Report" : e.tag || e.kind || "step"), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(e.time))),
+      { class: "step" + (mine ? " from-user" : "") + (coord ? " from-coordinator" : "") + (e.tone ? " tone-" + e.tone : "") },
+      el("div", { class: "step-head" }, el("span", { class: "step-tag" }, tag), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(e.time))),
       e.thought && e.thought !== e.text ? el("div", { class: "thought" }, e.thought) : null,
+      coord && e.quote ? el("div", { class: "quote" }, e.quote) : null,
       longText("s:" + e.id, e.text),
       e.thinking ? details("t:" + e.id, "Thinking", el("pre", { class: "thinking-text" }, e.thinking)) : null,
       e.decided ? el("div", { class: "decided" }, "✓ " + e.decided) : null,
@@ -773,13 +809,25 @@
         ),
       ];
     } else {
-      body = [longText("q:" + entry.id, entry.text), answerBox(entry, scope)];
+      body = [
+        entry.quote ? el("div", { class: "quote" }, entry.quote) : null,
+        longText("q:" + entry.id, entry.text),
+        answerBox(entry, scope),
+      ];
     }
     return el(
       "div",
       { class: "card waiting" },
       el("div", { class: "card-head" }, el("span", { class: "card-title" }, title), el("span", { class: "spacer" }), pill("attention", "Approval required")),
-      el("div", { class: "muted small" }, entry.kind === "checks" ? "Proposed by the coordinator" : "Requested by " + who),
+      el(
+        "div",
+        { class: "muted small" },
+        entry.kind === "checks"
+          ? "Proposed by the coordinator"
+          : entry.author === "coordinator" && entry.agentName
+            ? `The coordinator could not answer "${entry.agentName}" from what it knows, so it asks you. Your answer goes to the sub-agent.`
+            : "Requested by " + who,
+      ),
       body,
     );
   }

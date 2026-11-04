@@ -141,10 +141,13 @@ export function registerRunCommands(
         }
       }),
       askUser: hooks?.askUser,
+      askCoordinator: hooks?.askCoordinator,
       inbox: hooks?.inbox,
       onChange: () => tree.refresh(),
     });
     active.set(run.id, { abort, orchestrator });
+    // The chat's coordinator keeps tabs on the sub-agents and may stop one that is stuck.
+    hooks?.attach?.({ cancelTask: (taskId) => orchestrator.cancelTask(taskId), maxTurns: config.maxTurns });
     try {
       output.info(`Running "${run.request}" in ${folder.uri.fsPath}`);
       const outcome = await vscode.window.withProgress(

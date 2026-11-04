@@ -13,7 +13,7 @@ export interface ChatEntry {
   author: ChatAuthor;
   text: string;
   /** What the entry shows besides its text. A plan or outcome entry refers to a run. */
-  kind?: "message" | "plan" | "outcome" | "error" | "spawn" | "report" | "research" | "answer" | "checks" | "approval" | "question" | "direct" | "review";
+  kind?: "message" | "plan" | "outcome" | "error" | "spawn" | "report" | "research" | "answer" | "checks" | "approval" | "question" | "direct" | "review" | "consult" | "checkin";
   runId?: string;
   /** For agent entries: the task the sub-agent works on. */
   taskId?: string;
@@ -35,6 +35,11 @@ export interface ChatEntry {
   preview?: string;
   /** For a run summary: what can be applied or retried. */
   outcome?: { changedFiles: string[]; failed: number };
+  /**
+   * For the coordinator's answer to a sub-agent (kind "consult"), or a
+   * question it passed on to the user: the sub-agent's question.
+   */
+  quote?: string;
   /** For a card that waits on the user: what was decided, once it was. */
   decided?: string;
 }

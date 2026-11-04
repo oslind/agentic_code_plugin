@@ -65,6 +65,9 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       // Whitespace-only thinking (some local models send it) would show as an empty box.
       const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
       const thought = typeof data.thought === "string" ? short(data.thought) : "";
+      if (event.message === "ask_coordinator") {
+        return agent({ kind: "consult", text: String(call?.question ?? ""), tag: "asked the coordinator", thought: thought || undefined, thinking });
+      }
       if (event.message === "finish") {
         return agent({ kind: "report", text: String(call?.summary ?? "Finished."), tag: "report to coordinator", thought: thought || undefined, thinking });
       }
@@ -83,6 +86,48 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
       const thought = typeof data.thought === "string" ? short(data.thought) : "";
       return agent({ text: event.message, tag: "reply", thought: thought || undefined, thinking });
+    }
+    case "coordinator_answer": {
+      // The user's own answer is already on the question card.
+      if (data.from === "user") return undefined;
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
+      return {
+        author: "coordinator",
+        kind: "consult",
+        runId: event.runId,
+        taskId: event.taskId,
+        agentName: task?.title ?? event.taskId,
+        tag: data.failed ? "could not answer" : "answered",
+        tone: data.failed ? "warning" : undefined,
+        text: event.message,
+        thought: typeof data.thought === "string" ? short(data.thought) : undefined,
+        thinking,
+        quote: typeof data.question === "string" ? data.question : undefined,
+      };
+    }
+    case "coordinator_checkin": {
+      const name = `"${task?.title ?? event.taskId ?? "a sub-agent"}"`;
+      const detail = typeof data.detail === "string" ? data.detail : "";
+      const adjusted = typeof data.adjusted === "string" ? ` (${data.adjusted})` : "";
+      const text =
+        event.message === "stop"
+          ? `Stopped ${name}. ${detail} Its drafts are kept for your review, and you can retry the task.`
+          : event.message === "message"
+            ? `Checked on ${name}. ${detail} I sent it a note: ${String(data.note ?? "")}${adjusted}`
+            : `Checked on ${name}. ${detail} It looks fine, so I let it continue.${adjusted}`;
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
+      return {
+        author: "coordinator",
+        kind: "checkin",
+        runId: event.runId,
+        taskId: event.taskId,
+        agentName: task?.title ?? event.taskId,
+        tag: event.message === "stop" ? "stopped by coordinator" : event.message === "message" ? "note from coordinator" : "check-in",
+        tone: event.message === "stop" ? "warning" : "info",
+        text,
+        thought: typeof data.thought === "string" ? short(data.thought) : undefined,
+        thinking,
+      };
     }
     case "denied":
       return agent({ text: `Blocked: ${short(event.message)}`, tag: "policy", tone: "warning" });

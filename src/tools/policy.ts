@@ -155,6 +155,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
   switch (call.tool) {
     case "finish":
     case "ask_user":
+    case "ask_coordinator":
       return { verdict: "allow" };
     case "request_check": {
       const outside = commandLeavesProject(call.command);
