@@ -15,6 +15,7 @@ import { AutoApprove, isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted 
 import { acceptChange, changeKind, rejectChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
+import { untrustedSection } from "../context/untrusted";
 import { ResearchReport, synthesizeFindings } from "./synthesis";
 import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
@@ -1257,7 +1258,7 @@ export class ChatController {
             maxTurns,
             signal,
             readOnly: true,
-            context: learned ? `What earlier researchers found (build on it, do not repeat it):\n${learned}` : undefined,
+            context: learned ? untrustedSection("What earlier researchers found (build on it, do not repeat it):", "earlier research and sub-agent reports", learned) : undefined,
             approve: async () => false,
             inbox: () => this.drainInbox(run.id, task!.id),
             log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
@@ -1313,6 +1314,15 @@ export class ChatController {
       { signal, onError: (m) => this.host.log("warn", m) },
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
+    if (result.suspicious.length) {
+      const which = result.suspicious.map((n) => `"${reports[n - 1]!.title}"`).join(", ");
+      this.host.log("warn", `Research report(s) ${which} contain text that reads like instructions to an AI (possible prompt injection from a project file).`);
+      await this.append(c.id, {
+        author: "system",
+        tone: "warning",
+        text: `The report from ${which} contains text that reads like orders to an AI, for example "ignore previous instructions". It may come from a file in the project that tries to steer the agents. It was treated as data, not followed, but check the answer below against the files yourself.`,
+      });
+    }
     await this.append(c.id, {
       author: "coordinator",
       kind: "answer",
@@ -1358,7 +1368,8 @@ export class ChatController {
  * What the coordinator has learned in this conversation, for planning and for
  * every sub-agent of the next run: sub-agent reports (research answers and
  * finished work) and its own answers after research, newest first, kept small
- * for local models.
+ * for local models. Every line is labelled with its source. It is untrusted:
+ * pass it on only through untrustedSection(), never as instructions.
  */
 export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | undefined {
   const lines: string[] = [];
@@ -1366,10 +1377,12 @@ export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | un
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
     let line: string | undefined;
-    if (e.kind === "report" && e.author === "coordinator") line = `- ${e.text}`;
-    else if (e.kind === "report") line = `- ${e.agentName ?? "A sub-agent"} reported: ${e.text}`;
+    // Each line says where it came from. None of it was checked by the user, and all of it
+    // was written by models that read project files, so callers pass it on as untrusted data.
+    if (e.kind === "report" && e.author === "coordinator") line = `- [run summary with sub-agent reports] ${e.text}`;
+    else if (e.kind === "report") line = `- [report from sub-agent "${e.agentName ?? "unnamed"}"] ${e.text}`;
     // The coordinator's answer right after research reports sums them up.
-    else if (e.author === "coordinator" && e.tag === "from research") line = `- Coordinator concluded: ${e.text}`;
+    else if (e.author === "coordinator" && e.tag === "from research") line = `- [answer combined from research reports] ${e.text}`;
     if (!line) continue;
     line = line.replace(/\s+/g, " ").slice(0, 800);
     if (used + line.length > maxChars) break;

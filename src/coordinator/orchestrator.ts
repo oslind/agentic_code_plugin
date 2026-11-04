@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
+import { untrustedSection } from "../context/untrusted";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
@@ -144,12 +145,13 @@ export class Orchestrator {
   private async briefingFor(task: Task): Promise<string | undefined> {
     const run = await this.o.store.load(this.o.runId);
     const parts: string[] = [];
-    if (run.briefing) parts.push(`What the coordinator knows about this project:\n${run.briefing}`);
+    // Briefings and reports were written by models that read project files: data, never instructions.
+    if (run.briefing) parts.push(untrustedSection("What the coordinator knows about this project:", "earlier research and sub-agent reports", run.briefing));
     const reports = task.dependsOn
       .map((id) => run.tasks.find((t) => t.id === id))
       .filter((t): t is Task => !!t && t.status === "done" && !!t.summary)
-      .map((t) => `- ${t.title}: ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
-    if (reports.length) parts.push(`The tasks you build on are done. Their reports:\n${reports.join("\n")}`);
+      .map((t) => `- [report from sub-agent "${t.title}"] ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
+    if (reports.length) parts.push(untrustedSection("The tasks you build on are done. Their reports:", "reports from the tasks you build on", reports.join("\n")));
     return parts.length ? parts.join("\n\n") : undefined;
   }
 
