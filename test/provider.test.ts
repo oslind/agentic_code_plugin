@@ -186,7 +186,7 @@ describe("OpenAICompatibleProvider", () => {
     const fn = ((_url: string, init: RequestInit) =>
       new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)))) as unknown as typeof fetch;
     const err = await new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 20 }, fn).chat({ messages: [] }).catch((e) => e as ProviderError);
-    expect(err.message).toMatch(/did not finish within/);
+    expect(err.message).toMatch(/sent nothing for/);
     expect(err.retryable).toBe(false);
   });
 
@@ -312,5 +312,83 @@ describe("stream errors and size limits", () => {
     expect(err.message.length).toBeLessThan(600);
     expect(state.cancelled).toBe(true);
     expect(state.sent).toBeLessThanOrEqual(MAX_ERROR_BYTES + 32_000);
+  });
+});
+
+describe("request timeout", () => {
+  /** A stream that sends one content event every `everyMs`, `count` times, then ends. */
+  function slowStream(count: number, everyMs: number, silentAfter = Infinity) {
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        if (sent >= count) return c.close();
+        await new Promise((r) => setTimeout(r, sent >= silentAfter ? 10_000 : everyMs));
+        sent++;
+        c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`));
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+  }
+
+  /** Passes the abort signal on to the body, as real fetch does. */
+  function fetchWith(make: () => Response) {
+    return (async (_url: string, init: RequestInit) => {
+      const res = make();
+      const reader = res.body!.getReader();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(c) {
+          const aborted = new Promise<never>((_r, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason), { once: true }));
+          const { done, value } = await Promise.race([reader.read(), aborted]);
+          if (done) c.close();
+          else c.enqueue(value);
+        },
+      });
+      return new Response(body, { status: res.status, headers: res.headers });
+    }) as unknown as typeof fetch;
+  }
+
+  it("never cuts off a reply that keeps arriving, however long it takes in total", async () => {
+    // 12 events, 20 ms apart: about 240 ms in total, with a 60 ms silence limit.
+    const res = await new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 60 }, fetchWith(() => slowStream(12, 20))).chat({ messages: [] });
+    expect(res.content).toBe("x".repeat(12));
+  });
+
+  it("stops a reply when the server goes silent part way", async () => {
+    const started = Date.now();
+    const err = await new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 60 }, fetchWith(() => slowStream(12, 10, 3)))
+      .chat({ messages: [] })
+      .catch((e) => e as ProviderError);
+    expect(err.message).toMatch(/sent nothing for/);
+    expect(err.retryable).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("has no limit when set to 0", async () => {
+    const res = await new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 0 }, fetchWith(() => slowStream(3, 30))).chat({ messages: [] });
+    expect(res.content).toBe("xxx");
+  });
+
+  it("by default never stops: warns once when the server goes silent, and again when it answers", async () => {
+    const events: { silentMs: number; resumed: boolean }[] = [];
+    // Three events, then 150 ms of silence before the rest, with a 50 ms warning.
+    let sent = 0;
+    const make = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(c) {
+            if (sent >= 6) return c.close();
+            await new Promise((r) => setTimeout(r, sent === 3 ? 150 : 5));
+            sent++;
+            c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`));
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    const p = new OpenAICompatibleProvider({ ...base, requestTimeoutMs: 0, silenceWarningMs: 50 }, fetchWith(make), undefined, (e) => events.push(e));
+    const res = await p.chat({ messages: [] });
+    expect(res.content).toBe("xxxxxx");
+    expect(events.map((e) => e.resumed)).toEqual([false, true]);
+    expect(events[0]!.silentMs).toBeGreaterThanOrEqual(45);
+    expect(events[1]!.silentMs).toBeGreaterThanOrEqual(events[0]!.silentMs);
   });
 });

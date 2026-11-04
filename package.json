@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -150,8 +150,15 @@
         },
         "agentic.model.requestTimeoutMs": {
           "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Stop a model request after the server has sent nothing for this many milliseconds. 0 (the default) never stops a request: you get a warning after agentic.model.silenceWarningMs and can press Stop yourself. The clock restarts whenever part of the reply arrives, so a reply that keeps streaming is never cut off. With agentic.model.stream off, nothing arrives until the reply is done."
+        },
+        "agentic.model.silenceWarningMs": {
+          "type": "number",
           "default": 300000,
-          "description": "Timeout for one model request. Local models can be slow."
+          "minimum": 0,
+          "description": "Warn when the model server has sent nothing for this many milliseconds (default 5 minutes). The request keeps waiting; the server may still be reading a long prompt, or may have dropped the request. 0 turns the warning off."
         },
         "agentic.model.stream": {
           "type": "boolean",

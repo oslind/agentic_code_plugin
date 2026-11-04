@@ -45,7 +45,8 @@ export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
     apiKey: secretApiKey ?? legacyApiKeyFrom(c),
     contextWindow: c.get<number>("contextWindow", 32768),
     temperature: c.get<number>("temperature", 0.2),
-    requestTimeoutMs: c.get<number>("requestTimeoutMs", 300000),
+    requestTimeoutMs: Math.max(0, c.get<number>("requestTimeoutMs", 0)),
+    silenceWarningMs: Math.max(0, c.get<number>("silenceWarningMs", 300000)),
     structuredOutput: c.get<StructuredOutputMode>("structuredOutput", "json_schema"),
     stream: c.get<boolean>("stream", true),
     maxConcurrentRequests: maxConcurrentRequestsFrom(c),
@@ -53,10 +54,33 @@ export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
   };
 }
 
-/** A provider for the current settings. Logs when the server forces a weaker structured output mode. */
-export function createProvider(scope: vscode.Uri | undefined, log: { warn(message: string): void }): OpenAICompatibleProvider {
-  return new OpenAICompatibleProvider(readModelConfig(scope), fetch, (from, to, error) =>
-    log.warn(`The model server rejected structured output "${from}" (${error}). Using "${to}" instead; replies are still checked against the schema.`),
+/**
+ * A provider for the current settings. Logs when the server forces a weaker
+ * structured output mode, and warns when the server has gone silent.
+ */
+export function createProvider(scope: vscode.Uri | undefined, log: { warn(message: string): void; info?(message: string): void }): OpenAICompatibleProvider {
+  return new OpenAICompatibleProvider(
+    readModelConfig(scope),
+    fetch,
+    (from, to, error) => log.warn(`The model server rejected structured output "${from}" (${error}). Using "${to}" instead; replies are still checked against the schema.`),
+    (e) => {
+      const secs = Math.round(e.silentMs / 1000);
+      if (e.resumed) {
+        (log.info ?? log.warn).call(log, `The model server at ${e.baseUrl} answered again after ${secs} s of silence.`);
+        return;
+      }
+      const message = silenceMessage(e.baseUrl, secs);
+      log.warn(message);
+      void vscode.window.showWarningMessage(message);
+    },
+  );
+}
+
+/** The warning shown when the model server has sent nothing for a while. The request keeps waiting. */
+export function silenceMessage(baseUrl: string, secs: number): string {
+  return (
+    `No response from the model server at ${baseUrl} for ${secs} s. It may still be reading a long prompt, or the request may have been closed on the server side. ` +
+    `Agentic Code keeps waiting; press Stop to give up.`
   );
 }
 
