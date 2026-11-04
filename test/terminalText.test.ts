@@ -10,8 +10,8 @@ describe("terminal output filter", () => {
   it("keeps text, tabs, line breaks and plain colors", () => {
     expect(toTerminalText("a\nb\r\nc")).toBe("a\r\nb\r\nc");
     expect(toTerminalText(`${ESC}[32m✓ ok${ESC}[0m\tdone`)).toBe(`${ESC}[32m✓ ok${ESC}[0m\tdone`);
-    expect(toTerminalText(`${ESC}[1;31;42mX${ESC}[m`)).toBe(`${ESC}[1;31;42mX${ESC}[0m`);
-    expect(toTerminalText(`${ESC}[38;5;196mX${ESC}[38;2;1;2;3mY`)).toBe(`${ESC}[38;5;196mX${ESC}[38;2;1;2;3mY`);
+    expect(toTerminalText(`${ESC}[1;31mX${ESC}[m`)).toBe(`${ESC}[1;31mX${ESC}[0m`);
+    expect(toTerminalText(`${ESC}[2;90mgray${ESC}[22;39m`)).toBe(`${ESC}[2;90mgray${ESC}[22;39m`);
   });
 
   it("drops screen clears, cursor moves and hidden text, so output cannot fake a result", () => {
@@ -23,6 +23,16 @@ describe("terminal output filter", () => {
     // Concealed (8) and blinking are removed; the rest of the SGR stays.
     expect(toTerminalText(`${ESC}[1;8;5mX`)).toBe(`${ESC}[1mX`);
     expect(toTerminalText(`${ESC}[8mX`)).toBe("X");
+  });
+
+  it("never lets output become invisible: no backgrounds, reverse video or exact colors", () => {
+    // The same RGB in front and behind would hide the text completely.
+    expect(toTerminalText(`${ESC}[38;2;1;2;3;48;2;1;2;3mTHIS OUTPUT IS INVISIBLE${ESC}[0m`)).toBe(`THIS OUTPUT IS INVISIBLE${ESC}[0m`);
+    expect(toTerminalText(`${ESC}[38;5;16;48;5;16mX`)).toBe("X");
+    expect(toTerminalText(`${ESC}[30;40mX${ESC}[97;107mY${ESC}[7mZ`)).toBe(`${ESC}[30mX${ESC}[97mYZ`);
+    // Extended color arguments are not read as codes of their own (2 = dim, 8 = concealed).
+    expect(toTerminalText(`${ESC}[38;2;8;8;8;1mX`)).toBe(`${ESC}[1mX`);
+    expect(toTerminalText(`${ESC}[1;31;42mX`)).toBe(`${ESC}[1;31mX`);
   });
 
   it("removes OSC links, shell-integration markers, titles and DCS strings", () => {

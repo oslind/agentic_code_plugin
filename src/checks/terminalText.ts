@@ -8,11 +8,20 @@
  * or shown as visible text (other control characters, text-direction marks).
  */
 
-/** SGR codes that only change colors and weight; 8 (concealed) and blinking are left out. */
-const SAFE_SGR = new Set([0, 1, 2, 3, 4, 7, 9, 21, 22, 23, 24, 27, 29, 39, 49]);
+/**
+ * SGR codes that keep text readable: weight, italic, underline, strike-through
+ * and the 16 theme foreground colors, plus the codes that switch styles off.
+ * Left out, so output cannot make text invisible or blend into the background:
+ * concealed (8), blinking (5, 6), reverse video (7), every background color
+ * (40-47, 100-107, 48;...) and 256-color or RGB colors (38;5;n, 38;2;r;g;b),
+ * which could pick exactly the terminal's background. The 16 theme colors are
+ * the theme's own palette, and VS Code keeps them readable on its background
+ * (terminal.integrated.minimumContrastRatio).
+ */
+const SAFE_SGR = new Set([0, 1, 2, 3, 4, 9, 21, 22, 23, 24, 27, 29, 39, 49]);
 
 function safeSgrCode(n: number): boolean {
-  return SAFE_SGR.has(n) || (n >= 30 && n <= 37) || (n >= 40 && n <= 47) || (n >= 90 && n <= 97) || (n >= 100 && n <= 107);
+  return SAFE_SGR.has(n) || (n >= 30 && n <= 37) || (n >= 90 && n <= 97);
 }
 
 /** Keeps the allowed parts of an SGR parameter list, or returns undefined when nothing is left. */
@@ -22,15 +31,11 @@ function filterSgr(params: string): string | undefined {
   const kept: number[] = [];
   for (let i = 0; i < nums.length; i++) {
     const n = nums[i]!;
-    if ((n === 38 || n === 48) && nums[i + 1] === 5 && i + 2 < nums.length) {
-      if (nums[i + 2]! <= 255) kept.push(n, 5, nums[i + 2]!);
-      i += 2;
-    } else if ((n === 38 || n === 48) && nums[i + 1] === 2 && i + 4 < nums.length) {
-      const rgb = nums.slice(i + 2, i + 5);
-      if (rgb.every((c) => c <= 255)) kept.push(n, 2, ...rgb);
-      i += 4;
-    } else if (n === 38 || n === 48) {
-      break; // malformed color: drop the rest
+    if (n === 38 || n === 48 || n === 58) {
+      // Extended color: dropped with its arguments, so they are not read as codes of their own.
+      if (nums[i + 1] === 5) i += 2;
+      else if (nums[i + 1] === 2) i += 4;
+      else break;
     } else if (safeSgrCode(n)) {
       kept.push(n);
     }
