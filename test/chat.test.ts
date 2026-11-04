@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ChatController, ChatHost, earlierAnswers, learnedSoFar, RunHooks } from "../src/chat/chatController";
+import { ChatController, ChatHost, earlierAnswers, learnedSoFar, RunHooks, runScope, userMessagesOf } from "../src/chat/chatController";
 import { CheckConfig } from "../src/checks/runner";
 import { DetectedCheck, detectChecks } from "../src/checks/detect";
 import { AutoApprove, checkToolCall, isChangeAutoAccepted } from "../src/tools/policy";
@@ -1205,6 +1205,41 @@ describe("ChatController", () => {
       expect(buildCoordinatorMessages({ mode: "act", entries: state.current!.entries }, 32768).some((m) => m.content.includes("UUID strings for ids"))).toBe(false);
     });
 
+    it("only lets the coordinator use the current run's part of the conversation (Oskar's review)", () => {
+      const e = (o: Partial<ChatEntry>): ChatEntry => ({ id: String(Math.random()), time: "", author: "user", text: "", ...o });
+      const entries: ChatEntry[] = [
+        e({ text: "Rotate the API key in config/secrets-notes.md, the new one is hunter2" }),
+        e({ author: "coordinator", kind: "plan", runId: "old", text: "plan" }),
+        e({ author: "agent", kind: "report", runId: "old", taskId: "x", agentName: "Old", text: "Rotated it." }),
+        e({ author: "coordinator", kind: "outcome", runId: "old", text: "Done." }),
+        e({ text: "Add CSV export" }),
+        e({ author: "coordinator", text: "Which columns?" }),
+        e({ text: "All of them" }),
+        e({ author: "coordinator", kind: "plan", runId: "new", text: "plan" }),
+        e({ author: "user", kind: "direct", runId: "new", taskId: "t", text: "hi agent" }),
+      ];
+      const scope = runScope(entries, "new");
+      expect(userMessagesOf(scope)).toEqual(["Add CSV export", "All of them"]);
+      expect(learnedSoFar(scope)).toBeUndefined();
+      expect(JSON.stringify(scope)).not.toContain("hunter2");
+      expect(runScope(entries, "missing")).toEqual([]);
+    });
+
+    it("does not show the coordinator an earlier, unrelated task when a sub-agent asks", async () => {
+      const { controller, provider } = setup([turn("Sure.", "none"), ...planReplies(), consult("Use UUIDs.")], "act", {
+        during: async (hooks, runId, tasks) => {
+          await tasks.setStatus(runId, "add-model", "running");
+          const task = (await tasks.load(runId)).tasks.find((t) => t.id === "add-model")!;
+          await hooks.askCoordinator(task, "What did the user say earlier?", signal());
+        },
+      });
+      await controller.send("my bank PIN is 4711, remember it");
+      await controller.send("add users");
+      const prompt = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
+      expect(prompt).toContain("add users");
+      expect(prompt).not.toContain("4711");
+    });
+
     it("passes a question only the user can decide on to the user, and remembers the decision", async () => {
       let reply: unknown;
       const { controller } = setup([...planReplies(), consult("Should the export use ISO dates or local dates?", true)], "act", {
@@ -1274,7 +1309,7 @@ describe("ChatController", () => {
       const state = await controller.state();
       const checkin = state.current!.entries.find((e) => e.kind === "checkin")!;
       expect(checkin).toMatchObject({ author: "coordinator", taskId: "add-model", tag: "note from coordinator" });
-      expect(checkin.text).toMatch(/same call \(read_file src\/a.ts\) 3 times/);
+      expect(checkin.text).toMatch(/same tool call 3 times in its last 3 steps\. The repeated call: read_file src\/a.ts\./);
       expect(checkin.text).toMatch(/only allowed after a note/);
       expect(state.dashboard!.coordinator.oversight).toMatchObject({ checkIns: 1, notes: 1, stopped: 0 });
       expect(state.dashboard!.agents.find((a) => a.taskId === "add-model")!.coordinator).toEqual({ questions: 0, notes: 1, stopped: false });

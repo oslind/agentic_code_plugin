@@ -18,8 +18,18 @@ export type ConcernKind = "looping" | "blocked" | "no_progress" | "checks_failin
 
 export interface Concern {
   kind: ConcernKind;
-  /** Plain words, shown to the user and to the coordinator model. */
+  /**
+   * Plain words, shown to the user and to the coordinator model as its own
+   * observation. Built only from fixed wording and counts, never from
+   * anything a sub-agent wrote, so it is trusted.
+   */
   detail: string;
+  /**
+   * What the sub-agent did that shows it, such as the call it repeated. Its
+   * arguments came from a model that may have read planted text, so this is
+   * untrusted and only ever passed to a model inside a data fence.
+   */
+  evidence?: string;
 }
 
 export const CONCERN_LABEL: Record<ConcernKind, string> = {
@@ -171,7 +181,7 @@ export class AgentMonitor {
     const repeated = [...counts.entries()].find(([, n]) => n >= 3);
     if (repeated) {
       const label = recent.find((s) => s.key === repeated[0])!.label;
-      found.push({ kind: "looping", detail: `It made the same call (${label}) ${repeated[1]} times in its last ${recent.length} steps.` });
+      found.push({ kind: "looping", detail: `It made the same tool call ${repeated[1]} times in its last ${recent.length} steps.`, evidence: `The repeated call: ${label}` });
     }
     let deniedInRow = 0;
     for (let i = t.steps.length - 1; i >= 0 && t.steps[i]!.denied; i--) deniedInRow++;
@@ -278,9 +288,14 @@ export function buildSuperviseMessages(ctx: SuperviseContext, contextWindow: num
     said ? `What the user asked (newest last):\n${fit(said, 800)}` : "",
     `The work you planned: ${fit(ctx.request, 400)}`,
     `The sub-agent: "${ctx.agent.title}". Its task: ${fit(ctx.agent.instructions, 400)}`,
-    `What you noticed: ${ctx.concern.detail}`,
+    // Only the fixed wording is the coordinator's own observation; what the sub-agent did goes in the fence.
+    `What you noticed: ${CONCERN_LABEL[ctx.concern.kind]}. ${ctx.concern.detail}`,
     ctx.notesSent ? `You already sent it ${ctx.notesSent} note(s).` : 'You have not sent it a note yet, so "stop" is not available.',
-    untrustedSection("Its activity (its own thoughts are in it):", `recent steps of sub-agent "${ctx.agent.title}"`, fit(ctx.activity, 1500)),
+    untrustedSection(
+      "Its activity (its own thoughts and tool arguments are in it):",
+      `recent steps of sub-agent "${ctx.agent.title}"`,
+      fit([ctx.concern.evidence, ctx.activity].filter(Boolean).join("\n"), 1500),
+    ),
     `Decide with JSON only. ${DATA_REMINDER}`,
   ];
   return [

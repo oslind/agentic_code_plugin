@@ -843,7 +843,7 @@ export class ChatController {
     const notesSent = s.monitor.notesSent(task.id);
     const decision = await superviseAgent(
       this.host.provider(c.workspaceRoot),
-      { userMessages: userMessagesOf(c.entries), request: run.request, agent: task, concern, activity: s.monitor.describe(task.id), notesSent },
+      { userMessages: userMessagesOf(runScope(c.entries, run.id)), request: run.request, agent: task, concern, activity: s.monitor.describe(task.id), notesSent },
       { signal: s.abort.signal },
     );
     const now = (await this.tasks.load(run.id)).tasks.find((t) => t.id === task.id);
@@ -863,7 +863,7 @@ export class ChatController {
       taskId: task.id,
       type: "coordinator_checkin",
       message: action,
-      data: { concern: concern.kind, detail: concern.detail, note: action === "message" ? note : undefined, thought: decision.thought, thinking: clip(decision.thinking), adjusted },
+      data: { concern: concern.kind, detail: concern.detail, evidence: concern.evidence, note: action === "message" ? note : undefined, thought: decision.thought, thinking: clip(decision.thinking), adjusted },
     });
     if (action === "message") this.inboxes.set(key, [...(this.inboxes.get(key) ?? []), { from: "coordinator", text: note }]);
     this.host.log("info", `Coordinator checked on "${task.title}" (${CONCERN_LABEL[concern.kind]}) and chose "${action}".${adjusted ? ` ${adjusted}` : ""}`);
@@ -883,19 +883,21 @@ export class ChatController {
       const c = await this.conversations.load(conversationId);
       const run = await this.tasks.load(runId);
       const team = this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id);
+      // Only what belongs to this run: earlier, unrelated tasks in the same conversation stay out of reach.
+      const scope = runScope(c.entries, runId);
       let result;
       try {
         result = await answerSubAgent(
           this.host.provider(c.workspaceRoot),
           {
-            userMessages: userMessagesOf(c.entries),
+            userMessages: userMessagesOf(scope),
             request: run.request,
             agent: { title: task.title, instructions: task.instructions, fileScope: task.fileScope, research: run.kind === "research" },
             question,
-            learned: learnedSoFar(c.entries),
+            learned: learnedSoFar(scope),
             briefing: run.briefing,
             team,
-            earlier: earlierAnswers(c.entries),
+            earlier: earlierAnswers(scope),
           },
           { signal },
         );
@@ -1586,9 +1588,38 @@ export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | un
 }
 
 
+const isPrompt = (e: ChatEntry) => e.author === "user" && e.kind !== "direct";
+
+/**
+ * The part of a conversation that belongs to one run, for what the
+ * coordinator may use when a sub-agent of that run asks it something or
+ * when it checks on one. It starts at the user's message that led to the
+ * run, and takes in the message before that only when the coordinator
+ * answered it with a question and no run (a clarifying question, which the
+ * user's next message answers). Earlier, unrelated tasks and chat of the
+ * conversation are left out, so a sub-agent cannot draw them out of the
+ * coordinator. Empty if the run is not in it.
+ */
+export function runScope(entries: ChatEntry[], runId: string): ChatEntry[] {
+  const at = entries.findIndex((e) => e.runId === runId && (e.kind === "plan" || e.kind === "research"));
+  if (at < 0) return [];
+  let start = at;
+  while (start > 0 && !isPrompt(entries[start]!)) start--;
+  for (;;) {
+    let prev = start - 1;
+    while (prev >= 0 && !isPrompt(entries[prev]!)) prev--;
+    if (prev < 0) break;
+    const between = entries.slice(prev, start);
+    const reply = between.filter((e) => e.author === "coordinator").at(-1);
+    if (between.some((e) => e.runId) || !reply?.text.trim().endsWith("?")) break;
+    start = prev;
+  }
+  return entries.slice(start);
+}
+
 /** The user's own messages to the coordinator, oldest first. Direct messages to sub-agents are left out. */
 export function userMessagesOf(entries: ChatEntry[]): string[] {
-  return entries.filter((e) => e.author === "user" && e.kind !== "direct").map((e) => e.text);
+  return entries.filter(isPrompt).map((e) => e.text);
 }
 
 /**

@@ -107,7 +107,8 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
     }
     case "coordinator_checkin": {
       const name = `"${task?.title ?? event.taskId ?? "a sub-agent"}"`;
-      const detail = typeof data.detail === "string" ? data.detail : "";
+      // Shown to the user only; the evidence names the call a sub-agent repeated.
+      const detail = [data.detail, data.evidence].filter((x): x is string => typeof x === "string" && !!x).map((x) => (/[.!?]$/.test(x) ? x : `${x}.`)).join(" ");
       const adjusted = typeof data.adjusted === "string" ? ` (${data.adjusted})` : "";
       const text =
         event.message === "stop"
