@@ -162,6 +162,7 @@ export function activate(context: vscode.ExtensionContext): void {
         maxTasks: c.get<number>("maxTasks", 12),
         maxResearchers: c.get<number>("maxResearchers", 8),
         maxResearchRounds: c.get<number>("maxResearchRounds", 3),
+        checkIns: c.get<number>("checkIns", 2),
       };
     },
     researchLimits: () => {

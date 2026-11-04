@@ -102,8 +102,11 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(system);
 
   const history: ChatMessage[] = [];
-  // Sub-agent starts are shown to the user but would only crowd the coordinator's context.
-  const turns = ctx.entries.filter((e) => (e.author === "user" || e.author === "coordinator") && e.kind !== "spawn");
+  // Sub-agent starts, answers to sub-agents' questions and check-ins are shown to the user but would only
+  // crowd the coordinator's context; what the user decided reaches it through learnedSoFar.
+  const turns = ctx.entries.filter(
+    (e) => (e.author === "user" || e.author === "coordinator") && e.kind !== "spawn" && e.kind !== "consult" && e.kind !== "checkin" && e.tag !== "for a sub-agent",
+  );
   for (let i = turns.length - 1; i >= 0; i--) {
     const e = turns[i]!;
     const msg: ChatMessage = e.author === "user" ? { role: "user", content: e.text } : { role: "assistant", content: e.text };
