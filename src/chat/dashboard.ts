@@ -108,7 +108,8 @@ export function stripMarkdown(text: string): string {
 }
 
 function oneLine(text: string | undefined, max = 140): string {
-  const flat = stripMarkdown(text ?? "").replace(/\s+/g, " ").trim();
+  // Only the start is ever shown, so only the start is cleaned.
+  const flat = stripMarkdown((text ?? "").slice(0, Math.max(2000, max * 8))).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
