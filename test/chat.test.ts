@@ -21,6 +21,9 @@ import { PendingChange, Run } from "../src/state/types";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 import { TaskStore } from "../src/state/taskStore";
 
+/** How long a test waits for background work. Generous, since CI runners can be slow and busy; a passing test returns as soon as the work is done. */
+const WAIT_MS = 10000;
+
 function scripted(replies: string[], contextWindow = 32768): ModelProvider & { requests: ChatRequest[] } {
   const requests: ChatRequest[] = [];
   return {
@@ -805,7 +808,7 @@ describe("ChatController", () => {
   });
   /** Waits until a card of this kind is waiting for the user, then returns it. */
   async function waitForCard(controller: ChatController, kind: string) {
-    for (let i = 0; i < 100; i++) {
+    for (const until = Date.now() + WAIT_MS; Date.now() < until; ) {
       const st = await controller.state();
       const e = st.current?.entries.find((x) => x.kind === kind && st.waiting.includes(x.id));
       if (e) return e;
@@ -942,7 +945,7 @@ describe("ChatController", () => {
 
     /** Waits until no reopened conversation is answering. */
     async function settled(controller: ChatController) {
-      for (let i = 0; i < 200; i++) {
+      for (const until = Date.now() + WAIT_MS; Date.now() < until; ) {
         const agents = (await controller.state()).dashboard?.agents ?? [];
         if (!agents.some((a) => a.followUp === "working" || a.followUp === "ending")) return agents;
         await new Promise((r) => setTimeout(r, 10));
@@ -1080,7 +1083,7 @@ describe("ChatController", () => {
       const edit = await waitForCard(controller, "approval");
       await controller.decide(edit.id, { kind: "deny" });
       let command: ChatEntry | undefined;
-      for (let i = 0; i < 100 && !command; i++) {
+      for (const until = Date.now() + WAIT_MS; Date.now() < until && !command; ) {
         command = (await controller.state()).current!.entries.find((e) => e.kind === "approval" && e.id !== edit.id && !e.decided);
         if (!command) await new Promise((r) => setTimeout(r, 10));
       }
@@ -1120,7 +1123,7 @@ describe("ChatController", () => {
       await controller.messageAgent(agent.runId, agent.taskId, "Anything else?");
       const seen = new Set<string>();
       const nextCard = async () => {
-        for (let i = 0; i < 200; i++) {
+        for (const until = Date.now() + WAIT_MS; Date.now() < until; ) {
           const st = await controller.state();
           const e = st.current!.entries.find((x) => x.kind === "approval" && st.waiting.includes(x.id) && !seen.has(x.id));
           if (e) {
@@ -1295,7 +1298,7 @@ describe("ChatController", () => {
     });
 
     async function until<T>(get: () => T | undefined | Promise<T | undefined>): Promise<T> {
-      for (let i = 0; i < 200; i++) {
+      for (const until = Date.now() + WAIT_MS; Date.now() < until; ) {
         const v = await get();
         if (v) return v;
         await new Promise((r) => setTimeout(r, 10));

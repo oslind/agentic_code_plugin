@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import * as vscode from "vscode";
 import { ChatController, Decision } from "../chat/chatController";
+import { checkLink } from "../chat/links";
 import { PERMISSION_KEYS } from "../config";
 import { TaskStore } from "../state/taskStore";
 
@@ -22,7 +23,8 @@ type FromView =
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
   | { type: "endAgentChat"; runId: string; taskId: string }
   | { type: "setPermission"; key: string; value: boolean }
-  | { type: "editChecks" };
+  | { type: "editChecks" }
+  | { type: "openLink"; url: string };
 
 const RUN_COMMANDS = new Set(["showTaskLog", "retryFailed"]);
 const REVIEW_ACTIONS = new Set(["show", "accept", "reject"]);
@@ -140,6 +142,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "editChecks":
           await this.controller.editChecks();
           return;
+        case "openLink":
+          return this.openLink(m.url);
         case "review":
           if (isId(m.runId) && REVIEW_ACTIONS.has(m.action) && (m.path === undefined || isRelPath(m.path)) && (m.taskId === undefined || isId(m.taskId))) {
             await this.controller.review(m.runId, m.action, m.path, m.taskId);
@@ -158,11 +162,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Opens a link from a model reply only after the user has seen where it really goes: the
+   * link text is written by the model, so the dialog names the host and the full address and
+   * warns about local, private and other unusual destinations.
+   */
+  private async openLink(raw: unknown): Promise<void> {
+    const link = checkLink(raw);
+    if (!link) return;
+    const detail = [
+      `Site: ${link.host}`,
+      `Full address: ${link.url}`,
+      "",
+      "The link comes from a model reply. Its text may not match where it goes.",
+      ...link.warnings.map((w) => `⚠ ${w}`),
+    ].join("\n");
+    const open = "Open in browser";
+    const copy = "Copy address";
+    const pick = await vscode.window.showWarningMessage(link.warnings.length ? "Open this link? Check the address first." : "Open this link?", { modal: true, detail }, open, copy);
+    if (pick === open) {
+      this.output.info(`Opening a link from a reply: ${link.url}`);
+      await vscode.env.openExternal(vscode.Uri.parse(link.url, true));
+    } else if (pick === copy) {
+      await vscode.env.clipboard.writeText(link.url);
+    }
+  }
+
   private html(webview: vscode.Webview, media: vscode.Uri): string {
     const nonce = randomBytes(16).toString("base64");
     const css = webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.css"));
     const js = webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.js"));
-    // Model output is shown as text only; the page cannot load anything but its own files.
+    const md = webview.asWebviewUri(vscode.Uri.joinPath(media, "markdown.js"));
+    const hl = webview.asWebviewUri(vscode.Uri.joinPath(media, "highlight.js"));
+    // Model output is never inserted as HTML (markdown is built as DOM nodes); the page cannot load anything but its own files.
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource}`,
@@ -180,6 +212,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 <div id="app"></div>
+<script nonce="${nonce}" src="${md}"></script>
+<script nonce="${nonce}" src="${hl}"></script>
 <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;

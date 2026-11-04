@@ -1162,3 +1162,220 @@ button.send {
   text-overflow: ellipsis;
   min-width: 0;
 }
+
+/* ---- Markdown in model replies (built by media/markdown.js + chat.js, never as HTML) ---- */
+
+.md {
+  white-space: normal;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p {
+  margin: 0 0 6px;
+}
+
+.md .md-h {
+  margin: 10px 0 4px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.md h1.md-h {
+  font-size: 1.25em;
+}
+
+.md h2.md-h {
+  font-size: 1.15em;
+}
+
+.md h3.md-h {
+  font-size: 1.05em;
+}
+
+.md h4.md-h,
+.md h5.md-h,
+.md h6.md-h {
+  font-size: 1em;
+}
+
+.md ul,
+.md ol {
+  margin: 0 0 6px;
+  padding-left: 20px;
+}
+
+.md li {
+  margin: 2px 0;
+}
+
+.md li > p {
+  margin: 0;
+}
+
+.md li > ul,
+.md li > ol {
+  margin: 2px 0 0;
+}
+
+.md code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.md-codebox {
+  margin: 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
+}
+
+.md-codehead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.md-lang {
+  text-transform: none;
+  font-weight: 600;
+}
+
+.md-copy {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.md-copy:hover {
+  color: var(--vscode-foreground);
+  border-color: var(--border);
+}
+
+.md pre.md-code {
+  margin: 0;
+  padding: 6px 8px;
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.md pre.md-code code {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Token colors, close to the Dark+ and Light+ themes. High contrast themes keep the plain text color. */
+.tok-comment { color: #6a9955; font-style: italic; }
+.tok-string { color: #ce9178; }
+.tok-number { color: #b5cea8; }
+.tok-keyword { color: #c586c0; }
+.tok-literal { color: #569cd6; }
+.tok-type { color: #4ec9b0; }
+.tok-function { color: #dcdcaa; }
+.tok-property { color: #9cdcfe; }
+.tok-variable { color: #9cdcfe; }
+.tok-operator { color: #d4d4d4; }
+.tok-punct { color: #a0a0a0; }
+.tok-tag { color: #569cd6; }
+.tok-attr { color: #9cdcfe; }
+.tok-meta { color: #c586c0; }
+.tok-heading { color: #569cd6; font-weight: 600; }
+.tok-inserted { color: #81b88b; }
+.tok-deleted { color: #e06c75; }
+
+body.vscode-light .tok-comment { color: #008000; }
+body.vscode-light .tok-string { color: #a31515; }
+body.vscode-light .tok-number { color: #098658; }
+body.vscode-light .tok-keyword { color: #af00db; }
+body.vscode-light .tok-literal { color: #0000ff; }
+body.vscode-light .tok-type { color: #267f99; }
+body.vscode-light .tok-function { color: #795e26; }
+body.vscode-light .tok-property,
+body.vscode-light .tok-variable,
+body.vscode-light .tok-attr { color: #001080; }
+body.vscode-light .tok-operator { color: #000000; }
+body.vscode-light .tok-punct { color: #555555; }
+body.vscode-light .tok-tag,
+body.vscode-light .tok-heading { color: #800000; }
+body.vscode-light .tok-meta { color: #af00db; }
+body.vscode-light .tok-inserted { color: #116329; }
+body.vscode-light .tok-deleted { color: #a1260d; }
+
+body.vscode-high-contrast [class^="tok-"],
+body.vscode-high-contrast-light [class^="tok-"] {
+  color: inherit;
+}
+
+.md blockquote {
+  margin: 4px 0 8px;
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+
+.md-table {
+  overflow-x: auto;
+  margin: 4px 0 8px;
+}
+
+.md table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md th {
+  font-weight: 600;
+}
+
+.md .al-center {
+  text-align: center;
+}
+
+.md .al-right {
+  text-align: right;
+}
+
+.md a.md-link {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.md a.md-link:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}

@@ -92,8 +92,24 @@ const FOLLOW_UP_LABEL: Record<FollowUpState, string> = {
   ending: "Updating the coordinator",
 };
 
+/** Markdown marks taken out of one-line previews, where the reply is not rendered. */
+export function stripMarkdown(text: string): string {
+  return text
+    // A code block is only named in a preview; its code does not fit on one line.
+    .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[ \t]*$|(?![\s\S]))/gm, " [code] ")
+    .replace(/^ {0,3}(`{3,}|~{3,}).*$/gm, "")
+    .replace(/^ {0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/^ {0,3}>[ \t]?/gm, "")
+    .replace(/^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+/gm, "")
+    .replace(/^ {0,3}\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/gm, "")
+    .replace(/!?\[([^\]\n]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g, "$2")
+    .replace(/`([^`\n]+)`/g, "$1");
+}
+
 function oneLine(text: string | undefined, max = 140): string {
-  const flat = (text ?? "").replace(/\s+/g, " ").trim();
+  // Only the start is ever shown, so only the start is cleaned.
+  const flat = stripMarkdown((text ?? "").slice(0, Math.max(2000, max * 8))).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
