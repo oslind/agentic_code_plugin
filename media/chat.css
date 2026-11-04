@@ -1232,19 +1232,99 @@ button.send {
   padding: 0 3px;
 }
 
-.md pre.md-code {
+.md-codebox {
   margin: 4px 0 8px;
-  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
-  border-radius: 4px;
+}
+
+.md-codehead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.md-lang {
+  text-transform: none;
+  font-weight: 600;
+}
+
+.md-copy {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.md-copy:hover {
+  color: var(--vscode-foreground);
+  border-color: var(--border);
+}
+
+.md pre.md-code {
+  margin: 0;
+  padding: 6px 8px;
   overflow-x: auto;
   white-space: pre;
+  tab-size: 4;
 }
 
 .md pre.md-code code {
   background: none;
   padding: 0;
   font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Token colors, close to the Dark+ and Light+ themes. High contrast themes keep the plain text color. */
+.tok-comment { color: #6a9955; font-style: italic; }
+.tok-string { color: #ce9178; }
+.tok-number { color: #b5cea8; }
+.tok-keyword { color: #c586c0; }
+.tok-literal { color: #569cd6; }
+.tok-type { color: #4ec9b0; }
+.tok-function { color: #dcdcaa; }
+.tok-property { color: #9cdcfe; }
+.tok-variable { color: #9cdcfe; }
+.tok-operator { color: #d4d4d4; }
+.tok-punct { color: #a0a0a0; }
+.tok-tag { color: #569cd6; }
+.tok-attr { color: #9cdcfe; }
+.tok-meta { color: #c586c0; }
+.tok-heading { color: #569cd6; font-weight: 600; }
+.tok-inserted { color: #81b88b; }
+.tok-deleted { color: #e06c75; }
+
+body.vscode-light .tok-comment { color: #008000; }
+body.vscode-light .tok-string { color: #a31515; }
+body.vscode-light .tok-number { color: #098658; }
+body.vscode-light .tok-keyword { color: #af00db; }
+body.vscode-light .tok-literal { color: #0000ff; }
+body.vscode-light .tok-type { color: #267f99; }
+body.vscode-light .tok-function { color: #795e26; }
+body.vscode-light .tok-property,
+body.vscode-light .tok-variable,
+body.vscode-light .tok-attr { color: #001080; }
+body.vscode-light .tok-operator { color: #000000; }
+body.vscode-light .tok-punct { color: #555555; }
+body.vscode-light .tok-tag,
+body.vscode-light .tok-heading { color: #800000; }
+body.vscode-light .tok-meta { color: #af00db; }
+body.vscode-light .tok-inserted { color: #116329; }
+body.vscode-light .tok-deleted { color: #a1260d; }
+
+body.vscode-high-contrast [class^="tok-"],
+body.vscode-high-contrast-light [class^="tok-"] {
+  color: inherit;
 }
 
 .md blockquote {

@@ -171,6 +171,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const css = webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.css"));
     const js = webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.js"));
     const md = webview.asWebviewUri(vscode.Uri.joinPath(media, "markdown.js"));
+    const hl = webview.asWebviewUri(vscode.Uri.joinPath(media, "highlight.js"));
     // Model output is never inserted as HTML (markdown is built as DOM nodes); the page cannot load anything but its own files.
     const csp = [
       "default-src 'none'",
@@ -190,6 +191,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <body>
 <div id="app"></div>
 <script nonce="${nonce}" src="${md}"></script>
+<script nonce="${nonce}" src="${hl}"></script>
 <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;

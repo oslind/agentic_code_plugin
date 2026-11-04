@@ -385,7 +385,7 @@
       case "hr":
         return el("hr");
       case "code":
-        return el("pre", { class: "md-code", "data-lang": b.lang || undefined }, el("code", {}, b.text));
+        return codeBox(b.text, b.lang);
       case "quote":
         return el("blockquote", {}, b.c.map(mdBlock));
       case "list":
@@ -408,6 +408,41 @@
       default:
         return null;
     }
+  }
+
+  const HL = window.AgenticHighlight;
+
+  /** A code block: a box with the language, a Copy button and colored tokens (each one a text node in a span). */
+  function codeBox(text, lang) {
+    const code = String(text || "");
+    const toks = HL ? HL.tokens(code, lang) : [{ k: null, v: code }];
+    const name = HL ? HL.label(lang) : lang || "";
+    const copy = el("button", { class: "md-copy", title: "Copy the code", "aria-label": "Copy the code" }, "Copy");
+    copy.addEventListener("click", () => {
+      const done = (ok) => {
+        copy.textContent = ok ? "Copied" : "Copy failed";
+        setTimeout(() => (copy.textContent = "Copy"), 1500);
+      };
+      try {
+        navigator.clipboard.writeText(code).then(() => done(true), () => done(false));
+      } catch {
+        done(false);
+      }
+    });
+    return el(
+      "div",
+      { class: "md-codebox" },
+      el("div", { class: "md-codehead" }, el("span", { class: "md-lang" }, name || "code"), el("span", { class: "spacer" }), copy),
+      el(
+        "pre",
+        { class: "md-code" },
+        el(
+          "code",
+          {},
+          toks.map((t) => (t.k && HL.KINDS.includes(t.k) ? el("span", { class: "tok-" + t.k }, t.v) : t.v)),
+        ),
+      ),
+    );
   }
 
   function mdInline(n) {

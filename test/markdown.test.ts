@@ -155,3 +155,61 @@ describe("one-line previews", () => {
     expect(stripMarkdown("snake_case_name and 2 * 3")).toBe("snake_case_name and 2 * 3");
   });
 });
+
+describe("code highlighting", () => {
+  const hl = createRequire(__filename)("../media/highlight.js") as { tokens(code: string, lang?: string): { k: string | null; v: string }[]; label(lang: string): string; KINDS: string[] };
+  const kinds = (code: string, lang?: string) => hl.tokens(code, lang).filter((t) => t.k).map((t) => `${t.k}:${t.v.trim()}`);
+
+  const samples: [string, string][] = [
+    ["ts", 'export function activate(ctx: vscode.ExtensionContext): void {\n  // start\n  const n = 42; const s = `x ${n}`;\n  ctx.subscriptions.push(new Foo("a\\"b"));\n}'],
+    ["py", 'def f(x):\n    """doc"""\n    return x + 1  # one\n@deco\nclass A(B): pass'],
+    ["bash", "$ npm run compile && echo \"done $HOME\" # build\nexport FOO=1\ngit status --short"],
+    ["json", '{"name": "agentic", "n": 1.5, "ok": true, "x": null}'],
+    ["yaml", "name: test\non: [push]\n# c\nkey: 'v'"],
+    ["html", '<div class="a">&amp; <!-- c --><b>x</b></div>'],
+    ["css", ".md a:hover { color: #fff; margin: 2px; }"],
+    ["sql", "SELECT id, name FROM users WHERE id = 'x' -- c"],
+    ["diff", "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new"],
+    ["", "const x = 1;"],
+    ["brainfuck", "+++[>++<-]"],
+    ["ts", "unterminated `template and /* comment and \"string"],
+  ];
+
+  it("always gives back the exact code", () => {
+    for (const [lang, code] of samples) expect(hl.tokens(code, lang).map((t) => t.v).join(""), lang).toBe(code);
+    const weird = "\u0000<script>‮`'\"/*#--@@<!--" + "x".repeat(70000);
+    expect(hl.tokens(weird, "ts").map((t) => t.v).join("")).toBe(weird);
+  });
+
+  it("only uses known token kinds", () => {
+    for (const [lang, code] of samples) for (const t of hl.tokens(code, lang)) expect(t.k === null || hl.KINDS.includes(t.k)).toBe(true);
+  });
+
+  it("colors the usual parts", () => {
+    const ts = kinds(samples[0]![1], "ts");
+    expect(ts).toEqual(expect.arrayContaining(["keyword:export", "keyword:function", "function:activate", "type:ExtensionContext", "comment:// start", "number:42", "keyword:new", "function:push", "property:subscriptions"]));
+    expect(kinds(samples[1]![1], "py")).toEqual(expect.arrayContaining(["keyword:def", "comment:# one", 'string:"""doc"""', "meta:@deco"]));
+    expect(kinds(samples[2]![1], "bash")).toEqual(expect.arrayContaining(["function:npm", "comment:# build", "attr:--short"]));
+    expect(kinds(samples[3]![1], "json")).toEqual(expect.arrayContaining(['property:"name"', 'string:"agentic"', "literal:true", "number:1.5"]));
+    expect(kinds(samples[5]![1], "html")).toEqual(expect.arrayContaining(["tag:div", "attr:class", "comment:<!-- c -->"]));
+    expect(kinds(samples[8]![1], "diff")).toEqual(expect.arrayContaining(["inserted:+new", "deleted:-old"]));
+    expect(kinds(samples[9]![1])).toContain("keyword:const");
+    expect(kinds(samples[10]![1], "brainfuck")).toEqual([]);
+    expect(hl.label("ts")).toBe("TypeScript");
+  });
+
+  it("is used by the page as spans with text, nothing else", () => {
+    const js = readFileSync(path.join(__dirname, "..", "media", "chat.js"), "utf8");
+    const src = readFileSync(path.join(__dirname, "..", "media", "highlight.js"), "utf8");
+    expect(src).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.|eval\(|new Function/);
+    expect(js).toContain('el("span", { class: "tok-" + t.k }, t.v)');
+  });
+});
+
+describe("one-line previews of code", () => {
+  it("name a code block instead of flattening it", async () => {
+    const { stripMarkdown } = await import("../src/chat/dashboard");
+    expect(stripMarkdown("Here it is:\n\n```ts\nconst x = 1;\n```\nDone.").replace(/\s+/g, " ").trim()).toBe("Here it is: [code] Done.");
+    expect(stripMarkdown("Open:\n```\nnever closed").replace(/\s+/g, " ").trim()).toBe("Open: [code]");
+  });
+});
