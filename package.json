@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.4.2",
+  "version": "0.4.5",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -254,6 +254,13 @@
           "minimum": 1,
           "maximum": 10,
           "description": "Most read-only sub-agents the coordinator may send in one research round. How many run at the same time is agentic.maxParallelWorkers."
+        },
+        "agentic.delegation.checkIns": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 5,
+          "description": "How often the coordinator may step in with one sub-agent while it works. Every step is watched without extra model calls; when a sub-agent seems stuck (the same call over and over, steps refused by the rules, many steps without a draft, checks that keep failing), the coordinator looks at it and lets it continue, sends it a note, or stops it (only after a note, and its drafts are kept). 0 turns this off. Sub-agents can always ask the coordinator questions."
         },
         "agentic.delegation.maxResearchRounds": {
           "type": "number",

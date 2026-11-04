@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
+import { untrustedSection } from "../context/untrusted";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
@@ -9,7 +10,7 @@ import { readyTasks, TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
 import { ToolCall } from "../tools/protocol";
 import { WorkspaceSandbox } from "../tools/sandbox";
-import { Worker } from "../worker/worker";
+import { CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 
 export const AGENT_DIR = ".agentic";
 
@@ -37,8 +38,10 @@ export interface OrchestratorOptions {
   approveCommand?: (task: Task, check: CheckConfig) => Promise<boolean>;
   /** Lets a sub-agent ask the user a question. Without it, sub-agents decide on their own. */
   askUser?: (task: Task, question: string) => Promise<string>;
-  /** Messages the user sent directly to a sub-agent. Each call drains them. */
-  inbox?: (taskId: string) => string[];
+  /** Messages the user or the coordinator sent directly to a sub-agent. Each call drains them. */
+  inbox?: (taskId: string) => InboxMessage[];
+  /** Lets a sub-agent ask the coordinator a question. Without it, sub-agents are told the coordinator cannot be reached. */
+  askCoordinator?: (task: Task, question: string, signal: AbortSignal) => Promise<CoordinatorReply>;
   onChange?: () => void;
 }
 
@@ -60,7 +63,7 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges";
+type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges" | "askCoordinator";
 
 /**
  * Runs a planned run to completion, without git. Each sub-agent works on the
@@ -144,12 +147,13 @@ export class Orchestrator {
   private async briefingFor(task: Task): Promise<string | undefined> {
     const run = await this.o.store.load(this.o.runId);
     const parts: string[] = [];
-    if (run.briefing) parts.push(`What the coordinator knows about this project:\n${run.briefing}`);
+    // Briefings and reports were written by models that read project files: data, never instructions.
+    if (run.briefing) parts.push(untrustedSection("What the coordinator knows about this project:", "earlier research and sub-agent reports", run.briefing));
     const reports = task.dependsOn
       .map((id) => run.tasks.find((t) => t.id === id))
       .filter((t): t is Task => !!t && t.status === "done" && !!t.summary)
-      .map((t) => `- ${t.title}: ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
-    if (reports.length) parts.push(`The tasks you build on are done. Their reports:\n${reports.join("\n")}`);
+      .map((t) => `- [report from sub-agent "${t.title}"] ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
+    if (reports.length) parts.push(untrustedSection("The tasks you build on are done. Their reports:", "reports from the tasks you build on", reports.join("\n")));
     return parts.length ? parts.join("\n\n") : undefined;
   }
 
@@ -196,6 +200,7 @@ export class Orchestrator {
         approve: (reason, call, preview) => this.o.approveTool(task, reason, call, preview),
         approveCommand: this.o.approveCommand && ((check) => this.o.approveCommand!(task, check)),
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
+        askCoordinator: this.o.askCoordinator && ((q) => this.o.askCoordinator!(task, q, signal)),
         // A question is usually about the drafts ("is this what you wanted?"), so show them first.
         beforeAsk: async () => void (await this.publishDrafts(task, overlay, published)),
         inbox: this.o.inbox && (() => this.o.inbox!(task.id)),

@@ -610,6 +610,31 @@ code,
   font-size: 12px;
 }
 
+/* A sub-agent's question, quoted above the coordinator's answer to it. */
+.quote {
+  font-size: 12px;
+  color: var(--muted);
+  border-left: 2px solid var(--border);
+  padding: 2px 0 2px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quote::before {
+  content: "Question: ";
+  font-weight: 600;
+}
+
+.msg.kind-consult.from-agent,
+.msg.kind-checkin {
+  font-size: 12px;
+}
+
+.oversight,
+.exchange {
+  overflow-wrap: anywhere;
+}
+
 .decided {
   color: var(--muted);
   font-size: 12px;
@@ -724,7 +749,8 @@ ol.tasks {
 
 .agent-card.state-working,
 .agent-card.state-initializing,
-.agent-card.state-verifying { border-left-color: var(--info); }
+.agent-card.state-verifying,
+.agent-card.state-asking { border-left-color: var(--info); }
 .agent-card.state-completed { border-left-color: var(--success); }
 .agent-card.state-failed { border-left-color: var(--error); }
 .agent-card.state-stopped { border-left-color: var(--warning); }
@@ -794,6 +820,11 @@ ul.mini-files li {
 
 .step.from-user {
   border-left-color: var(--vscode-textLink-foreground);
+}
+
+.step.from-coordinator {
+  border-left-color: var(--info);
+  border-left-style: dashed;
 }
 
 .step.tone-success { border-left-color: var(--success); }

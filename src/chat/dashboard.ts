@@ -28,6 +28,8 @@ export interface AgentCard {
   followUp?: FollowUpState;
   /** Its task ended, so a message reopens the conversation with it. */
   reopenable: boolean;
+  /** Its exchanges with the coordinator: questions it asked, and notes or a stop from the coordinator keeping tabs on it. */
+  coordinator: { questions: number; notes: number; stopped: boolean };
 }
 
 export interface CoordinatorCard {
@@ -35,6 +37,19 @@ export interface CoordinatorCard {
   label: string;
   activity: string;
   thinking?: string;
+  /** How it kept tabs on the sub-agents in this conversation. */
+  oversight: {
+    /** Questions from sub-agents it answered itself. */
+    answered: number;
+    /** Questions it passed on to the user. */
+    askedYou: number;
+    /** Times it looked at a sub-agent that showed a sign of trouble. */
+    checkIns: number;
+    /** Notes it sent to sub-agents. */
+    notes: number;
+    /** Sub-agents it stopped. */
+    stopped: number;
+  };
 }
 
 export interface DashboardView {
@@ -65,6 +80,10 @@ export interface DashboardInput {
   done?: DoneBar;
   /** Reopened conversations with sub-agents whose task ended, by "runId:taskId". */
   followUps?: Record<string, FollowUpState>;
+  /** Sub-agents waiting for the coordinator's answer, by "runId:taskId", with their title. */
+  consulting?: Record<string, string>;
+  /** Sub-agents the coordinator is checking on right now, by "runId:taskId", with their title. */
+  checkingOn?: Record<string, string>;
 }
 
 const FOLLOW_UP_LABEL: Record<FollowUpState, string> = {
@@ -112,6 +131,8 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       const mine = entries.filter((e) => e.runId === runId && e.taskId === t.id && e.author === "agent");
       const latest = mine.at(-1);
       const waitingOnUser = waitingEntries.some((e) => e.runId === runId && e.taskId === t.id);
+      const askingCoordinator = !!input.consulting?.[`${runId}:${t.id}`];
+      const fromCoordinator = entries.filter((e) => e.runId === runId && e.taskId === t.id && e.author === "coordinator" && e.kind === "checkin");
       const followUp = input.followUps?.[`${runId}:${t.id}`];
       const ended = t.status === "done" || t.status === "failed" || t.status === "cancelled";
       // A reopened sub-agent shows as working while it answers, whatever its task's status.
@@ -120,7 +141,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
           ? waitingOnUser
             ? "needs_you"
             : "working"
-          : agentState(t.status, { planStarted: plan.started, hasActivity: mine.length > 0, waitingOnUser });
+          : agentState(t.status, { planStarted: plan.started, hasActivity: mine.length > 0, waitingOnUser, askingCoordinator });
       const changes = plan.changes.filter((c) => c.taskId === t.id);
       const report = last(mine, (e) => e.kind === "report");
       const withThinking = last(mine, (e) => !!e.thinking);
@@ -128,6 +149,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       if (state === "planned") activity = "Waiting for the plan to run";
       else if (state === "queued") activity = "Waiting for a free slot or for the tasks it depends on";
       else if (state === "initializing") activity = "Starting up";
+      else if (state === "asking") activity = `Asked the coordinator: ${oneLine(last(mine, (e) => e.kind === "consult")?.text, 120)}`;
       else if (state === "completed" && report && !followUp) activity = oneLine(report.text);
       else activity = oneLine(latest?.thought || latest?.text) || AGENT_LABEL[state];
       agents.push({
@@ -148,6 +170,11 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         canMessage: t.status === "running" || t.status === "verifying" || (ended && followUp !== "ending" && input.runningRunId !== runId),
         followUp,
         reopenable: ended,
+        coordinator: {
+          questions: mine.filter((e) => e.kind === "consult").length,
+          notes: fromCoordinator.filter((e) => e.tag === "note from coordinator").length,
+          stopped: fromCoordinator.some((e) => e.tag === "stopped by coordinator"),
+        },
       });
     }
   }
@@ -173,10 +200,27 @@ export function buildDashboard(input: DashboardInput): DashboardView {
   const lastCoordinator = last(entries, (e) => e.author === "coordinator" && e.kind !== "spawn");
   const coordinatorThinking = last(entries, (e) => e.author === "coordinator" && !!e.thinking);
   const running = count(isActiveAgent);
+  const consultingNames = Object.values(input.consulting ?? {});
+  const checkingNames = Object.values(input.checkingOn ?? {});
+  const supervising = consultingNames.length
+    ? `Answering a question from ${consultingNames.map((n) => `"${n}"`).join(", ")}`
+    : checkingNames.length
+      ? `Checking on ${checkingNames.map((n) => `"${n}"`).join(", ")}`
+      : running
+        ? `Keeping tabs on ${plural(running, "sub-agent")} and answering their questions`
+        : "Reviewing results and planning next steps";
+  const checkIns = entries.filter((e) => e.author === "coordinator" && e.kind === "checkin");
+  const oversight = {
+    answered: entries.filter((e) => e.author === "coordinator" && e.kind === "consult" && e.tag === "answered").length,
+    askedYou: entries.filter((e) => e.author === "coordinator" && e.kind === "question" && e.tag === "for a sub-agent").length,
+    checkIns: checkIns.length,
+    notes: checkIns.filter((e) => e.tag === "note from coordinator").length,
+    stopped: checkIns.filter((e) => e.tag === "stopped by coordinator").length,
+  };
   const coordinatorActivity: Record<CoordinatorState, string> = {
     idle: oneLine(lastCoordinator?.thought || lastCoordinator?.text) || "Waiting for your request",
     thinking: input.busy ?? "Thinking",
-    supervising: running ? `Supervising ${plural(running, "sub-agent")} and reviewing their reports` : "Reviewing results and planning next steps",
+    supervising,
     needs_you: `Waiting for you: ${plural(waitingEntries.length, "request")} to answer`,
     stopping: "Stopping every sub-agent. Drafts are kept for review.",
     finished: oneLine(lastCoordinator?.thought || lastCoordinator?.text) || "Done with your request",
@@ -189,7 +233,8 @@ export function buildDashboard(input: DashboardInput): DashboardView {
     // Command approvals offer "remember"; file-change approvals do not.
     const isCommand = e.kind === "checks" || (e.kind === "approval" && !!e.rememberable);
     const tab: "overview" | "drafts" | "checks" = isCommand ? "checks" : e.kind === "approval" ? "drafts" : "overview";
-    return { id: e.id, kind: e.kind ?? "message", tab, who: e.agentName ?? "Coordinator", text: oneLine(e.text, 120) };
+    const who = e.author === "coordinator" && e.agentName ? `Coordinator, for "${e.agentName}"` : (e.agentName ?? "Coordinator");
+    return { id: e.id, kind: e.kind ?? "message", tab, who, text: oneLine(e.text, 120) };
   });
 
   const promptPlans = [...promptRuns].map((id) => plans[id]).filter((p): p is PlanView => !!p);
@@ -215,6 +260,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       label: COORDINATOR_LABEL[cState],
       activity: coordinatorActivity[cState],
       thinking: coordinatorThinking?.thinking,
+      oversight,
     },
     agents,
     counts: {
