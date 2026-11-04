@@ -7,7 +7,8 @@ import { TaskStore } from "../state/taskStore";
 /** Messages the webview may send. Anything else is ignored. */
 type FromView =
   | { type: "ready" }
-  | { type: "send"; text: string }
+  | { type: "send"; text: string; attachments?: unknown }
+  | { type: "attach" }
   | { type: "newTask" }
   | { type: "setMode"; mode: "plan" | "act" }
   | { type: "open"; id: string }
@@ -19,6 +20,7 @@ type FromView =
   | { type: "review"; runId: string; action: "show" | "accept" | "reject"; path?: string; taskId?: string }
   | { type: "decide"; entryId: string; decision: unknown }
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
+  | { type: "endAgentChat"; runId: string; taskId: string }
   | { type: "setPermission"; key: string; value: boolean }
   | { type: "editChecks" };
 
@@ -90,8 +92,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "ready":
           return this.push();
         case "send":
-          if (typeof m.text === "string") await this.controller.send(m.text.slice(0, 20000));
+          if (typeof m.text === "string") {
+            const attachments = Array.isArray(m.attachments) ? m.attachments.filter(isRelPath).slice(0, 20) : [];
+            await this.controller.send(m.text.slice(0, 20000), attachments);
+          }
           return;
+        case "attach": {
+          const paths = await this.controller.pickAttachments();
+          void this.view?.webview.postMessage({ type: "attached", paths });
+          return;
+        }
         case "newTask":
           return this.controller.newTask();
         case "setMode":
@@ -118,6 +128,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "messageAgent":
           if (isId(m.runId) && isId(m.taskId) && typeof m.text === "string") await this.controller.messageAgent(m.runId, m.taskId, m.text.slice(0, 4000));
+          return;
+        case "endAgentChat":
+          if (isId(m.runId) && isId(m.taskId)) await this.controller.endAgentChat(m.runId, m.taskId);
           return;
         case "setPermission":
           if ((PERMISSION_KEYS as readonly string[]).includes(m.key) && typeof m.value === "boolean") {

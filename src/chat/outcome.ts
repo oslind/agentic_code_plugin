@@ -30,15 +30,15 @@ export function describeOutcome(run: Run, outcome: RunOutcome, stopped = false):
   });
   const changes = run.changes ?? [];
   const waiting = changes.filter((c) => c.status === "pending").length;
-  const written = changes.filter((c) => c.status === "accepted").length;
+  const accepted = changes.filter((c) => c.status === "accepted").length;
   const rejected = changes.filter((c) => c.status === "rejected").length;
   const next = files.length
     ? [
-        `Changed files: ${files.join(", ")}.`,
+        `Files with drafts: ${files.join(", ")}.`,
         waiting
-          ? `${waiting} change(s) wait for your review in the cards above and under Files changed. Nothing is written to your project until you press Accept.${written ? ` ${written} already written.` : ""}`
-          : `${written} change(s) written to your project.${rejected ? ` ${rejected} rejected.` : ""}`,
+          ? `${waiting} draft(s) wait for your review under Drafts. Nothing is written to your project until you press Accept.${accepted ? ` ${accepted} already accepted and written.` : ""}`
+          : `${accepted} draft(s) accepted and written to your project.${rejected ? ` ${rejected} rejected.` : ""}`,
       ]
-    : ["No files were changed."];
+    : ["No files were drafted."];
   return [head, "", "What the sub-agents did:", ...lines, "", ...next].join("\n");
 }

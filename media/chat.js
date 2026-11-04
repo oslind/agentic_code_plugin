@@ -1,4 +1,5 @@
-// Chat sidebar page. Renders state from the extension and sends user actions back.
+// Chat sidebar page: an orchestration dashboard with Overview, Agents, Drafts and Checks tabs
+// and a prompt fixed at the bottom. It renders state from the extension and sends user actions back.
 // Everything from the model is inserted as text, never as HTML.
 (function () {
   "use strict";
@@ -7,16 +8,20 @@
   const saved = vscode.getState() || {};
   let state = null;
   let draft = typeof saved.draft === "string" ? saved.draft : "";
+  let attachments = Array.isArray(saved.attachments) ? saved.attachments.filter((x) => typeof x === "string") : [];
+  const TABS = ["overview", "agents", "drafts", "checks"];
+  let tab = TABS.includes(saved.tab) ? saved.tab : "overview";
+  /** The sub-agent whose conversation is open in the Agents tab, as "runId:taskId". */
+  let agentView = typeof saved.agentView === "string" ? saved.agentView : null;
+  let filesBy = saved.filesBy === "agent" ? "agent" : "file";
+  // Which collapsible parts are open, so re-rendering does not close them.
+  const open = new Set(Array.isArray(saved.open) ? saved.open : []);
 
-  const STATUS_ICON = {
-    pending: "○",
-    running: "◐",
-    verifying: "⚗",
-    awaiting_approval: "?",
-    done: "✓",
-    failed: "✕",
-    cancelled: "⊘",
-  };
+  function persist() {
+    vscode.setState({ draft, attachments, tab, agentView, filesBy, open: [...open].slice(-80) });
+  }
+
+  // ---- small helpers ----
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -26,7 +31,7 @@
       else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
       else node.setAttribute(k, v === true ? "" : String(v));
     }
-    for (const c of children.flat()) {
+    for (const c of children.flat(Infinity)) {
       if (c === undefined || c === null || c === false) continue;
       node.append(c instanceof Node ? c : document.createTextNode(String(c)));
     }
@@ -37,12 +42,8 @@
     vscode.postMessage(msg);
   }
 
-  function saveDraft(value) {
-    draft = value;
-    persist();
-  }
-
   function timeLabel(iso) {
+    if (!iso) return "";
     const d = new Date(iso);
     const today = new Date();
     return d.toDateString() === today.toDateString()
@@ -54,33 +55,102 @@
     return (p || "").split(/[\\/]/).filter(Boolean).pop() || p;
   }
 
-  // ---- header: mode toggle and conversation switcher ----
+  function baseName(p) {
+    return (p || "").split("/").pop() || p;
+  }
+
+  function dirName(p) {
+    const i = (p || "").lastIndexOf("/");
+    return i > 0 ? p.slice(0, i) : "";
+  }
+
+  function plural(n, one, many) {
+    return `${n} ${n === 1 ? one : many || one + "s"}`;
+  }
+
+  function setTab(t) {
+    tab = t;
+    persist();
+    render();
+    const main = document.getElementById("main");
+    if (main) main.scrollTop = 0;
+  }
+
+  function details(key, label, body, cls) {
+    const d = el("details", { class: cls || "fold", open: open.has(key) }, el("summary", {}, label), body);
+    d.addEventListener("toggle", () => {
+      if (d.open) open.add(key);
+      else open.delete(key);
+      persist();
+    });
+    return d;
+  }
+
+  /** A status pill. Colors come from one table so every view uses the same ones. */
+  function pill(tone, text, title) {
+    return el("span", { class: "pill tone-" + tone, title }, text);
+  }
+
+  // One color per state, used everywhere: gray queued, blue working, green done, red failed, amber stopped, orange waiting on you.
+  const AGENT_TONE = {
+    planned: "muted",
+    queued: "muted",
+    initializing: "info",
+    working: "info",
+    verifying: "info",
+    asking: "info",
+    needs_you: "attention",
+    completed: "success",
+    failed: "error",
+    stopped: "warning",
+  };
+  const AGENT_ICON = { planned: "○", queued: "○", completed: "✓", failed: "✕", stopped: "■", needs_you: "!" };
+  const COORD_TONE = {
+    idle: "muted",
+    thinking: "info",
+    supervising: "info",
+    needs_you: "attention",
+    stopping: "warning",
+    finished: "success",
+    partial: "warning",
+    stopped: "warning",
+    failed: "error",
+  };
+  const DRAFT_TONE = { proposed: "muted", draft: "attention", applied: "success", discarded: "muted" };
+  const DRAFT_LABEL = { proposed: "Proposed", draft: "Draft", applied: "Accepted", discarded: "Rejected" };
+
+  function stateIcon(s) {
+    if (s === "initializing" || s === "working" || s === "verifying" || s === "asking") return el("span", { class: "spinner", "aria-hidden": "true" });
+    return el("span", { class: "state-icon tone-" + (AGENT_TONE[s] || "muted"), "aria-hidden": "true" }, AGENT_ICON[s] || "○");
+  }
+
+  function dash() {
+    return state.dashboard;
+  }
+
+  function allChanges() {
+    const out = [];
+    for (const [runId, plan] of Object.entries(state.plans || {})) {
+      for (const c of plan.changes || []) out.push({ ...c, runId });
+    }
+    return out;
+  }
+
+  function isWaiting(entry) {
+    return state.waiting && state.waiting.includes(entry.id);
+  }
+
+  // ---- header ----
 
   function header() {
-    const mode = state.mode;
-    const toggle = el(
-      "div",
-      { class: "mode-toggle", role: "radiogroup", "aria-label": "Mode" },
-      ["plan", "act"].map((m) =>
-        el(
-          "button",
-          {
-            class: "mode " + (mode === m ? "on" : ""),
-            role: "radio",
-            "aria-checked": mode === m ? "true" : "false",
-            title: m === "plan" ? "Plan: discuss and plan. Nothing runs." : "Act: sub-agents carry out plans.",
-            onclick: () => mode !== m && post({ type: "setMode", mode: m }),
-          },
-          m === "plan" ? "Plan" : "Act",
-        ),
-      ),
-    );
-
+    const d = state.current && dash();
+    const status = d ? pill(COORD_TONE[d.coordinator.state], d.coordinator.label, "Coordinator: " + d.coordinator.activity) : pill("muted", "Ready");
     const select = el(
       "select",
       {
         class: "history",
         title: "Switch conversation",
+        "aria-label": "Conversation",
         disabled: !!state.busy,
         onchange: (e) => {
           const v = e.target.value;
@@ -93,65 +163,167 @@
         el("option", { value: c.id, selected: state.current && state.current.id === c.id }, `${c.title} · ${timeLabel(c.updatedAt)}`),
       ),
     );
-    return el("div", { class: "header" }, toggle, select);
-  }
-
-  // ---- input box (top, as in the sketch) ----
-
-  function inputBox() {
-    const busy = !!state.busy;
-    const ta = el("textarea", {
-      id: "input",
-      rows: "4",
-      placeholder:
-        state.mode === "plan"
-          ? "Describe what you want. Plan mode only discusses and plans. (Enter to send, Shift+Enter for a new line)"
-          : "Tell the coordinator what to do. Sub-agents do the work. (Enter to send, Shift+Enter for a new line)",
-      disabled: busy,
-    });
-    ta.value = draft;
-    ta.addEventListener("input", () => saveDraft(ta.value));
-    ta.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-        e.preventDefault();
-        send(ta);
-      }
-    });
-    const actions = el(
-      "div",
-      { class: "input-actions" },
-      el("span", { class: "hint mode-" + state.mode }, state.mode === "plan" ? "Plan mode" : "Act mode"),
-      el("span", { class: "model", title: "Model used for the next message. Change it in settings (green dot)." }, state.model || ""),
-      el("span", { class: "spacer" }),
-      busy ? stopButton() : el("button", { class: "primary", onclick: () => send(ta) }, "Send"),
+    return el(
+      "header",
+      { class: "top" },
+      el(
+        "div",
+        { class: "top-row" },
+        el("span", { class: "brand" }, "AGENTIC"),
+        status,
+        el("span", { class: "spacer" }),
+        el("button", { class: "icon-btn", title: "New task", "aria-label": "New task", disabled: !!state.busy, onclick: () => post({ type: "newTask" }) }, "+"),
+        el("button", { class: "icon-btn", title: "Settings", "aria-label": "Settings", onclick: () => post({ type: "settings" }) }, "⚙"),
+      ),
+      el("div", { class: "top-row" }, select),
     );
-    return el("div", { class: "input-box" }, ta, actions);
   }
 
-  // Stops the coordinator and every sub-agent. Drafts stay pending for review; nothing is written.
-  function stopButton() {
+  // ---- tabs ----
+
+  function tabs() {
+    const d = dash();
+    const where = (t) => d.attention.filter((a) => a.tab === t).length;
+    const working = d.agents.filter((a) => ["initializing", "working", "verifying", "needs_you"].includes(a.state)).length;
+    const checksWaiting = where("checks");
+    const draftsWaiting = d.drafts.awaiting + where("drafts");
+    const items = [
+      ["overview", "◫", "Overview", where("overview") ? el("span", { class: "badge tone-attention" }, where("overview")) : null],
+      ["agents", "◎", "Agents", working ? el("span", { class: "badge tone-info" }, working) : null],
+      ["drafts", "⧉", "Drafts", draftsWaiting ? el("span", { class: "badge tone-attention" }, draftsWaiting) : null],
+      ["checks", "✓", "Checks", checksWaiting ? el("span", { class: "badge tone-attention" }, checksWaiting) : null],
+    ];
+    return el(
+      "nav",
+      { class: "tabs", role: "tablist" },
+      items.map(([id, icon, label, badge]) =>
+        el(
+          "button",
+          { class: "tab" + (tab === id ? " on" : ""), role: "tab", "aria-selected": tab === id ? "true" : "false", onclick: () => setTab(id) },
+          el("span", { class: "tab-icon", "aria-hidden": "true" }, icon),
+          el("span", { class: "tab-label" }, label),
+          badge,
+        ),
+      ),
+    );
+  }
+
+  // ---- Overview ----
+
+  const KIND_TITLE = { analysis: "Project analysis", changes: "Code changes", chat: "Conversation" };
+
+  function stopAll() {
     const stopping = state.busy === "Stopping…";
     return el(
       "button",
       {
-        class: "stop",
+        class: "stop-all",
         disabled: stopping,
         title: "Stop the coordinator and all sub-agents now (Esc). Drafts are kept for review; nothing is written.",
         onclick: () => post({ type: "cancel" }),
       },
-      stopping ? "Stopping…" : "■ Stop",
+      el("span", { class: "stop-square", "aria-hidden": "true" }),
+      stopping ? "Stopping…" : "Stop all",
     );
   }
 
-  function send(ta) {
-    const text = ta.value.trim();
-    if (!text || state.busy) return;
-    post({ type: "send", text });
-    ta.value = "";
-    saveDraft("");
+  function summaryCard() {
+    const d = dash();
+    const k = d.counts;
+    const busy = !!state.busy;
+    const stat = (n, label, tone) => el("div", { class: "stat" }, el("div", { class: "stat-n tone-" + tone }, n), el("div", { class: "stat-label" }, label));
+    const pct = (n) => (k.total ? (100 * n) / k.total : 0) + "%";
+    const bar = el(
+      "div",
+      { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(k.total), "aria-valuenow": String(k.completed) },
+      el("span", { class: "seg tone-success", style: "width:" + pct(k.completed) }),
+      el("span", { class: "seg tone-error", style: "width:" + pct(k.failed + k.stopped) }),
+      el("span", { class: "seg tone-info", style: "width:" + pct(k.running) }),
+    );
+    const kindPill =
+      d.kind === "analysis"
+        ? pill("muted", "Read-only", "Research sub-agents only read files. Nothing in your project changes.")
+        : d.kind === "changes"
+          ? pill("attention", "Makes drafts", "Sub-agents draft changes. Nothing is written until you accept it under Drafts.")
+          : null;
+    return el(
+      "section",
+      { class: "card summary" },
+      el("div", { class: "card-head" }, el("span", { class: "card-title" }, KIND_TITLE[d.kind]), kindPill, el("span", { class: "spacer" }), busy ? pill("info", "Running") : null),
+      k.total
+        ? [
+            el("div", { class: "stats" }, stat(k.completed, "Completed", "success"), stat(k.running, "Running", "info"), stat(k.queued, "Queued", "muted"), stat(d.drafts.awaiting, "Drafts", d.drafts.awaiting ? "attention" : "muted")),
+            bar,
+            el("div", { class: "muted small row-between" }, el("span", {}, plural(k.total, "task") + " planned"), el("span", {}, [k.failed ? `${k.failed} failed` : "", k.stopped ? `${k.stopped} stopped` : "", `${k.completed} completed`].filter(Boolean).join(" · "))),
+          ]
+        : null,
+      el(
+        "div",
+        { class: "coord-row" },
+        el("span", { class: "coord-name" }, "Coordinator"),
+        pill(COORD_TONE[d.coordinator.state], d.coordinator.label),
+        el("span", { class: "spacer" }),
+        busy ? stopAll() : null,
+      ),
+      el("div", { class: "coord-activity" }, ["thinking", "supervising"].includes(d.coordinator.state) ? el("span", { class: "spinner" }) : null, d.coordinator.activity),
+    );
   }
 
-  // ---- messages ----
+  const DONE_ICON = { finished: "✓", partial: "!", stopped: "■", failed: "✕" };
+  const DONE_TITLE = { finished: "Finished", partial: "Partly done", stopped: "Stopped", failed: "Failed" };
+
+  /** Shown once the coordinator has dealt with the prompt. Finished does not mean the drafts were accepted. */
+  function finishedBanner() {
+    const f = dash().finished;
+    if (!f) return null;
+    const awaiting = dash().drafts.awaiting;
+    return el(
+      "section",
+      { class: "card finished done-" + f.status, role: "status" },
+      el("div", { class: "card-head" }, el("span", { class: "done-icon" }, DONE_ICON[f.status] || "✓"), el("span", { class: "card-title" }, DONE_TITLE[f.status] || "Finished"), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(f.time))),
+      el("div", { class: "finished-text" }, f.text),
+      el(
+        "div",
+        { class: "row-between" },
+        el("span", { class: "muted small" }, f.detail),
+        awaiting ? el("button", { class: "primary", onclick: () => setTab("drafts") }, "Review drafts") : null,
+      ),
+    );
+  }
+
+  /** Cards waiting for the user. Never hidden in another tab without a sign here. */
+  function attentionSection(scope, filter) {
+    const entries = state.current.entries.filter((e) => isWaiting(e) && (!filter || filter(e)));
+    if (entries.length === 0) return null;
+    return el(
+      "section",
+      { class: "attention" },
+      el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Needs you"), pill("attention", String(entries.length))),
+      entries.map((e) => waitingCard(e, scope)),
+    );
+  }
+
+  /** The conversation with the coordinator. Sub-agent steps live on their cards in the Agents tab. */
+  function feedEntry(e) {
+    if (isWaiting(e)) return false;
+    if (e.kind === "spawn" || e.kind === "direct") return false;
+    if (e.author === "agent") return e.kind === "question" || e.kind === "approval" || e.kind === "consult";
+    return true;
+  }
+
+  function overview() {
+    const entries = state.current.entries.filter(feedEntry);
+    return [
+      el("div", { class: "sticky-top" }, summaryCard()),
+      finishedBanner(),
+      attentionSection("ov"),
+      el("section", { class: "feed" }, el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Activity")), entries.map(message)),
+    ];
+  }
+
+  // ---- messages in the activity feed ----
+
+  const STATUS_ICON = { pending: "○", running: "◐", verifying: "◐", awaiting_approval: "!", done: "✓", failed: "✕", cancelled: "■" };
 
   function planCard(entry) {
     const plan = state.plans[entry.runId];
@@ -161,381 +333,528 @@
         "li",
         { class: "task status-" + t.status, title: t.status.replace("_", " ") },
         el("span", { class: "icon" }, STATUS_ICON[t.status] || "○"),
-        el(
-          "div",
-          { class: "task-body" },
-          el("div", { class: "task-title" }, t.title),
-          el(
-            "div",
-            { class: "task-meta" },
-            t.fileScope.length ? t.fileScope.join(", ") : "read-only",
-            t.dependsOn.length ? ` · after ${t.dependsOn.join(", ")}` : "",
-          ),
-        ),
+        el("span", { class: "task-title" }, t.title),
+        el("span", { class: "task-meta", title: t.fileScope.join(", ") }, t.fileScope.length ? plural(t.fileScope.length, "file") : "read-only"),
       ),
     );
     const canRun = plan.kind !== "research" && !plan.started && !state.busy;
     return el(
       "div",
       { class: "plan" },
+      el("div", { class: "plan-head muted small" }, plan.kind === "research" ? `${plural(plan.tasks.length, "read-only question")}` : `${plural(plan.tasks.length, "task")} in ${plural(plan.waves, "wave")}`),
+      el("ol", { class: "tasks" }, rows),
       el(
         "div",
-        { class: "plan-head" },
-        plan.kind === "research"
-          ? `${plan.tasks.length} read-only research question(s)`
-          : `${plan.tasks.length} sub-agent task(s) in ${plan.waves} wave(s)`,
+        { class: "row" },
+        canRun ? el("button", { class: "primary", onclick: () => post({ type: "runPlan", runId: entry.runId }) }, "Run it") : null,
+        plan.started ? el("button", { class: "ghost", onclick: () => setTab("agents") }, "See agents") : null,
       ),
-      el("ol", { class: "tasks" }, rows),
-      canRun
-        ? el(
-            "div",
-            { class: "row" },
-            el(
-              "button",
-              { class: "primary", onclick: () => post({ type: "runPlan", runId: entry.runId }) },
-              "Run it",
-            ),
-          )
-        : null,
     );
   }
 
   function outcomeActions(entry) {
-    const cmd = (command, label, cls, title) =>
-      el("button", { class: cls || "secondary", title, onclick: () => post({ type: "runCommand", command, runId: entry.runId }) }, label);
-    // Older summaries have no outcome details; show the full set for them.
+    const cmd = (command, label, title) => el("button", { class: "ghost", title, onclick: () => post({ type: "runCommand", command, runId: entry.runId }) }, label);
     const o = entry.outcome || { changedFiles: [null], failed: 1 };
+    return el("div", { class: "row" }, o.failed ? cmd("retryFailed", "Retry failed tasks", "Start the failed tasks again; they are told why they failed") : null, cmd("showTaskLog", "Details", "Every step the sub-agents took"));
+  }
+
+  /** Long text is cut to a summary with the rest behind "Show more". */
+  function longText(key, text, cls) {
+    const t = String(text || "");
+    const lines = t.split("\n");
+    if (t.length <= 420 && lines.length <= 8) return el("div", { class: cls || "msg-text" }, t);
+    const short = lines.slice(0, 6).join("\n").slice(0, 400);
+    return el("div", {}, el("div", { class: cls || "msg-text" }, short + "…"), details(key, "Show more", el("div", { class: cls || "msg-text" }, t), "fold more"));
+  }
+
+  function message(entry) {
+    const who = { user: "You", coordinator: "Coordinator", agent: entry.agentName || "Sub-agent", system: "Agentic" }[entry.author];
+    const kind = entry.kind || "message";
+    let label = who;
+    if (kind === "question") label = who + " asks";
+    if (kind === "approval") label = who + " asked for permission";
+    if (kind === "checks") label = "Coordinator · checks";
+    if (kind === "consult") label = entry.author === "agent" ? who + " asks the coordinator" : "Coordinator → " + (entry.agentName || "sub-agent");
+    if (kind === "checkin") label = "Coordinator · checked on " + (entry.agentName || "a sub-agent");
+    if (kind === "question" && entry.author === "coordinator" && entry.agentName) label = "Coordinator asks, for " + entry.agentName;
     return el(
       "div",
-      { class: "row" },
-      o.failed ? cmd("retryFailed", "Retry failed tasks", "secondary", "Start the failed tasks again; they are told why they failed") : null,
-      cmd("showTaskLog", "Details", "secondary", "Every step the sub-agents took"),
+      { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${kind}` },
+      el("div", { class: "msg-head" }, el("span", { class: "who" }, label), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(entry.time))),
+      entry.thought && entry.thought !== entry.text ? el("div", { class: "thought" }, entry.thought) : null,
+      entry.quote ? el("div", { class: "quote" }, entry.quote) : null,
+      // The answer that combines the research reports is what the user asked for, so it is never folded.
+      kind === "answer" ? el("div", { class: "msg-text" }, entry.text) : longText("x:" + entry.id, entry.text),
+      entry.thinking && String(entry.thinking).trim() ? details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking)) : null,
+      kind === "plan" || kind === "research" ? planCard(entry) : null,
+      kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
+      kind === "checks" ? checkList(entry) : null,
+      entry.decided ? el("div", { class: "decided" }, "✓ " + entry.decided) : null,
     );
   }
 
-  // ---- review of pending file changes: nothing is written until Accept ----
+  // ---- Agents ----
 
-  const STATUS_LABEL = { pending: "waiting for you", accepted: "written", rejected: "rejected" };
-
-  function reviewCard(entry) {
-    const plan = state.plans[entry.runId];
-    const rows = plan ? plan.changes.filter((c) => !entry.taskId || c.taskId === entry.taskId) : [];
-    if (rows.length === 0) return el("div", { class: "muted" }, "These changes are no longer saved.");
-    const review = (action, path) => post({ type: "review", runId: entry.runId, action, path, taskId: entry.taskId });
-    const list = el(
-      "ul",
-      { class: "changes" },
-      ...rows.map((c) =>
-        el(
-          "li",
-          { class: "change status-" + c.status },
-          el("div", { class: "change-head" },
-            el("button", { class: "link", title: c.kind === "new" ? "Open the new file" : "Open the side-by-side diff", onclick: () => review("show", c.path) }, c.path),
-            el("span", { class: "tag" }, c.kind === "new" ? "new file" : "edit"),
-            el("span", { class: "muted" }, c.status === "accepted" && c.auto ? "written (auto-approved)" : STATUS_LABEL[c.status]),
-          ),
-          c.note ? el("div", { class: "change-note" }, c.note) : null,
-          c.status === "pending"
-            ? el("div", { class: "row" },
-                el("button", { class: "secondary", onclick: () => review("show", c.path) }, c.kind === "new" ? "Show" : "Show diff"),
-                el("button", { class: "primary", onclick: () => review("accept", c.path) }, c.note ? "Accept anyway" : "Accept"),
-                el("button", { class: "secondary", onclick: () => review("reject", c.path) }, "Reject"),
-              )
-            : null,
-        ),
-      ),
-    );
-    const pending = rows.filter((c) => c.status === "pending").length;
+  function coordinatorCard() {
+    const c = dash().coordinator;
     return el(
       "div",
-      { class: "review" },
-      list,
-      pending > 1
-        ? el("div", { class: "row" },
-            el("button", { class: "primary", onclick: () => review("accept") }, `Accept all ${pending}`),
-            el("button", { class: "secondary", onclick: () => review("reject") }, "Reject all"),
+      { class: "card agent-card coordinator" },
+      el("div", { class: "card-head" }, el("span", { class: "card-title" }, "Coordinator"), el("span", { class: "spacer" }), pill(COORD_TONE[c.state], c.label)),
+      el("div", { class: "muted small" }, "Plans, delegates and reviews results. It can add tasks while sub-agents run."),
+      el("div", { class: "activity" }, ["thinking", "supervising"].includes(c.state) ? el("span", { class: "spinner" }) : null, c.activity),
+      oversightLine(c.oversight),
+      c.thinking ? details("ct", "Latest thinking", el("pre", { class: "thinking-text" }, c.thinking)) : null,
+      el("div", { class: "row end" }, el("button", { class: "ghost", onclick: () => setTab("overview") }, "Open conversation")),
+    );
+  }
+
+  /** How the coordinator kept tabs on its sub-agents, in one line. Nothing when it had nothing to do. */
+  function oversightLine(o) {
+    if (!o) return null;
+    const parts = [
+      o.answered ? plural(o.answered, "question") + " answered" : "",
+      o.askedYou ? plural(o.askedYou, "question") + " passed to you" : "",
+      o.checkIns ? plural(o.checkIns, "check-in") : "",
+      o.notes ? plural(o.notes, "note") + " sent" : "",
+      o.stopped ? plural(o.stopped, "sub-agent") + " stopped" : "",
+    ].filter(Boolean);
+    if (parts.length === 0) return null;
+    return el("div", { class: "muted small oversight", title: "Sub-agents can ask the coordinator questions, and it checks on any that seem stuck" }, "Keeping tabs: " + parts.join(" · "));
+  }
+
+  /** A sub-agent's exchanges with the coordinator, in one line. */
+  function exchangeLine(a) {
+    const x = a.coordinator;
+    if (!x || (!x.questions && !x.notes && !x.stopped)) return null;
+    const parts = [
+      x.questions ? "asked the coordinator " + (x.questions === 1 ? "once" : x.questions + " times") : "",
+      x.notes ? plural(x.notes, "note") + " from the coordinator" : "",
+      x.stopped ? "stopped by the coordinator" : "",
+    ].filter(Boolean);
+    return el("div", { class: "muted small exchange" }, "↔ " + parts.join(" · "));
+  }
+
+  function agentKey(a) {
+    return a.runId + ":" + a.taskId;
+  }
+
+  function scopeText(a) {
+    if (a.fileScope.length === 0) return "Read-only";
+    const names = a.fileScope.map(baseName);
+    return "May change " + (names.length > 2 ? `${names.slice(0, 2).join(", ")} +${names.length - 2}` : names.join(", "));
+  }
+
+  function agentCard(a) {
+    const key = "ag:" + agentKey(a);
+    const expanded = open.has(key);
+    const toggle = () => {
+      if (expanded) open.delete(key);
+      else open.add(key);
+      persist();
+      render();
+    };
+    const mine = allChanges().filter((c) => c.runId === a.runId && c.taskId === a.taskId);
+    return el(
+      "div",
+      { class: "card agent-card state-" + a.state },
+      el(
+        "div",
+        { class: "card-head" },
+        stateIcon(a.state),
+        el("button", { class: "card-title", "aria-expanded": expanded ? "true" : "false", title: expanded ? "Hide details" : "Show thinking, report and files", onclick: toggle }, a.title),
+        el("span", { class: "spacer" }),
+        pill(AGENT_TONE[a.state], a.label),
+      ),
+      el("div", { class: "activity" }, a.activity),
+      exchangeLine(a),
+      el(
+        "div",
+        { class: "row-between" },
+        el(
+          "span",
+          { class: "muted small", title: a.fileScope.join(", ") },
+          a.draftFiles ? `${plural(a.draftFiles, "draft file")}${a.drafts ? ` · ${a.drafts} awaiting review` : ""}` : scopeText(a),
+        ),
+        el("span", {}, el("button", { class: "ghost", title: "Open this sub-agent's conversation", onclick: () => openAgent(a) }, "Chat")),
+      ),
+      expanded
+        ? el(
+            "div",
+            { class: "agent-more" },
+            a.fileScope.length ? el("div", { class: "muted small" }, "May change: ", a.fileScope.join(", ")) : null,
+            a.report ? details("rp:" + agentKey(a), "Report to the coordinator", longText("rpx:" + agentKey(a), a.report)) : null,
+            a.thinking ? details("th:" + agentKey(a), "Latest thinking", el("pre", { class: "thinking-text" }, a.thinking)) : null,
+            mine.length ? el("ul", { class: "mini-files" }, mine.map((c) => miniFile(c))) : null,
           )
         : null,
     );
   }
 
-  // Which collapsible parts are open, so re-rendering does not close them.
-  const open = new Set(Array.isArray(saved.open) ? saved.open : []);
-  let agentsCollapsed = !!saved.agentsCollapsed;
-  let filesCollapsed = !!saved.filesCollapsed;
-  let filesBy = saved.filesBy === "agent" ? "agent" : "file";
-
-  function persist() {
-    vscode.setState({ draft, open: [...open].slice(-50), agentsCollapsed, filesCollapsed, filesBy, permsOpen });
-  }
-
-  function details(key, label, body, cls) {
-    const d = el("details", { class: cls || "thinking", open: open.has(key) }, el("summary", {}, label), body);
-    d.addEventListener("toggle", () => {
-      if (d.open) open.add(key);
-      else open.delete(key);
-      persist();
-    });
-    return d;
-  }
-
-  function thinkingBlock(entry) {
-    if (!entry.thinking || !String(entry.thinking).trim()) return null;
-    return details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking));
-  }
-
-  function thoughtLine(entry) {
-    if (!entry.thought || entry.thought === entry.text) return null;
-    return el("div", { class: "thought" }, el("span", { class: "thought-icon" }, "💭 "), entry.thought);
-  }
-
-  function message(entry) {
-    const who = {
-      user: "You",
-      coordinator: "Coordinator",
-      agent: entry.agentName || "Sub-agent",
-      system: "Agentic",
-    }[entry.author];
-    const kind = entry.kind || "message";
-    let label = entry.author === "agent" ? "↳ " + who : who;
-    if (kind === "spawn") label = "Coordinator ⇢ new sub-agent";
-    if (kind === "report") label = "↩ " + who + " reports to the coordinator";
-    if (kind === "direct") label = "You → " + (entry.agentName || "sub-agent");
-    if (kind === "question") label = "? " + who + " asks you";
-    if (kind === "approval") label = "⚑ " + who + " asks for permission";
-    if (kind === "review") label = "✎ " + who + " proposes changes";
-    if (kind === "checks") label = "Coordinator · checks";
-    const head = el(
-      "div",
-      { class: "msg-head" },
-      el("span", { class: "who" }, label),
-      entry.tag && kind !== "spawn" && kind !== "report" ? el("span", { class: "tag" }, entry.tag) : null,
-      el("span", { class: "time" }, timeLabel(entry.time)),
-    );
-    return el(
-      "div",
-      { class: `msg from-${entry.author} ${entry.tone ? "tone-" + entry.tone : ""} kind-${kind}` },
-      head,
-      thoughtLine(entry),
-      el("div", { class: "msg-text" }, entry.text),
-      entry.preview ? el("pre", { class: "change-preview" }, entry.preview) : null,
-      thinkingBlock(entry),
-      kind === "plan" || kind === "research" ? planCard(entry) : null,
-      kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
-      kind === "checks" ? checksCard(entry) : null,
-      kind === "approval" ? approvalCard(entry) : null,
-      kind === "review" && entry.runId ? reviewCard(entry) : null,
-      kind === "question" ? questionCard(entry) : null,
-    );
-  }
-
-  // ---- live agents panel: who is working and what each one last thought ----
-
-  function lastWhere(entries, pred) {
-    for (let i = entries.length - 1; i >= 0; i--) if (pred(entries[i])) return entries[i];
-    return undefined;
-  }
-
-  function agentRow(key, icon, iconCls, name, status, latest, extra) {
-    const said = latest ? latest.thought || latest.text : "";
-    const row = el(
-      "div",
-      { class: "agent-row" },
-      el("span", { class: "agent-icon " + iconCls }, icon),
-      el("span", { class: "agent-name" }, name),
-      el("span", { class: "agent-status" }, status),
-    );
-    const body = el(
-      "div",
-      { class: "agent-latest" },
-      said ? el("div", { class: "agent-thought" }, said) : el("div", { class: "muted" }, "Nothing yet."),
-      latest && latest.thinking && String(latest.thinking).trim() ? details("a:" + key + ":" + latest.id, "Latest thinking", el("pre", { class: "thinking-text" }, latest.thinking)) : null,
-      extra || null,
-    );
-    return el("div", { class: "agent" }, row, body);
-  }
-
-  // ---- receipt of every file the sub-agents touched in this conversation ----
-
-  /** Every proposed change in this conversation, oldest run first, with the run it belongs to. */
-  function allChanges() {
-    const out = [];
-    for (const [runId, plan] of Object.entries(state.plans || {})) {
-      for (const c of plan.changes || []) out.push({ ...c, runId });
-    }
-    return out;
-  }
-
-  function changeStatusText(c) {
-    return c.status === "accepted" && c.auto ? "written (auto-approved)" : STATUS_LABEL[c.status];
-  }
-
-  /** One file in the receipt: click the name to open it (a new file) or its side-by-side diff (an edit). */
-  function fileRow(c, showAgent) {
-    const review = (action) => post({ type: "review", runId: c.runId, action, path: c.path });
+  function miniFile(c) {
     return el(
       "li",
-      { class: "change status-" + c.status },
-      el("div", { class: "change-head" },
-        el("button", { class: "link", title: c.kind === "new" ? "Open the new file" : "Open the side-by-side diff", onclick: () => review("show") }, c.path),
-        el("span", { class: "tag" }, c.kind === "new" ? "new file" : "edit"),
-        el("span", { class: "file-status" }, changeStatusText(c)),
-        showAgent ? el("span", { class: "muted" }, "by " + c.agentName) : null,
-        c.status === "pending" ? el("button", { class: "mini primary", title: "Write this change to the project", onclick: () => review("accept") }, "Accept") : null,
-        c.status === "pending" ? el("button", { class: "mini secondary", title: "Drop this change", onclick: () => review("reject") }, "Reject") : null,
-      ),
+      {},
+      el("button", { class: "file-link", title: c.path, onclick: () => post({ type: "review", runId: c.runId, action: "show", path: c.path }) }, baseName(c.path)),
+      pill(DRAFT_TONE[c.state], DRAFT_LABEL[c.state]),
     );
   }
 
-  function filesPanel() {
-    const changes = allChanges();
-    if (changes.length === 0) return null;
-    const count = (s) => changes.filter((c) => c.status === s).length;
-    const parts = [
-      count("pending") ? `${count("pending")} waiting` : "",
-      count("accepted") ? `${count("accepted")} written` : "",
-      count("rejected") ? `${count("rejected")} rejected` : "",
-    ].filter(Boolean);
-    const files = new Set(changes.map((c) => c.path)).size;
-    let body = null;
-    if (!filesCollapsed) {
-      let list;
-      if (filesBy === "agent") {
-        const groups = new Map();
-        for (const c of changes) {
-          const key = c.runId + ":" + c.taskId;
-          if (!groups.has(key)) groups.set(key, { name: c.agentName, items: [] });
-          groups.get(key).items.push(c);
-        }
-        list = [...groups.values()].map((g) =>
-          el("div", { class: "file-group" }, el("div", { class: "file-group-name" }, "✎ " + g.name), el("ul", { class: "changes" }, g.items.map((c) => fileRow(c, false)))),
-        );
-      } else {
-        list = el("ul", { class: "changes" }, changes.map((c) => fileRow(c, true)));
-      }
-      const toggle = (by, label) =>
-        el("button", { class: "mini " + (filesBy === by ? "primary" : "secondary"), onclick: () => { filesBy = by; persist(); render(); } }, label);
-      body = el("div", { class: "files-body review" }, el("div", { class: "row" }, toggle("file", "All files"), toggle("agent", "By sub-agent")), list);
+  function openAgent(a) {
+    agentView = agentKey(a);
+    tab = "agents";
+    persist();
+    render();
+    const main = document.getElementById("main");
+    if (main) main.scrollTop = main.scrollHeight;
+  }
+
+  function agentsTab() {
+    const d = dash();
+    const current = agentView && d.agents.find((a) => agentKey(a) === agentView);
+    if (current) return agentConversation(current);
+    const groups = [];
+    for (const a of d.agents) {
+      const g = groups.at(-1);
+      if (g && g.runId === a.runId) g.items.push(a);
+      else groups.push({ runId: a.runId, research: a.research, items: [a] });
     }
-    return el(
-      "div",
-      { class: "agents files" },
-      el(
-        "button",
-        {
-          class: "agents-head",
-          "aria-expanded": filesCollapsed ? "false" : "true",
-          onclick: () => {
-            filesCollapsed = !filesCollapsed;
-            persist();
-            render();
-          },
-        },
-        (filesCollapsed ? "▸ " : "▾ ") + `Files changed · ${files} file(s)${parts.length ? " · " + parts.join(", ") : ""}`,
-      ),
-      body,
-    );
-  }
-
-  /** The files one sub-agent changed, shown under it in the Agents panel. */
-  function agentFiles(runId, taskId) {
-    const plan = state.plans[runId];
-    const mine = plan ? plan.changes.filter((c) => c.taskId === taskId).map((c) => ({ ...c, runId })) : [];
-    if (mine.length === 0) return null;
-    return el("div", { class: "agent-files review" }, el("div", { class: "muted" }, "Files:"), el("ul", { class: "changes" }, mine.map((c) => fileRow(c, false))));
-  }
-
-  function agentsPanel() {
-    const c = state.current;
-    const planEntry = lastWhere(c.entries, (e) => e.kind === "plan" || e.kind === "research");
-    const plan = planEntry && state.plans[planEntry.runId];
-    const coordinatorBusy = !!state.busy && !state.runningRunId;
-    const lastCoordinator =
-      lastWhere(c.entries, (e) => e.author === "coordinator" && (e.thought || e.thinking)) ||
-      lastWhere(c.entries, (e) => e.author === "coordinator" && e.kind !== "spawn");
-    const rows = [
-      agentRow(
-        "coordinator",
-        coordinatorBusy ? "" : "●",
-        coordinatorBusy ? "spinner" : "coordinator-dot",
-        "Coordinator",
-        coordinatorBusy ? "thinking…" : state.runningRunId ? "waiting for sub-agents" : "idle",
-        lastCoordinator,
+    return [
+      el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Agents"), pill("muted", `${d.agents.length + 1} total`)),
+      coordinatorCard(),
+      d.agents.length === 0 ? el("div", { class: "empty" }, "No sub-agents yet. In Act mode the coordinator starts them when your request needs work on the project.") : null,
+      groups.map((g, i) =>
+        el(
+          "div",
+          { class: "agent-group" },
+          groups.length > 1 ? el("div", { class: "group-name" }, (g.research ? "Research" : "Changes") + (i === 0 ? " · latest" : "")) : null,
+          g.items.map(agentCard),
+        ),
       ),
     ];
-    let working = 0;
-    if (plan) {
-      for (const t of plan.tasks) {
-        const active = t.status === "running" || t.status === "verifying";
-        if (active) working++;
-        const latest = lastWhere(c.entries, (e) => e.taskId === t.id && e.runId === planEntry.runId && e.author === "agent");
-        rows.push(
-          agentRow(
-            t.id,
-            active ? "" : STATUS_ICON[t.status] || "○",
-            active ? "spinner" : "status-" + t.status,
-            t.title,
-            t.status === "pending" ? (plan.started ? "waiting" : "not started") : t.status.replace("_", " "),
-            latest,
-            el("div", {}, agentFiles(planEntry.runId, t.id), active ? agentMessageBox(planEntry.runId, t.id) : null),
-          ),
-        );
+  }
+
+  const drafts = {}; // unsent text in inputs, by input id
+
+  /** One sub-agent's own conversation: its steps, its questions and your direct messages to it. */
+  function agentConversation(a) {
+    const entries = state.current.entries.filter((e) => e.runId === a.runId && e.taskId === a.taskId && e.kind !== "spawn");
+    const back = el("button", { class: "ghost back", onclick: () => { agentView = null; persist(); render(); } }, "‹ All agents");
+    const id = `m-${a.runId}-${a.taskId}`;
+    const reopen = a.reopenable && !a.followUp;
+    const placeholder = !a.canMessage
+      ? a.followUp === "ending"
+        ? "It is passing what it learned to the coordinator…"
+        : a.reopenable
+          ? "You can talk with it again once its run is done."
+          : "It has not started yet, so it cannot get messages."
+      : reopen
+        ? "Ask a follow-up question to reopen this conversation (Enter to send)"
+        : "Message this sub-agent (Enter to send)";
+    const input = el("textarea", { id, rows: "2", class: "card-input", placeholder, disabled: !a.canMessage });
+    input.value = drafts[id] || "";
+    input.addEventListener("input", () => (drafts[id] = input.value));
+    const sendIt = () => {
+      if (!input.value.trim()) return;
+      post({ type: "messageAgent", runId: a.runId, taskId: a.taskId, text: input.value.trim() });
+      delete drafts[id];
+      input.value = "";
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        sendIt();
       }
-    }
-    const summary = plan ? `Agents · ${working} of ${plan.tasks.length} sub-agent(s) working` : "Agents";
-    const panel = el(
-      "div",
-      { class: "agents " + (agentsCollapsed ? "collapsed" : "") },
+    });
+    return [
+      el("div", { class: "row" }, back),
       el(
-        "button",
-        {
-          class: "agents-head",
-          "aria-expanded": agentsCollapsed ? "false" : "true",
-          onclick: () => {
-            agentsCollapsed = !agentsCollapsed;
-            persist();
-            render();
-          },
-        },
-        (agentsCollapsed ? "▸ " : "▾ ") + summary,
+        "div",
+        { class: "card agent-card state-" + a.state },
+        el("div", { class: "card-head" }, stateIcon(a.state), el("span", { class: "card-title" }, a.title), el("span", { class: "spacer" }), pill(AGENT_TONE[a.state], a.label)),
+        el("div", { class: "activity" }, a.activity),
+        el("div", { class: "muted small", title: a.fileScope.join(", ") }, a.fileScope.length ? "May change: " + a.fileScope.join(", ") : "Read-only: it may not change any files."),
       ),
-      agentsCollapsed ? null : el("div", { class: "agents-body" }, rows),
+      el(
+        "div",
+        { class: "stream" },
+        entries.length === 0 ? el("div", { class: "empty" }, "Nothing yet.") : null,
+        entries.map((e) => (isWaiting(e) ? waitingCard(e, "ag") : streamItem(e))),
+      ),
+      a.reopenable
+        ? el(
+            "div",
+            { class: "muted small follow-note" },
+            a.followUp
+              ? "This conversation is open again. Edits stay drafts for your review, as usual. When you are done, press End chat (or message the coordinator) and it sends what is new to the coordinator."
+              : "Its task has ended. Send a message to reopen the conversation: it remembers its work and can answer, look again or draft more changes for your review.",
+          )
+        : null,
+      el(
+        "div",
+        { class: "agent-input" },
+        input,
+        el(
+          "div",
+          { class: "row end" },
+          a.followUp
+            ? el(
+                "button",
+                { class: "ghost", disabled: a.followUp === "ending", title: "Close this conversation and send what is new to the coordinator", onclick: () => post({ type: "endAgentChat", runId: a.runId, taskId: a.taskId }) },
+                "End chat and update coordinator",
+              )
+            : null,
+          el("button", { class: "primary", disabled: !a.canMessage, onclick: sendIt }, reopen ? "Reopen and send" : "Send"),
+        ),
+      ),
+    ];
+  }
+
+  function streamItem(e) {
+    const mine = e.author === "user";
+    const coord = e.author === "coordinator";
+    const tag = mine ? "You" : e.kind === "report" ? "Report" : coord ? "Coordinator · " + (e.tag || "message") : e.tag || e.kind || "step";
+    return el(
+      "div",
+      { class: "step" + (mine ? " from-user" : "") + (coord ? " from-coordinator" : "") + (e.tone ? " tone-" + e.tone : "") },
+      el("div", { class: "step-head" }, el("span", { class: "step-tag" }, tag), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(e.time))),
+      e.thought && e.thought !== e.text ? el("div", { class: "thought" }, e.thought) : null,
+      coord && e.quote ? el("div", { class: "quote" }, e.quote) : null,
+      longText("s:" + e.id, e.text),
+      e.thinking ? details("t:" + e.id, "Thinking", el("pre", { class: "thinking-text" }, e.thinking)) : null,
+      e.decided ? el("div", { class: "decided" }, "✓ " + e.decided) : null,
     );
-    return panel;
+  }
+
+  // ---- Drafts ----
+
+  function review(c, action) {
+    post({ type: "review", runId: c.runId, action, path: c.path });
+  }
+
+  function draftCard(c, showAgent) {
+    const isNew = c.kind === "new";
+    const pending = c.state === "draft";
+    const dir = dirName(c.path);
+    return el(
+      "div",
+      { class: "card draft state-" + c.state },
+      el(
+        "div",
+        { class: "card-head" },
+        el("span", { class: "file-icon", "aria-hidden": "true" }, isNew ? "+" : "‹›"),
+        el("button", { class: "file-link card-title", title: (isNew ? "Open the drafted new file: " : "Open the side-by-side diff: ") + c.path, onclick: () => review(c, "show") }, baseName(c.path)),
+        el("span", { class: "spacer" }),
+        pill(DRAFT_TONE[c.state], c.state === "applied" && c.auto ? "Accepted (auto)" : DRAFT_LABEL[c.state]),
+      ),
+      dir ? el("div", { class: "path muted small", title: c.path }, dir + "/") : null,
+      showAgent ? el("div", { class: "muted small" }, (isNew ? "New file · drafted by " : "Edit drafted by ") + c.agentName) : el("div", { class: "muted small" }, isNew ? "New file" : "Edit"),
+      c.note ? el("div", { class: "note tone-warning" }, c.note) : null,
+      el(
+        "div",
+        { class: "row-between" },
+        el("span", { class: "counts" }, c.added ? el("span", { class: "add" }, "+" + c.added) : null, c.removed ? el("span", { class: "del" }, "−" + c.removed) : null),
+        el(
+          "span",
+          { class: "row" },
+          el("button", { class: "ghost", onclick: () => review(c, "show") }, isNew ? "Review file" : "Review diff"),
+          pending ? el("button", { class: "ghost danger", title: "Discard this draft. Nothing is written.", onclick: () => review(c, "reject") }, "Reject") : null,
+          pending ? el("button", { class: "primary", title: "Write this draft to your project", onclick: () => review(c, "accept") }, c.note ? "Accept anyway" : "Accept") : null,
+        ),
+      ),
+    );
+  }
+
+  function draftsTab() {
+    const changes = allChanges();
+    const pending = changes.filter((c) => c.state === "draft");
+    const decided = changes.filter((c) => c.state !== "draft");
+    const seg = (by, label) => el("button", { class: "seg-btn" + (filesBy === by ? " on" : ""), "aria-pressed": filesBy === by ? "true" : "false", onclick: () => { filesBy = by; persist(); render(); } }, label);
+    const list = (items) => {
+      if (filesBy === "file") return items.map((c) => draftCard(c, true));
+      const groups = new Map();
+      for (const c of items) {
+        const key = c.runId + ":" + c.taskId;
+        if (!groups.has(key)) groups.set(key, { name: c.agentName, items: [] });
+        groups.get(key).items.push(c);
+      }
+      return [...groups.values()].map((g) => el("div", { class: "agent-group" }, el("div", { class: "group-name" }, g.name), g.items.map((c) => draftCard(c, false))));
+    };
+    const runsWithPending = [...new Set(pending.map((c) => c.runId))];
+    const all = (action) => runsWithPending.forEach((runId) => post({ type: "review", runId, action }));
+    return [
+      attentionSection("dr", (e) => e.kind === "approval" && !e.rememberable),
+      el(
+        "div",
+        { class: "section-head" },
+        el("span", { class: "section-title" }, "Draft changes"),
+        pending.length ? pill("attention", `${pending.length} awaiting review`) : null,
+      ),
+      el("div", { class: "muted small" }, "Nothing is written to your project until you accept it. Click a file to see its diff."),
+      changes.length ? el("div", { class: "segmented" }, seg("file", "All files"), seg("agent", "By agent")) : null,
+      changes.length === 0 ? el("div", { class: "empty" }, "No drafts yet. When a sub-agent drafts a change, it shows here for review.") : null,
+      list(pending),
+      decided.length ? details("decided", `Decided · ${decided.length}`, el("div", {}, list(decided)), "fold decided-group") : null,
+      pending.length
+        ? el(
+            "div",
+            { class: "sticky-bottom bulk" },
+            el("button", { class: "ghost danger", onclick: () => all("reject") }, "Reject all"),
+            el("span", { class: "spacer" }),
+            el("button", { class: "primary accept-all", onclick: () => all("accept") }, pending.length > 1 ? `Accept all ${pending.length} drafts` : "Accept draft"),
+          )
+        : null,
+    ];
+  }
+
+  // ---- Checks ----
+
+  function checkList(entry) {
+    return (entry.checks || []).length
+      ? el("ul", { class: "check-list" }, entry.checks.map((c) => el("li", {}, el("span", { class: "check-name" }, c.name), el("code", {}, c.command))))
+      : el("div", { class: "muted small" }, "No checks.");
+  }
+
+  const PERMS = [
+    ["editFiles", "File edits", "Sub-agents' drafts are written to your project without review. Ask first: each draft waits for your Accept."],
+    ["sensitiveFiles", "Sensitive files", "The same for package.json files, lockfiles, CI, dev containers, git hooks and .vscode files."],
+    ["commands", "Commands", "Check commands (tests, lint, ...) run without asking. Ask first: each command is shown to you and only runs if you approve it. Commands run as you, so they can read files elsewhere and use the network."],
+  ];
+
+  function permissionsSection() {
+    const p = state.permissions || {};
+    return el(
+      "section",
+      { class: "card perms", id: "permissions" },
+      el("div", { class: "card-head" }, el("span", { class: "card-title" }, "Auto-approval permissions")),
+      PERMS.map(([key, label, help]) =>
+        el(
+          "div",
+          { class: "perm-row", title: help },
+          el("span", { class: "perm-label" }, label),
+          el("span", { class: "spacer" }),
+          el(
+            "span",
+            { class: "segmented small", role: "radiogroup", "aria-label": label },
+            el("button", { class: "seg-btn" + (!p[key] ? " on" : ""), role: "radio", "aria-checked": !p[key] ? "true" : "false", onclick: () => p[key] && post({ type: "setPermission", key, value: false }) }, "Ask first"),
+            el("button", { class: "seg-btn" + (p[key] ? " on warn" : ""), role: "radio", "aria-checked": p[key] ? "true" : "false", onclick: () => !p[key] && post({ type: "setPermission", key, value: true }) }, "Auto-approve"),
+          ),
+        ),
+      ),
+      el("div", { class: "muted small" }, "Saved in your user settings, so it applies to all projects. Agents can never reach files outside this folder, .git or secrets, whatever is set here."),
+    );
+  }
+
+  const CHECKS_EXPLAINED =
+    "Checks are commands such as tests, lint or a type check. After a sub-agent finishes, they run on a scratch copy of the project with its drafts, so your files are not touched. If one fails, the sub-agent gets the error and fixes its work. Each command asks before it runs unless Commands is set to Auto-approve below.";
+
+  function checksTab() {
+    const entries = state.current.entries;
+    const lastChecks = [...entries].reverse().find((e) => e.kind === "checks" && !isWaiting(e));
+    const results = entries.filter((e) => e.author === "agent" && e.tag === "checks").slice(-10).reverse();
+    return [
+      attentionSection("ck", (e) => e.kind === "checks" || (e.kind === "approval" && e.rememberable)),
+      el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Checks for this folder")),
+      // A checks card waiting above already explains them.
+      entries.some((e) => e.kind === "checks" && isWaiting(e)) ? null : el("div", { class: "muted small" }, CHECKS_EXPLAINED),
+      lastChecks
+        ? el(
+            "section",
+            { class: "card" },
+            checkList(lastChecks),
+            lastChecks.decided ? el("div", { class: "muted small" }, lastChecks.decided) : null,
+            el("div", { class: "row end" }, el("button", { class: "ghost", disabled: !!state.busy, onclick: () => post({ type: "editChecks" }) }, "Edit checks")),
+          )
+        : el("div", { class: "empty" }, "No checks chosen yet. When a plan first runs here, you get a list of commands found in the project's files to approve or edit."),
+      results.length
+        ? [
+            el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Recent results")),
+            el(
+              "ul",
+              { class: "results" },
+              results.map((e) => el("li", { class: "tone-" + (e.tone || "info") }, el("span", { class: "result-icon" }, e.tone === "success" ? "✓" : "!"), el("span", { class: "result-text" }, e.agentName + ": " + e.text), el("span", { class: "time" }, timeLabel(e.time)))),
+            ),
+          ]
+        : null,
+      permissionsSection(),
+    ];
   }
 
   // ---- cards that wait for the user ----
-
-  const drafts = {}; // unsent text in card inputs, by input id
-
-  function isWaiting(entry) {
-    return state.waiting && state.waiting.includes(entry.id);
-  }
 
   function decide(entry, decision) {
     post({ type: "decide", entryId: entry.id, decision });
   }
 
-  function decidedLine(entry) {
-    return entry.decided ? el("div", { class: "decided" }, "✓ " + entry.decided) : null;
+  function waitingCard(entry, scope) {
+    const who = entry.agentName || "Coordinator";
+    let title = "Question";
+    let body;
+    if (entry.kind === "checks") {
+      title = "Checks to verify the work";
+      body = [el("div", { class: "muted small" }, CHECKS_EXPLAINED.replace(" below.", ".")), checksForm(entry, scope)];
+    } else if (entry.kind === "approval") {
+      const cmd = /`([^`]+)`/.exec(entry.text || "");
+      title = entry.rememberable ? "Command" : "Permission";
+      body = [
+        cmd ? el("code", { class: "command" }, cmd[1]) : null,
+        longText("ap:" + entry.id, entry.text, "msg-text small"),
+        entry.preview ? el("pre", { class: "change-preview" }, entry.preview) : null,
+        el(
+          "div",
+          { class: "row end wrap" },
+          el("button", { class: "ghost danger", onclick: () => decide(entry, { kind: "deny" }) }, "Reject"),
+          entry.rememberable ? el("button", { class: "ghost", onclick: () => decide(entry, { kind: "allow", remember: true }) }, entry.rememberLabel || "Allow and remember") : null,
+          el("button", { class: "primary", onclick: () => decide(entry, { kind: "allow" }) }, entry.rememberable ? "Approve and run" : "Allow"),
+        ),
+      ];
+    } else {
+      body = [
+        entry.quote ? el("div", { class: "quote" }, entry.quote) : null,
+        longText("q:" + entry.id, entry.text),
+        answerBox(entry, scope),
+      ];
+    }
+    return el(
+      "div",
+      { class: "card waiting" },
+      el("div", { class: "card-head" }, el("span", { class: "card-title" }, title), el("span", { class: "spacer" }), pill("attention", "Approval required")),
+      el(
+        "div",
+        { class: "muted small" },
+        entry.kind === "checks"
+          ? "Proposed by the coordinator"
+          : entry.author === "coordinator" && entry.agentName
+            ? `The coordinator could not answer "${entry.agentName}" from what it knows, so it asks you. Your answer goes to the sub-agent.`
+            : "Requested by " + who,
+      ),
+      body,
+    );
+  }
+
+  function answerBox(entry, scope) {
+    const id = scope + "-q-" + entry.id;
+    const ta = el("textarea", { id, rows: "2", class: "card-input", placeholder: "Your answer (Enter to send)" });
+    ta.value = drafts["q-" + entry.id] || "";
+    const sendIt = () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      delete drafts["q-" + entry.id];
+      decide(entry, { kind: "answer", text });
+    };
+    ta.addEventListener("input", () => (drafts["q-" + entry.id] = ta.value));
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        sendIt();
+      }
+    });
+    return el("div", {}, ta, el("div", { class: "row end" }, el("button", { class: "primary", onclick: sendIt }, "Answer")));
   }
 
   const checkDrafts = {}; // editable check lists, by entry id
 
-  function checksCard(entry) {
-    if (!isWaiting(entry)) {
-      return el(
-        "div",
-        { class: "card" },
-        (entry.checks || []).length
-          ? el("ul", { class: "check-list" }, entry.checks.map((c) => el("li", {}, el("b", {}, c.name), " ", el("code", {}, c.command))))
-          : el("div", { class: "muted" }, "No checks."),
-        decidedLine(entry),
-        entry.decided === "Saved for this folder"
-          ? el("div", { class: "row" }, el("button", { class: "secondary", disabled: !!state.busy, onclick: () => post({ type: "editChecks" }) }, "Change checks"))
-          : null,
-      );
-    }
+  function checksForm(entry, scope) {
     const list = (checkDrafts[entry.id] ||= {
       rows: (entry.checks || []).map((c) => ({ on: true, name: c.name, command: c.command, source: c.source })),
       remember: true,
@@ -545,108 +864,119 @@
         "div",
         { class: "check-row" },
         el("input", { type: "checkbox", checked: r.on, title: "Use this check", onchange: (e) => (r.on = e.target.checked) }),
-        el("input", { id: `cn-${entry.id}-${i}`, class: "check-name", value: r.name, placeholder: "name", oninput: (e) => (r.name = e.target.value) }),
-        el("input", { id: `cc-${entry.id}-${i}`, class: "check-cmd", value: r.command, placeholder: "command", title: r.source ? "Suggested from " + r.source : "", oninput: (e) => (r.command = e.target.value) }),
+        el("div", { class: "check-fields" },
+          el("input", { id: `${scope}-cn-${entry.id}-${i}`, class: "check-name-input", value: r.name, placeholder: "Name, e.g. test", "aria-label": "Check name", oninput: (e) => (r.name = e.target.value) }),
+          el("input", { id: `${scope}-cc-${entry.id}-${i}`, class: "check-cmd", value: r.command, placeholder: "Command, e.g. npm test", "aria-label": "Command to run", title: r.source ? "Suggested from " + r.source : "", oninput: (e) => (r.command = e.target.value) }),
+        ),
         el("button", { class: "icon-btn", title: "Remove", onclick: () => { list.rows.splice(i, 1); render(); } }, "✕"),
       ),
     );
     return el(
       "div",
-      { class: "card" },
+      {},
       rows,
-      el("div", { class: "row" },
-        el("button", { class: "secondary", onclick: () => { list.rows.push({ on: true, name: "", command: "" }); render(); } }, "+ Add check"),
-        el("label", { class: "remember" },
-          el("input", { type: "checkbox", checked: list.remember, onchange: (e) => (list.remember = e.target.checked) }),
-          " Remember for this folder"),
+      el(
+        "div",
+        { class: "row wrap" },
+        el("button", { class: "ghost", onclick: () => { list.rows.push({ on: true, name: "", command: "" }); render(); } }, "+ Add a command"),
+        el("label", { class: "remember" }, el("input", { type: "checkbox", checked: list.remember, onchange: (e) => (list.remember = e.target.checked) }), " Remember for this folder"),
       ),
-      el("div", { class: "row" },
-        el("button", {
-          class: "primary",
-          onclick: () => decide(entry, { kind: "checks", remember: list.remember, checks: list.rows.filter((r) => r.on && r.name.trim() && r.command.trim()).map((r) => ({ name: r.name, command: r.command })) }),
-        }, "Approve checks"),
-        el("button", { class: "secondary", onclick: () => decide(entry, { kind: "skip" }) }, "Run without checks"),
+      el(
+        "div",
+        { class: "row end wrap" },
+        el("button", { class: "ghost", onclick: () => decide(entry, { kind: "skip" }) }, "Run without checks"),
+        el("button", { class: "primary", onclick: () => decide(entry, { kind: "checks", remember: list.remember, checks: list.rows.filter((r) => r.on && r.name.trim() && r.command.trim()).map((r) => ({ name: r.name, command: r.command })) }) }, "Use these checks"),
       ),
     );
   }
 
-  function approvalCard(entry) {
-    if (!isWaiting(entry)) return decidedLine(entry);
-    return el("div", { class: "row" },
-      el("button", { class: "primary", onclick: () => decide(entry, { kind: "allow" }) }, "Allow"),
-      entry.rememberable ? el("button", { class: "secondary", onclick: () => decide(entry, { kind: "allow", remember: true }) }, entry.rememberLabel || "Allow and remember for this folder") : null,
-      el("button", { class: "secondary", onclick: () => decide(entry, { kind: "deny" }) }, "Deny"),
-    );
-  }
+  // ---- prompt, fixed at the bottom ----
 
-  function questionCard(entry) {
-    if (!isWaiting(entry)) return decidedLine(entry);
-    const id = "q-" + entry.id;
-    const ta = el("textarea", { id, rows: "2", class: "card-input", placeholder: "Your answer (Enter to send)" });
-    ta.value = drafts[id] || "";
-    const send = () => {
-      const text = ta.value.trim();
-      if (!text) return;
-      delete drafts[id];
-      decide(entry, { kind: "answer", text });
-    };
-    ta.addEventListener("input", () => (drafts[id] = ta.value));
+  function composer() {
+    const busy = !!state.busy;
+    const plan = state.mode === "plan";
+    const ta = el("textarea", {
+      id: "input",
+      rows: "3",
+      "aria-label": "Message to the coordinator",
+      placeholder: plan ? "Describe what you want. Plan mode only discusses and plans; nothing runs." : "Describe what you want the coordinator to do…",
+      disabled: busy,
+    });
+    ta.value = draft;
+    ta.addEventListener("input", () => {
+      draft = ta.value;
+      persist();
+    });
     ta.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
-        send();
+        send(ta);
       }
     });
-    return el("div", { class: "card" }, ta, el("div", { class: "row" }, el("button", { class: "primary", onclick: send }, "Answer")));
-  }
-
-  // ---- auto-approve switches ----
-
-  let permsOpen = !!saved.permsOpen;
-  const PERMS = [
-    ["editFiles", "Edit files", "Sub-agents' changes are written to your project right away. When off, each change opens for review and is only written when you press Accept."],
-    ["sensitiveFiles", "Sensitive files", "The same for package.json, lockfiles and CI files."],
-    ["commands", "Run commands", "Check commands (tests, lint, ...) run without asking. When off, each command is shown to you first and only runs if you allow it. Commands always run inside the project folder."],
-  ];
-
-  function permissionsBar() {
-    const p = state.permissions || {};
-    const on = PERMS.filter(([k]) => p[k]).map(([, label]) => label);
-    const head = el(
-      "button",
-      { class: "perms-head", "aria-expanded": permsOpen ? "true" : "false", onclick: () => { permsOpen = !permsOpen; persist(); render(); } },
-      (permsOpen ? "▾ " : "▸ ") + "Auto-approve: " + (on.length ? on.join(", ") : "nothing"),
-    );
-    if (!permsOpen) return el("div", { class: "perms" }, head);
-    return el(
-      "div",
-      { class: "perms" },
-      head,
-      PERMS.map(([key, label, help]) =>
-        el("label", { class: "perm", title: help },
-          el("input", { type: "checkbox", checked: !!p[key], onchange: (e) => post({ type: "setPermission", key, value: e.target.checked }) }),
-          " " + label, el("span", { class: "muted" }, " · " + help)),
+    const modeToggle = el(
+      "span",
+      { class: "segmented", role: "radiogroup", "aria-label": "Mode" },
+      ["plan", "act"].map((m) =>
+        el(
+          "button",
+          {
+            class: "seg-btn" + (state.mode === m ? " on" : ""),
+            role: "radio",
+            "aria-checked": state.mode === m ? "true" : "false",
+            title: m === "plan" ? "Plan: discuss and plan. Nothing runs and nothing is drafted." : "Act: sub-agents carry out plans. Changes are drafts until you accept them.",
+            onclick: () => state.mode !== m && post({ type: "setMode", mode: m }),
+          },
+          m === "plan" ? "Plan" : "Act",
+        ),
       ),
-      el("div", { class: "muted perm-note" }, "Agents can never reach files outside this folder, .git or secrets, whatever is ticked."),
+    );
+    const perms = state.permissions || {};
+    const on = PERMS.filter(([k]) => perms[k]).map(([, label]) => label);
+    const chips = attachments.length
+      ? el(
+          "div",
+          { class: "chips" },
+          attachments.map((p) =>
+            el("span", { class: "chip", title: p }, baseName(p), el("button", { class: "chip-x", title: "Remove", "aria-label": "Remove " + p, onclick: () => { attachments = attachments.filter((x) => x !== p); persist(); render(); } }, "×")),
+          ),
+        )
+      : null;
+    return el(
+      "footer",
+      { class: "composer" },
+      chips,
+      ta,
+      el(
+        "div",
+        { class: "composer-row" },
+        modeToggle,
+        el("span", { class: "mode-hint" }, plan ? "Nothing runs" : "Changes are drafts"),
+        el("span", { class: "spacer" }),
+        el("button", { class: "icon-btn", title: "Attach files from this project (their paths go to the coordinator)", "aria-label": "Attach files", disabled: busy, onclick: () => post({ type: "attach" }) }, "📎"),
+        // While busy, Stop all sits in the execution summary above (and Esc works anywhere).
+        busy && !state.current ? stopAll() : el("button", { class: "primary send", disabled: busy, title: busy ? "Wait for the current request, or press Stop all" : "Send (Enter)", onclick: () => send(ta) }, "Send ↑"),
+      ),
+      el(
+        "div",
+        { class: "composer-foot" },
+        el("span", { class: "model", title: state.model }, state.model || ""),
+        el("span", { class: "spacer" }),
+        el("button", { class: "linkish small", title: "Auto-approval permissions", onclick: () => { if (state.current) setTab("checks"); else post({ type: "settings" }); } }, on.length ? "Auto: " + on.join(", ") : "Nothing auto-approved"),
+      ),
     );
   }
 
-  // ---- messaging a sub-agent ----
-
-  function agentMessageBox(runId, taskId) {
-    const id = `m-${runId}-${taskId}`;
-    const input = el("input", { id, class: "card-input", placeholder: "Message this sub-agent (Enter to send)" });
-    input.value = drafts[id] || "";
-    input.addEventListener("input", () => (drafts[id] = input.value));
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && input.value.trim()) {
-        post({ type: "messageAgent", runId, taskId, text: input.value.trim() });
-        delete drafts[id];
-        input.value = "";
-      }
-    });
-    return input;
+  function send(ta) {
+    const text = ta.value.trim();
+    if (!text || state.busy) return;
+    post({ type: "send", text, attachments });
+    ta.value = "";
+    draft = "";
+    attachments = [];
+    persist();
   }
+
+  // ---- welcome ----
 
   function welcome() {
     const recent = state.conversations.slice(0, 5);
@@ -654,34 +984,18 @@
       "div",
       { class: "welcome" },
       el("h2", {}, "New agentic task"),
-      el(
-        "p",
-        { class: "muted" },
-        "The coordinator talks with you and splits the work into small tasks. Every change is made by a sub-agent that may only touch its own files. You review each change in VS Code, and nothing is written to your project until you accept it (unless you turn on Edit files).",
-      ),
-      el(
-        "p",
-        { class: "muted" },
-        el("b", {}, "Plan"),
-        " discusses and proposes a plan. ",
-        el("b", {}, "Act"),
-        " runs it.",
-      ),
+      el("p", { class: "muted" }, "The coordinator talks with you and splits the work into small tasks. Every change is drafted by a sub-agent that may only touch its own files. Nothing is written to your project until you accept the draft."),
+      el("p", { class: "muted" }, el("b", {}, "Plan"), " discusses and proposes a plan. ", el("b", {}, "Act"), " runs it. Questions about the project are answered by read-only research sub-agents."),
       recent.length
         ? el(
             "div",
             { class: "recent" },
-            el("h3", {}, "Recent"),
+            el("div", { class: "section-title" }, "Recent"),
             recent.map((c) =>
               el(
                 "div",
                 { class: "recent-item" },
-                el(
-                  "button",
-                  { class: "link", onclick: () => post({ type: "open", id: c.id }), title: c.workspaceRoot },
-                  el("span", { class: "recent-title" }, c.title),
-                  el("span", { class: "muted" }, ` ${folderName(c.workspaceRoot)} · ${timeLabel(c.updatedAt)}`),
-                ),
+                el("button", { class: "linkish", onclick: () => post({ type: "open", id: c.id }), title: c.workspaceRoot }, el("span", { class: "recent-title" }, c.title), el("span", { class: "muted small" }, ` ${folderName(c.workspaceRoot)} · ${timeLabel(c.updatedAt)}`)),
                 el("button", { class: "icon-btn", title: "Delete conversation", onclick: () => post({ type: "delete", id: c.id }) }, "✕"),
               ),
             ),
@@ -690,39 +1004,33 @@
     );
   }
 
-  function conversation() {
-    const c = state.current;
-    const list = el("div", { class: "messages", id: "messages" }, c.entries.map(message));
-    return el(
-      "div",
-      { class: "conversation" },
-      el("div", { class: "conv-title", title: c.workspaceRoot }, c.title, el("span", { class: "muted" }, ` · ${folderName(c.workspaceRoot)}`)),
-      agentsPanel(),
-      filesPanel(),
-      list,
-    );
+  // ---- render ----
+
+  function body() {
+    if (!state.current || !dash()) return welcome();
+    if (tab === "agents") return agentsTab();
+    if (tab === "drafts") return draftsTab();
+    if (tab === "checks") return checksTab();
+    return overview();
   }
 
   function render() {
     if (!state) return;
-    const old = document.getElementById("messages");
+    const old = document.getElementById("main");
     const nearBottom = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 60;
     const oldScroll = old ? old.scrollTop : 0;
+    const oldTab = old ? old.dataset.tab : null;
     const active = document.activeElement;
     const focusedId = active && active.id ? active.id : null;
     const caret = focusedId && typeof active.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
 
-    const parts = [
-      header(),
-      inputBox(),
-      permissionsBar(),
-      state.busy ? el("div", { class: "busy" }, el("span", { class: "spinner" }), el("span", { class: "spacer" }, state.busy), stopButton()) : null,
-      state.current ? conversation() : welcome(),
-    ];
-    app.replaceChildren(...parts.filter(Boolean));
+    const showTabs = !!(state.current && dash());
+    const main = el("main", { id: "main", class: "main", "data-tab": showTabs ? tab : "welcome" }, body());
+    app.replaceChildren(...[header(), showTabs ? tabs() : null, main, composer()].filter(Boolean));
 
-    const list = document.getElementById("messages");
-    if (list) list.scrollTop = nearBottom ? list.scrollHeight : oldScroll;
+    // The activity feed and agent conversations follow new messages; other tabs keep their place.
+    const follow = (tab === "overview" || (tab === "agents" && agentView)) && nearBottom;
+    if (oldTab === main.dataset.tab) main.scrollTop = follow ? main.scrollHeight : oldScroll;
     const again = focusedId && document.getElementById(focusedId);
     if (again && !again.disabled) {
       again.focus();
@@ -730,9 +1038,9 @@
     }
   }
 
-  // Esc stops the work, like the Stop button.
+  // Esc stops the work, like Stop all.
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && state.busy && state.busy !== "Stopping…" && !e.defaultPrevented) {
+    if (e.key === "Escape" && state && state.busy && state.busy !== "Stopping…" && !e.defaultPrevented) {
       e.preventDefault();
       post({ type: "cancel" });
     }
@@ -741,10 +1049,21 @@
   window.addEventListener("message", (event) => {
     const msg = event.data;
     if (msg && msg.type === "state") {
+      const before = state && state.current ? state.current.id : null;
       state = msg.state;
+      // Another conversation: start on its Overview.
+      if (before && (!state.current || state.current.id !== before)) {
+        tab = "overview";
+        agentView = null;
+        persist();
+      }
       render();
     } else if (msg && msg.type === "focusInput") {
       document.getElementById("input")?.focus();
+    } else if (msg && msg.type === "attached" && Array.isArray(msg.paths)) {
+      attachments = [...new Set([...attachments, ...msg.paths.filter((p) => typeof p === "string")])].slice(0, 20);
+      persist();
+      render();
     }
   });
 

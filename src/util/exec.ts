@@ -71,6 +71,45 @@ export function exec(command: string, args: string[], options: ExecOptions): Pro
   });
 }
 
+/**
+ * Splits a simple command line such as `npm test` or `pytest -q "tests/a b.py"`
+ * into a program and its arguments, so it can run without a shell. Returns
+ * undefined when the line uses anything only a shell understands (pipes,
+ * `&&`, redirects, variables, globs, `VAR=x` prefixes, backslashes); such
+ * commands still need a shell.
+ */
+export function splitCommand(command: string): string[] | undefined {
+  const args: string[] = [];
+  let current = "";
+  let inWord = false;
+  let quote: "'" | '"' | undefined;
+  for (const ch of command.trim()) {
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      else if (quote === '"' && /[$`\\!]/.test(ch)) return undefined;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inWord = true;
+    } else if (/\s/.test(ch)) {
+      if (inWord) args.push(current);
+      current = "";
+      inWord = false;
+    } else if (/[|&;<>()$`*?[\]{}~!#\\\r\n]/.test(ch)) {
+      return undefined;
+    } else {
+      current += ch;
+      inWord = true;
+    }
+  }
+  if (quote) return undefined;
+  if (inWord) args.push(current);
+  if (args.length === 0 || args[0]!.includes("=")) return undefined;
+  return args;
+}
+
 function abortError(): Error {
   const err = new Error("The command was stopped.");
   err.name = "AbortError";

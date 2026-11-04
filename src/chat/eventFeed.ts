@@ -65,11 +65,70 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       // Whitespace-only thinking (some local models send it) would show as an empty box.
       const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
       const thought = typeof data.thought === "string" ? short(data.thought) : "";
+      if (event.message === "ask_coordinator") {
+        return agent({ kind: "consult", text: String(call?.question ?? ""), tag: "asked the coordinator", thought: thought || undefined, thinking });
+      }
       if (event.message === "finish") {
         return agent({ kind: "report", text: String(call?.summary ?? "Finished."), tag: "report to coordinator", thought: thought || undefined, thinking });
       }
       const what = target(call);
       return agent({ text: thought || `${event.message} ${what}`.trim(), thought: thought || undefined, thinking, tag: what ? `${event.message} ${what}` : event.message });
+    }
+    case "followup_opened":
+      return agent({
+        text:
+          event.message === "with history"
+            ? "Reopened. I remember my task and what I did, and I'm answering your message."
+            : "Reopened. My earlier conversation was not saved, so I'm going by my report and the steps shown here.",
+        tag: "reopened",
+      });
+    case "followup_reply": {
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
+      const thought = typeof data.thought === "string" ? short(data.thought) : "";
+      return agent({ text: event.message, tag: "reply", thought: thought || undefined, thinking });
+    }
+    case "coordinator_answer": {
+      // The user's own answer is already on the question card.
+      if (data.from === "user") return undefined;
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
+      return {
+        author: "coordinator",
+        kind: "consult",
+        runId: event.runId,
+        taskId: event.taskId,
+        agentName: task?.title ?? event.taskId,
+        tag: data.failed ? "could not answer" : "answered",
+        tone: data.failed ? "warning" : undefined,
+        text: event.message,
+        thought: typeof data.thought === "string" ? short(data.thought) : undefined,
+        thinking,
+        quote: typeof data.question === "string" ? data.question : undefined,
+      };
+    }
+    case "coordinator_checkin": {
+      const name = `"${task?.title ?? event.taskId ?? "a sub-agent"}"`;
+      // Shown to the user only; the evidence names the call a sub-agent repeated.
+      const detail = [data.detail, data.evidence].filter((x): x is string => typeof x === "string" && !!x).map((x) => (/[.!?]$/.test(x) ? x : `${x}.`)).join(" ");
+      const adjusted = typeof data.adjusted === "string" ? ` (${data.adjusted})` : "";
+      const text =
+        event.message === "stop"
+          ? `Stopped ${name}. ${detail} Its drafts are kept for your review, and you can retry the task.`
+          : event.message === "message"
+            ? `Checked on ${name}. ${detail} I sent it a note: ${String(data.note ?? "")}${adjusted}`
+            : `Checked on ${name}. ${detail} It looks fine, so I let it continue.${adjusted}`;
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
+      return {
+        author: "coordinator",
+        kind: "checkin",
+        runId: event.runId,
+        taskId: event.taskId,
+        agentName: task?.title ?? event.taskId,
+        tag: event.message === "stop" ? "stopped by coordinator" : event.message === "message" ? "note from coordinator" : "check-in",
+        tone: event.message === "stop" ? "warning" : "info",
+        text,
+        thought: typeof data.thought === "string" ? short(data.thought) : undefined,
+        thinking,
+      };
     }
     case "denied":
       return agent({ text: `Blocked: ${short(event.message)}`, tag: "policy", tone: "warning" });
@@ -89,16 +148,16 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       const kept = Array.isArray(data.kept) ? (data.kept as string[]) : [];
       return agent({
         text: kept.length
-          ? `Stopped. Nothing was written to your project. My drafts of ${kept.join(", ")} are kept: review them under Files changed, and Accept or Reject as usual.`
+          ? `Stopped. Nothing was written to your project. My drafts of ${kept.join(", ")} are kept: review them under Drafts, and Accept or Reject as usual.`
           : "Stopped. Nothing was written to your project.",
         tag: "stopped",
         tone: "warning",
       });
     }
     case "change_accepted":
-      return { author: "system", text: `Wrote ${event.message} to your project.`, tone: "success" };
+      return { author: "system", text: `Accepted the draft of ${event.message} and wrote it to your project.`, tone: "success" };
     case "change_rejected":
-      return { author: "system", text: `Rejected the change to ${event.message}. Nothing was written.` };
+      return { author: "system", text: `Rejected the draft of ${event.message}. Nothing was written.` };
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

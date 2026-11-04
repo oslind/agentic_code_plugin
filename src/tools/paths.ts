@@ -1,4 +1,5 @@
 import * as path from "path";
+import { promises as fs } from "fs";
 import picomatch from "picomatch";
 
 /**
@@ -17,8 +18,8 @@ export function normalizeWorkspacePath(p: string): string | undefined {
   return normal.replace(/\/+$/, "");
 }
 
-export function matchesAny(file: string, globs: string[]): boolean {
-  return globs.length > 0 && picomatch(globs, { dot: true })(file);
+export function matchesAny(file: string, globs: string[], options: { nocase?: boolean } = {}): boolean {
+  return globs.length > 0 && picomatch(globs, { dot: true, nocase: options.nocase ?? false })(file);
 }
 
 /** The literal directory prefix of a glob, up to its first wildcard segment. */
@@ -50,4 +51,20 @@ function globsOverlap(a: string, b: string): boolean {
   if (bLiteral) return matchesAny(b, [a]);
   // Two wildcards: they can meet if one fixed directory contains the other.
   return pa === "" || pb === "" || pa === pb || pa.startsWith(pb + "/") || pb.startsWith(pa + "/");
+}
+
+/**
+ * Paths of picked files relative to a folder, for attaching to a prompt.
+ * Links are followed first, so a link inside the folder that points outside
+ * is dropped like any other file outside it.
+ */
+export async function relativeInside(realRoot: string, files: string[], realpath: (p: string) => Promise<string> = (p) => fs.realpath(p)): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of files) {
+    const real = await realpath(f).catch(() => undefined);
+    if (!real) continue;
+    const rel = normalizeWorkspacePath(path.relative(realRoot, real));
+    if (rel) out.push(rel);
+  }
+  return [...new Set(out)];
 }

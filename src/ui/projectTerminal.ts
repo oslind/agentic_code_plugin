@@ -1,3 +1,4 @@
+import { realpathSync } from "fs";
 import * as vscode from "vscode";
 import { CommandTerminals, ScreenEvents, TerminalScreen } from "../checks/commandTerminal";
 
@@ -49,7 +50,13 @@ function openScreen(name: string, projectRoot: string, events: ScreenEvents): Te
 export class ProjectTerminals implements vscode.Disposable {
   private readonly byRoot = new Map<string, CommandTerminals>();
 
-  for(projectRoot: string): CommandTerminals {
+  for(folder: string): CommandTerminals {
+    let projectRoot = folder;
+    try {
+      projectRoot = realpathSync(folder);
+    } catch {
+      // Not on disk any more; show paths as given.
+    }
     let t = this.byRoot.get(projectRoot);
     if (!t) {
       const label = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 1 ? `Agentic Code: ${projectRoot.split(/[\\/]/).pop()}` : "Agentic Code";
