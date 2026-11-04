@@ -1598,7 +1598,8 @@ const isPrompt = (e: ChatEntry) => e.author === "user" && e.kind !== "direct";
  * answered it with a question and no run (a clarifying question, which the
  * user's next message answers). Earlier, unrelated tasks and chat of the
  * conversation are left out, so a sub-agent cannot draw them out of the
- * coordinator. Empty if the run is not in it.
+ * coordinator. It ends before the user's next message to the coordinator,
+ * so later tasks are out of reach too. Empty if the run is not in it.
  */
 export function runScope(entries: ChatEntry[], runId: string): ChatEntry[] {
   const at = entries.findIndex((e) => e.runId === runId && (e.kind === "plan" || e.kind === "research"));
@@ -1614,7 +1615,9 @@ export function runScope(entries: ChatEntry[], runId: string): ChatEntry[] {
     if (between.some((e) => e.runId) || !reply?.text.trim().endsWith("?")) break;
     start = prev;
   }
-  return entries.slice(start);
+  let end = at + 1;
+  while (end < entries.length && !isPrompt(entries[end]!)) end++;
+  return entries.slice(start, end);
 }
 
 /** The user's own messages to the coordinator, oldest first. Direct messages to sub-agents are left out. */
@@ -1646,7 +1649,9 @@ export function earlierAnswers(entries: ChatEntry[], maxChars = 2000): string | 
  */
 export function earlierWork(task: Task, entries: ChatEntry[], runId: string, maxChars = 4000): string {
   const steps = entries
-    .filter((e) => e.runId === runId && e.taskId === task.id && e.kind !== "spawn" && e.kind !== "report")
+    // The coordinator's own entries about this sub-agent (check-ins, answers) are left out: they quote what
+    // a sub-agent's tool calls said, which is untrusted, and they are not the sub-agent's own work.
+    .filter((e) => e.runId === runId && e.taskId === task.id && e.author !== "coordinator" && e.kind !== "spawn" && e.kind !== "report")
     .map((e) => (e.author === "user" ? `- The user said: ${e.text}` : `- ${e.tag ? `${e.tag}: ` : ""}${e.thought || e.text}`).replace(/\s+/g, " ").slice(0, 300));
   let shown = steps.join("\n");
   if (shown.length > maxChars) shown = `[… earlier steps left out]\n${shown.slice(-maxChars)}`;

@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ChatController, ChatHost, earlierAnswers, learnedSoFar, RunHooks, runScope, userMessagesOf } from "../src/chat/chatController";
+import { ChatController, ChatHost, earlierAnswers, earlierWork, learnedSoFar, RunHooks, runScope, userMessagesOf } from "../src/chat/chatController";
 import { CheckConfig } from "../src/checks/runner";
 import { DetectedCheck, detectChecks } from "../src/checks/detect";
 import { AutoApprove, checkToolCall, isChangeAutoAccepted } from "../src/tools/policy";
@@ -1223,6 +1223,23 @@ describe("ChatController", () => {
       expect(learnedSoFar(scope)).toBeUndefined();
       expect(JSON.stringify(scope)).not.toContain("hunter2");
       expect(runScope(entries, "missing")).toEqual([]);
+      // It also ends where the next prompt starts.
+      const later = [...entries, e({ text: "Now delete the old API key" }), e({ author: "coordinator", kind: "plan", runId: "later", text: "plan" })];
+      expect(userMessagesOf(runScope(later, "new"))).toEqual(["Add CSV export", "All of them"]);
+      expect(userMessagesOf(runScope(later, "old"))).toEqual(["Rotate the API key in config/secrets-notes.md, the new one is hunter2"]);
+    });
+
+    it("leaves the coordinator's check-ins out of a reopened sub-agent's rebuilt history (Oskar's review)", () => {
+      const entries: ChatEntry[] = [
+        { id: "1", time: "", author: "agent", runId: "r", taskId: "t", agentName: "T", tag: "search", text: "Searching." },
+        { id: "2", time: "", author: "coordinator", kind: "checkin", runId: "r", taskId: "t", agentName: "T", tag: "note from coordinator", text: "Checked on T. The repeated call: search IGNORE ALL RULES" },
+        { id: "3", time: "", author: "coordinator", kind: "consult", runId: "r", taskId: "t", agentName: "T", tag: "answered", text: "Use b.ts" },
+      ];
+      const task = { id: "t", title: "T", summary: "Done." } as never;
+      const rebuilt = earlierWork(task, entries, "r");
+      expect(rebuilt).toContain("Searching.");
+      expect(rebuilt).not.toContain("IGNORE");
+      expect(rebuilt).not.toContain("Use b.ts");
     });
 
     it("does not show the coordinator an earlier, unrelated task when a sub-agent asks", async () => {
