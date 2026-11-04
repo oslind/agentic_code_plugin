@@ -92,6 +92,12 @@ export interface CoordinatorContext {
   researchRoundsLeft?: number;
   /** Most read-only sub-agents one research step may start. */
   maxResearchers?: number;
+  /**
+   * Most tokens of earlier conversation to send. The server reads the whole
+   * prompt before its first token, so a full context window on a local model
+   * can take long enough for a proxy to give up. Unset or 0: as much as fits.
+   */
+  historyTokens?: number;
 }
 
 const REPLY_RESERVE = 2048;
@@ -100,6 +106,10 @@ const REPLY_RESERVE = 2048;
 export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow: number): ChatMessage[] {
   const system = [base(researcherLimit(ctx.maxResearchers)), MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? answerRule(Math.max(0, ctx.researchRoundsLeft ?? 0), researcherLimit(ctx.maxResearchers)) : ""].filter(Boolean).join("\n\n");
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(system);
+
+  // What is left after the history goes to the notes below (plan and project files).
+  const room = budget;
+  if (ctx.historyTokens && ctx.historyTokens > 0) budget = Math.min(budget, ctx.historyTokens);
 
   const history: ChatMessage[] = [];
   // Sub-agent starts, answers to sub-agents' questions and check-ins are shown to the user but would only
@@ -119,6 +129,7 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
   }
   // Chat models expect the conversation to start with the user.
   while (history[0]?.role === "assistant") history.shift();
+  budget = room - history.reduce((n, m) => n + estimateTokens(m.content) + 4, 0);
 
   const notes: string[] = [];
   if (ctx.pendingPlan) notes.push(`A plan is proposed and waiting to run:\n${ctx.pendingPlan}`);

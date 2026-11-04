@@ -36,6 +36,9 @@ export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
     temperature: c.get<number>("temperature", 0.2),
     requestTimeoutMs: c.get<number>("requestTimeoutMs", 300000),
     structuredOutput: c.get<StructuredOutputMode>("structuredOutput", "json_schema"),
+    stream: c.get<boolean>("stream", true),
+    maxConcurrentRequests: Math.max(1, Math.min(16, c.get<number>("maxConcurrentRequests", 1))),
+    maxOutputTokens: Math.max(0, c.get<number>("maxOutputTokens", 0)),
   };
 }
 

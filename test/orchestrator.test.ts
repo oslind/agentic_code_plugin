@@ -413,9 +413,34 @@ describe("RetryingProvider", () => {
         return { content: "ok" };
       },
     };
-    expect((await new RetryingProvider(inner, 3, 1).chat({ messages: [] })).content).toBe("ok");
+    expect((await new RetryingProvider(inner, 3, 1, undefined, 1).chat({ messages: [] })).content).toBe("ok");
     const bad: ModelProvider = { ...inner, chat: async () => Promise.reject(new ProviderError("bad", 400, false)) };
     await expect(new RetryingProvider(bad, 3, 1).chat({ messages: [] })).rejects.toThrow("bad");
+  });
+
+  it("waits longer after a gateway error and honours Retry-After", async () => {
+    const errors = [new ProviderError("gateway", 504, true), new ProviderError("slow down", 429, true, false, 40)];
+    const inner: ModelProvider = {
+      model: "m",
+      contextWindow: 1,
+      chat: async () => {
+        const e = errors.shift();
+        if (e) throw e;
+        return { content: "ok" };
+      },
+    };
+    const delays: number[] = [];
+    const res = await new RetryingProvider(inner, 3, 1, (_n, ms) => delays.push(ms), 10).chat({ messages: [] });
+    expect(res.content).toBe("ok");
+    // 504: gateway delay (10 ms). 429 on the second attempt: max(Retry-After 40 ms, 1 ms * 2).
+    expect(delays).toEqual([10, 40]);
+  });
+
+  it("does not retry the extension's own timeout", async () => {
+    let n = 0;
+    const inner: ModelProvider = { model: "m", contextWindow: 1, chat: async () => (n++, Promise.reject(new ProviderError("did not finish", undefined, false))) };
+    await expect(new RetryingProvider(inner, 3, 1).chat({ messages: [] })).rejects.toThrow("did not finish");
+    expect(n).toBe(1);
   });
 });
 
