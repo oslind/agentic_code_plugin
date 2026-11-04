@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   isTransientStreamError,
   Limiter,
+  MAX_ERROR_BYTES,
   MAX_EVENT_CHARS,
   MAX_REPLY_CHARS,
+  MAX_STREAM_BYTES,
   OpenAICompatibleConfig,
   OpenAICompatibleProvider,
   ProviderError,
@@ -225,6 +227,7 @@ describe("stream errors and size limits", () => {
   it("retries only overload, rate limits and timeouts", () => {
     expect(isTransientStreamError({ code: 503, message: "x" })).toBe(true);
     expect(isTransientStreamError({ code: 429 })).toBe(true);
+    expect(isTransientStreamError({ code: 600, message: "x" })).toBe(false);
     expect(isTransientStreamError({ code: 400, message: "timeout" })).toBe(false);
     expect(isTransientStreamError({ type: "rate_limit_error" })).toBe(true);
     expect(isTransientStreamError("request timed out")).toBe(true);
@@ -274,5 +277,40 @@ describe("stream errors and size limits", () => {
     const fn = (async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
     const err = await new OpenAICompatibleProvider(base, fn).chat({ messages: [] }).catch((e) => e as ProviderError);
     expect(err.message).toMatch(/more than 4 million characters/);
+  });
+
+  it("counts everything the server sends, so endless heartbeats or comments are stopped", async () => {
+    const { state, response } = endless(`: heartbeat ${"h".repeat(60_000)}\n\n`);
+    const err = await new OpenAICompatibleProvider(base, (async () => response) as unknown as typeof fetch).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(new RegExp(`more than ${MAX_STREAM_BYTES / 1_000_000} MB`));
+    expect(err.retryable).toBe(false);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("limits one event made of many lines, not only each line", async () => {
+    const { state, response } = endless(`data: ${"d".repeat(10_000)}\n`);
+    const err = await new OpenAICompatibleProvider(base, (async () => response) as unknown as typeof fetch).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.message).toMatch(/one event longer than/);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("reads only the start of a huge error reply and stops the download", async () => {
+    const state = { cancelled: false, sent: 0 };
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        state.sent += 16_000;
+        c.enqueue(new TextEncoder().encode("e".repeat(16_000)));
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    });
+    const fn = (async () => new Response(body, { status: 500 })) as unknown as typeof fetch;
+    const err = await new OpenAICompatibleProvider(base, fn).chat({ messages: [] }).catch((e) => e as ProviderError);
+    expect(err.status).toBe(500);
+    expect(err.message).toMatch(/^Model server returned 500: e+$/);
+    expect(err.message.length).toBeLessThan(600);
+    expect(state.cancelled).toBe(true);
+    expect(state.sent).toBeLessThanOrEqual(MAX_ERROR_BYTES + 32_000);
   });
 });

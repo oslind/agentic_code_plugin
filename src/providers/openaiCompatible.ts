@@ -169,7 +169,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
+      const text = await errorText(res);
       const retryable = res.status === 429 || res.status >= 500;
       const hint =
         res.status === 504 || res.status === 502
@@ -269,6 +269,15 @@ type StreamChunk = {
  */
 export const MAX_REPLY_CHARS = 4_000_000;
 export const MAX_EVENT_CHARS = 1_000_000;
+/**
+ * Most bytes received for one streamed reply, counting everything the server
+ * sends (event framing, comments, fields that are ignored). Each token comes
+ * in its own event of a few hundred bytes, so this is set well above
+ * MAX_REPLY_CHARS.
+ */
+export const MAX_STREAM_BYTES = 32_000_000;
+/** Most bytes of an error reply read for its message. */
+export const MAX_ERROR_BYTES = 64_000;
 
 function tooLarge(status: number): ProviderError {
   return new ProviderError(`Model server sent more than ${MAX_REPLY_CHARS / 1_000_000} million characters. The reply was stopped.`, status, false);
@@ -283,7 +292,7 @@ export function isTransientStreamError(error: StreamChunk["error"]): boolean {
   if (!error) return false;
   if (typeof error === "string") return TRANSIENT.test(error);
   const code = Number(error.code ?? error.status);
-  if (Number.isFinite(code) && code > 0) return code === 429 || code >= 500;
+  if (Number.isFinite(code) && code > 0) return code === 429 || (code >= 500 && code <= 599);
   return TRANSIENT.test(`${error.type ?? ""} ${error.message ?? ""}`);
 }
 const TRANSIENT = /overload|unavailable|busy|capacity|rate.?limit|too many requests|timed? ?out|timeout|try again|temporar/i;
@@ -341,15 +350,24 @@ async function readStream(body: ReadableStream<Uint8Array>, status: number): Pro
   const decoder = new TextDecoder();
   const out = new StreamResult();
   let buffer = "";
+  let bytes = 0;
+  // Size of the event being received: all its lines up to the blank line that ends it.
+  let eventChars = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      // Everything received counts, before parsing, so comments, heartbeats and
+      // fields the parser ignores cannot keep the download going without limit.
+      bytes += value?.byteLength ?? 0;
+      if (bytes > MAX_STREAM_BYTES) throw streamTooLarge(status);
       buffer += decoder.decode(value, { stream: !done });
       const lines = buffer.split(/\r?\n/);
       buffer = done ? "" : (lines.pop() ?? "");
-      if (buffer.length > MAX_EVENT_CHARS || lines.some((l) => l.length > MAX_EVENT_CHARS)) {
-        throw new ProviderError(`Model server sent one event longer than ${MAX_EVENT_CHARS / 1_000_000} million characters. The reply was stopped.`, status, false);
+      for (const line of lines) {
+        eventChars = line === "" ? 0 : eventChars + line.length;
+        if (eventChars > MAX_EVENT_CHARS) throw eventTooLarge(status);
       }
+      if (eventChars + buffer.length > MAX_EVENT_CHARS) throw eventTooLarge(status);
       parseEvents(lines, out, status);
       if (done) return out.finish(status);
     }
@@ -360,21 +378,49 @@ async function readStream(body: ReadableStream<Uint8Array>, status: number): Pro
   }
 }
 
-/** Reads a whole reply body as text, stopping once it passes `max` characters. */
-async function readLimited(body: ReadableStream<Uint8Array>, max: number, status: number): Promise<string> {
+function eventTooLarge(status: number): ProviderError {
+  return new ProviderError(`Model server sent one event longer than ${MAX_EVENT_CHARS / 1_000_000} million characters. The reply was stopped.`, status, false);
+}
+
+function streamTooLarge(status: number): ProviderError {
+  return new ProviderError(`Model server sent more than ${MAX_STREAM_BYTES / 1_000_000} MB. The reply was stopped.`, status, false);
+}
+
+/**
+ * Reads a whole reply body as text, at most `maxBytes` bytes. Past the limit
+ * the download is cancelled and the body is either refused (`truncate`
+ * false) or cut off there (`truncate` true, for error messages).
+ */
+async function readLimited(body: ReadableStream<Uint8Array>, maxBytes: number, status: number, truncate = false): Promise<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let text = "";
+  let bytes = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      if (value && bytes + value.byteLength > maxBytes) {
+        if (!truncate) throw tooLarge(status);
+        text += decoder.decode(value.subarray(0, maxBytes - bytes));
+        await reader.cancel().catch(() => undefined);
+        return text;
+      }
+      bytes += value?.byteLength ?? 0;
       text += decoder.decode(value, { stream: !done });
-      if (text.length > max) throw tooLarge(status);
       if (done) return text;
     }
   } catch (err) {
     await reader.cancel().catch(() => undefined);
     throw err;
+  }
+}
+
+/** The start of an error reply, for the message. Never more than MAX_ERROR_BYTES is read. */
+async function errorText(res: Response): Promise<string> {
+  try {
+    return res.body ? await readLimited(res.body, MAX_ERROR_BYTES, res.status, true) : "";
+  } catch {
+    return "";
   }
 }
 
