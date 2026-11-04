@@ -6,6 +6,11 @@ export interface OpenAICompatibleConfig {
   apiKey?: string;
   contextWindow: number;
   temperature: number;
+  /**
+   * How long the server may stay silent, in ms. The clock restarts with every
+   * piece of the reply that arrives, so a long reply that keeps streaming is
+   * never cut off. 0 means no limit.
+   */
   requestTimeoutMs: number;
   structuredOutput: StructuredOutputMode;
   /**
@@ -123,8 +128,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
   }
 
-  private networkError(err: unknown, signal: AbortSignal | undefined, timeout: AbortSignal): ProviderError {
-    return describeNetworkError(this.config.baseUrl, this.config.requestTimeoutMs, err, !!signal?.aborted, timeout.aborted);
+  private networkError(err: unknown, signal: AbortSignal | undefined, idle: IdleTimer): ProviderError {
+    return describeNetworkError(this.config.baseUrl, this.config.requestTimeoutMs, err, !!signal?.aborted, idle.fired);
   }
 
   private async send(request: ChatRequest, mode: StructuredOutputMode): Promise<ChatResponse> {
@@ -149,8 +154,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body.response_format = { type: "json_object" };
     }
 
-    const timeout = AbortSignal.timeout(this.config.requestTimeoutMs);
-    const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+    const timeout = new IdleTimer(this.config.requestTimeoutMs);
+    try {
+      return await this.exchange(request, body, timeout);
+    } finally {
+      timeout.stop();
+    }
+  }
+
+  private async exchange(request: ChatRequest, body: Record<string, unknown>, timeout: IdleTimer): Promise<ChatResponse> {
+    const signal = request.signal ? AbortSignal.any([request.signal, timeout.signal]) : timeout.signal;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.config.apiKey) {
       headers.Authorization = `Bearer ${this.config.apiKey}`;
@@ -168,6 +181,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       throw this.networkError(err, request.signal, timeout);
     }
 
+    timeout.touch();
     if (!res.ok) {
       const text = await errorText(res);
       const retryable = res.status === 429 || res.status >= 500;
@@ -196,7 +210,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     // A server that ignores "stream" answers with plain JSON, which is read as before.
     if ((res.headers.get("content-type") ?? "").includes("text/event-stream") && res.body) {
       try {
-        return await readStream(res.body, res.status);
+        return await readStream(res.body, res.status, timeout.touch);
       } catch (err) {
         if (err instanceof ProviderError) throw err;
         throw this.networkError(err, request.signal, timeout);
@@ -205,7 +219,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     let text: string;
     try {
-      text = res.body ? await readLimited(res.body, MAX_REPLY_CHARS, res.status) : await res.text();
+      text = res.body ? await readLimited(res.body, MAX_REPLY_CHARS, res.status, false, timeout.touch) : await res.text();
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       throw this.networkError(err, request.signal, timeout);
@@ -237,7 +251,13 @@ function describeNetworkError(baseUrl: string, timeoutMs: number, err: unknown, 
   if (cancelled) return new ProviderError("Request cancelled");
   // Our own limit. Sending the same request again would most likely time out again, so it is not retried.
   if (timedOut) {
-    return new ProviderError(`The model did not finish within ${Math.round(timeoutMs / 1000)} s (agentic.model.requestTimeoutMs).`, undefined, false);
+    return new ProviderError(
+      `The model server sent nothing for ${Math.round(timeoutMs / 1000)} s (agentic.model.requestTimeoutMs), so the request was stopped. ` +
+        `A reply that keeps arriving is never cut off; this means the server was silent, for example stuck, overloaded, or still reading a very long prompt. ` +
+        `Raise the setting, or set it to 0 for no limit.`,
+      undefined,
+      false,
+    );
   }
   return new ProviderError(`Could not reach ${baseUrl}: ${(err as Error)?.message ?? String(err)}`, undefined, true);
 }
@@ -345,7 +365,7 @@ function parseEvents(lines: string[], out: StreamResult, status: number): Stream
 }
 
 /** Reads a streamed reply as it arrives. */
-async function readStream(body: ReadableStream<Uint8Array>, status: number): Promise<ChatResponse> {
+async function readStream(body: ReadableStream<Uint8Array>, status: number, onData: () => void = () => undefined): Promise<ChatResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const out = new StreamResult();
@@ -356,6 +376,7 @@ async function readStream(body: ReadableStream<Uint8Array>, status: number): Pro
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      onData();
       // Everything received counts, before parsing, so comments, heartbeats and
       // fields the parser ignores cannot keep the download going without limit.
       bytes += value?.byteLength ?? 0;
@@ -391,7 +412,13 @@ function streamTooLarge(status: number): ProviderError {
  * the download is cancelled and the body is either refused (`truncate`
  * false) or cut off there (`truncate` true, for error messages).
  */
-async function readLimited(body: ReadableStream<Uint8Array>, maxBytes: number, status: number, truncate = false): Promise<string> {
+async function readLimited(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  status: number,
+  truncate = false,
+  onData: () => void = () => undefined,
+): Promise<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let text = "";
@@ -399,6 +426,7 @@ async function readLimited(body: ReadableStream<Uint8Array>, maxBytes: number, s
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      onData();
       if (value && bytes + value.byteLength > maxBytes) {
         if (!truncate) throw tooLarge(status);
         text += decoder.decode(value.subarray(0, maxBytes - bytes));
@@ -421,6 +449,38 @@ async function errorText(res: Response): Promise<string> {
     return res.body ? await readLimited(res.body, MAX_ERROR_BYTES, res.status, true) : "";
   } catch {
     return "";
+  }
+}
+
+/**
+ * Aborts when nothing has arrived for `ms`. Every piece of the reply calls
+ * touch(), which restarts the clock. 0 or less never aborts.
+ */
+export class IdleTimer {
+  private readonly controller = new AbortController();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  fired = false;
+
+  constructor(private readonly ms: number) {
+    this.touch();
+  }
+
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  readonly touch = (): void => {
+    if (this.timer) clearTimeout(this.timer);
+    if (this.ms <= 0 || this.fired) return;
+    this.timer = setTimeout(() => {
+      this.fired = true;
+      this.controller.abort(new DOMException("The model server sent nothing in time", "TimeoutError"));
+    }, this.ms);
+  };
+
+  stop(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
   }
 }
 

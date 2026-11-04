@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -151,7 +151,8 @@
         "agentic.model.requestTimeoutMs": {
           "type": "number",
           "default": 300000,
-          "description": "Timeout for one model request. Local models can be slow."
+          "minimum": 0,
+          "description": "How long the model server may stay silent, in milliseconds, before a request is stopped. The clock restarts whenever part of the reply arrives, so a long reply that keeps streaming (thinking included) is never cut off, however long it takes. Only silence counts: a stuck server, or a very long prompt that the server is still reading. 0 means no limit. With agentic.model.stream off, nothing arrives until the reply is done, so this then limits the whole request."
         },
         "agentic.model.stream": {
           "type": "boolean",
