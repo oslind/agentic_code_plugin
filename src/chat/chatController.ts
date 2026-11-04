@@ -312,6 +312,9 @@ export class ChatController {
   }
 
   async state(): Promise<ChatViewState> {
+    // What the chat is doing at the moment it is asked, before the loads below let a running prompt move on.
+    const busy = this.busy;
+    const stopping = this.stopping;
     await this.ready;
     const conversations = await this.conversations.list();
     let current: Conversation | undefined;
@@ -343,7 +346,7 @@ export class ChatController {
     return {
       mode: this.mode,
       model: this.host.modelLabel(current?.workspaceRoot),
-      busy: this.busy,
+      busy,
       conversations,
       current: current && { id: current.id, title: current.title, workspaceRoot: current.workspaceRoot, entries: current.entries },
       plans,
@@ -357,8 +360,8 @@ export class ChatController {
             plans,
             runIds: current.runIds,
             waiting,
-            busy: this.busy,
-            stopping: this.stopping,
+            busy,
+            stopping,
             runningRunId: this.runningRunId,
             done,
             followUps: this.followUpStates(),
@@ -854,7 +857,7 @@ export class ChatController {
       note = note || "Finish now with what you have found so far, and say what is still open.";
       adjusted = "This sub-agent cannot be stopped on its own, so it was told to finish instead.";
     }
-    if (action === "message") this.inboxes.set(key, [...(this.inboxes.get(key) ?? []), { from: "coordinator", text: note }]);
+    // Logged first, so the check-in is in the chat before the sub-agent acts on the note.
     await this.tasks.log({
       runId: run.id,
       taskId: task.id,
@@ -862,6 +865,7 @@ export class ChatController {
       message: action,
       data: { concern: concern.kind, detail: concern.detail, note: action === "message" ? note : undefined, thought: decision.thought, thinking: clip(decision.thinking), adjusted },
     });
+    if (action === "message") this.inboxes.set(key, [...(this.inboxes.get(key) ?? []), { from: "coordinator", text: note }]);
     this.host.log("info", `Coordinator checked on "${task.title}" (${CONCERN_LABEL[concern.kind]}) and chose "${action}".${adjusted ? ` ${adjusted}` : ""}`);
     if (action === "stop") s.control?.cancelTask(task.id);
   }
