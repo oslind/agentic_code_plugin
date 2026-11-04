@@ -31,8 +31,14 @@ export interface InspectableSection {
 export const PERMISSION_KEYS = ["editFiles", "sensitiveFiles", "commands"] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-/** Keys under "agentic.model" that decide where requests and the API key go. */
-export const USER_ONLY_MODEL_KEYS = ["baseUrl", "apiKey"] as const;
+/**
+ * Keys under "agentic.model" that decide where requests and the API key go,
+ * and the limits on how much load and cost one project can cause there.
+ */
+export const USER_ONLY_MODEL_KEYS = ["baseUrl", "apiKey", "maxConcurrentRequests", "maxOutputTokens"] as const;
+
+/** Keys under "agentic.chat" that limit how much of your conversation is sent to the model. */
+export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens"] as const;
 
 export const DEFAULT_BASE_URL = "http://localhost:11434/v1";
 
@@ -64,6 +70,22 @@ export function workspaceOverrides(section: InspectableSection, keys: readonly s
 
 export const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
 export const isString = (v: unknown): v is string => typeof v === "string";
+export const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+/** Most model requests at once, from user settings only. 1 to 16, default 1. */
+export function maxConcurrentRequestsFrom(section: InspectableSection): number {
+  return Math.max(1, Math.min(16, Math.floor(userValue(section, "maxConcurrentRequests", 1, isNumber))));
+}
+
+/** Longest reply in tokens, from user settings only. 0 means no limit. */
+export function maxOutputTokensFrom(section: InspectableSection): number {
+  return Math.max(0, Math.floor(userValue(section, "maxOutputTokens", 0, isNumber)));
+}
+
+/** Most tokens of earlier conversation sent with each coordinator message, from user settings only. 0 means as much as fits. */
+export function coordinatorHistoryTokensFrom(section: InspectableSection): number {
+  return Math.max(0, Math.floor(userValue(section, "coordinatorHistoryTokens", 12000, isNumber)));
+}
 
 /** The auto-approve switches, from user settings only. Anything but an explicit `true` there is off. */
 export function permissionsFrom(section: InspectableSection): Record<PermissionKey, boolean> {

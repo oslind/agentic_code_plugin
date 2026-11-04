@@ -205,8 +205,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     let text: string;
     try {
-      text = await res.text();
+      text = res.body ? await readLimited(res.body, MAX_REPLY_CHARS, res.status) : await res.text();
     } catch (err) {
+      if (err instanceof ProviderError) throw err;
       throw this.networkError(err, request.signal, timeout);
     }
     if (/^\s*data:/.test(text)) return parseEvents(text.split(/\r?\n/), new StreamResult(), res.status).finish(res.status);
@@ -257,8 +258,35 @@ type Json = {
 type StreamChunk = {
   choices?: { delta?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
-  error?: { message?: string } | string;
+  error?: { message?: string; type?: string; code?: string | number; status?: number } | string;
 };
+
+/**
+ * Most characters of reply (content and thinking together) read from the
+ * server, and the longest single event. A broken or hostile server could
+ * otherwise send data until the extension runs out of memory. Far above any
+ * real reply: 32k tokens are roughly 130k characters.
+ */
+export const MAX_REPLY_CHARS = 4_000_000;
+export const MAX_EVENT_CHARS = 1_000_000;
+
+function tooLarge(status: number): ProviderError {
+  return new ProviderError(`Model server sent more than ${MAX_REPLY_CHARS / 1_000_000} million characters. The reply was stopped.`, status, false);
+}
+
+/**
+ * Whether an error the server reports inside a stream is worth trying
+ * again. Only overload, rate limits and timeouts are; context too long, an
+ * unknown model or a bad request would fail the same way again.
+ */
+export function isTransientStreamError(error: StreamChunk["error"]): boolean {
+  if (!error) return false;
+  if (typeof error === "string") return TRANSIENT.test(error);
+  const code = Number(error.code ?? error.status);
+  if (Number.isFinite(code) && code > 0) return code === 429 || code >= 500;
+  return TRANSIENT.test(`${error.type ?? ""} ${error.message ?? ""}`);
+}
+const TRANSIENT = /overload|unavailable|busy|capacity|rate.?limit|too many requests|timed? ?out|timeout|try again|temporar/i;
 
 class StreamResult {
   content = "";
@@ -292,7 +320,7 @@ function parseEvents(lines: string[], out: StreamResult, status: number): Stream
     }
     if (chunk.error) {
       const msg = typeof chunk.error === "string" ? chunk.error : (chunk.error.message ?? "unknown error");
-      throw new ProviderError(`Model server failed while answering: ${msg.slice(0, 500)}`, status, true);
+      throw new ProviderError(`Model server failed while answering: ${msg.slice(0, 500)}`, status, isTransientStreamError(chunk.error));
     }
     const delta = chunk.choices?.[0]?.delta;
     if (typeof delta?.content === "string") {
@@ -302,6 +330,7 @@ function parseEvents(lines: string[], out: StreamResult, status: number): Stream
     const thought = delta?.reasoning ?? delta?.reasoning_content;
     if (typeof thought === "string") out.reasoning += thought;
     if (chunk.usage) out.usage = chunk.usage;
+    if (out.content.length + out.reasoning.length > MAX_REPLY_CHARS) throw tooLarge(status);
   }
   return out;
 }
@@ -312,15 +341,41 @@ async function readStream(body: ReadableStream<Uint8Array>, status: number): Pro
   const decoder = new TextDecoder();
   const out = new StreamResult();
   let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const lines = buffer.split(/\r?\n/);
-    buffer = done ? "" : (lines.pop() ?? "");
-    parseEvents(lines, out, status);
-    if (done) break;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = done ? "" : (lines.pop() ?? "");
+      if (buffer.length > MAX_EVENT_CHARS || lines.some((l) => l.length > MAX_EVENT_CHARS)) {
+        throw new ProviderError(`Model server sent one event longer than ${MAX_EVENT_CHARS / 1_000_000} million characters. The reply was stopped.`, status, false);
+      }
+      parseEvents(lines, out, status);
+      if (done) return out.finish(status);
+    }
+  } catch (err) {
+    // Stop the download, so a failed reply does not keep the connection and the server busy.
+    await reader.cancel().catch(() => undefined);
+    throw err;
   }
-  return out.finish(status);
+}
+
+/** Reads a whole reply body as text, stopping once it passes `max` characters. */
+async function readLimited(body: ReadableStream<Uint8Array>, max: number, status: number): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      text += decoder.decode(value, { stream: !done });
+      if (text.length > max) throw tooLarge(status);
+      if (done) return text;
+    }
+  } catch (err) {
+    await reader.cancel().catch(() => undefined);
+    throw err;
+  }
 }
 
 /** Lets at most `limit` callers run at once; the rest wait in order. */

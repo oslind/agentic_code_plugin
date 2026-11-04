@@ -4,7 +4,7 @@ import { relativeInside } from "./tools/paths";
 import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readModelConfig, readPermissions, readRunConfig, setSecretApiKey } from "./config";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readPermissions, readRunConfig, setSecretApiKey } from "./config";
 import { legacyApiKeyFrom } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
@@ -75,7 +75,7 @@ function warnAboutProjectSettings(output: vscode.LogOutputChannel): vscode.Dispo
       const id = `${folder.uri.toString()}|${keys.join(",")}`;
       if (!keys.length || warned.has(id)) continue;
       warned.add(id);
-      const message = `The project "${folder.name}" tries to set ${keys.join(", ")} in its own settings. Agentic Code ignores this: these settings only count in your user settings, so a project cannot approve work for you or redirect model requests.`;
+      const message = `The project "${folder.name}" tries to set ${keys.join(", ")} in its own settings. Agentic Code ignores this: these settings only count in your user settings, so a project cannot approve work for you, redirect model requests, or raise the limits on model load and on how much of your conversation is sent.`;
       output.warn(message);
       void vscode.window.showWarningMessage(message);
     }
@@ -111,7 +111,7 @@ export function activate(context: vscode.ExtensionContext): void {
       new RetryingProvider(createProvider(root ? vscode.Uri.file(root) : undefined, output), 3, 1000, (n, ms, err) =>
         output.warn(`Model request failed (${err.message.slice(0, 200)}). Trying again in ${Math.round(ms / 1000)} s (attempt ${n + 1}).`),
       ),
-    coordinatorHistoryTokens: () => vscode.workspace.getConfiguration("agentic.chat").get<number>("coordinatorHistoryTokens", 12000),
+    coordinatorHistoryTokens: () => readCoordinatorHistoryTokens(),
     modelLabel: (root) => {
       const c = readModelConfig(root ? vscode.Uri.file(root) : undefined);
       // The version shows which build is installed, which helps when trying a new VSIX.
