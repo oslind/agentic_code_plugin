@@ -21,6 +21,10 @@ describe("checkToolCall", () => {
   it("lets sub-agents propose changes to sensitive files; the review decides", () => {
     expect(verdict({ tool: "write_file", path: "package.json", content: "{}" })).toBe("allow");
     expect(isSensitivePath("package.json")).toBe(true);
+    for (const f of ["Makefile", "sub/CMakeLists.txt", "pyproject.toml", "setup.py", "tox.ini", "justfile", "Taskfile.yml", "build.gradle", "build.gradle.kts", "pom.xml", "Cargo.toml", "Dockerfile", "BUILD.bazel", "pkg/BUILD", "WORKSPACE", "MODULE.bazel", "defs.bzl", "SConstruct", "lib/SConscript", "Jenkinsfile", "azure-pipelines.yml"]) {
+      expect(isSensitivePath(f), f).toBe(true);
+    }
+    expect(isSensitivePath("src/make.ts")).toBe(false);
     expect(isProtectedPath(".agentic/runs/x.json")).toBe(true);
     expect(isProtectedPath("src/a.ts")).toBe(false);
   });

@@ -107,7 +107,9 @@ const PROTECTED_EXTRA = [".agentic", ".agentic/**", ".vscode/settings.json", ".v
 /**
  * Writable only with the user's approval (or the "sensitive files" switch):
  * files that decide which commands run, such as package scripts, lockfiles,
- * CI, dev containers, git hooks and the rest of .vscode.
+ * build files of other languages, CI, dev containers, git hooks and the rest
+ * of .vscode. A change to one of these can make `npm test`, `make` or
+ * `pytest` run something new, so it is never accepted with ordinary edits.
  */
 const SENSITIVE = [
   "**/package.json",
@@ -117,6 +119,92 @@ const SENSITIVE = [
   "**/pnpm-lock.yaml",
   "**/bun.lock",
   "**/bun.lockb",
+  "**/.yarnrc",
+  "**/.pnpmfile.cjs",
+  "**/.pnpmfile.js",
+  // Make, CMake, just, Task and other task runners
+  "**/Makefile",
+  "**/GNUmakefile",
+  "**/*.mk",
+  "**/CMakeLists.txt",
+  "**/CMakePresets.json",
+  "**/*.cmake",
+  "**/meson.build",
+  "**/justfile",
+  "**/.justfile",
+  "**/Taskfile.yml",
+  "**/Taskfile.yaml",
+  "**/Taskfile.dist.yml",
+  "**/Taskfile.dist.yaml",
+  "**/Rakefile",
+  "**/Gemfile",
+  "**/Gemfile.lock",
+  "**/*.gemspec",
+  // Bazel, SCons
+  "**/BUILD",
+  "**/BUILD.bazel",
+  "**/WORKSPACE",
+  "**/WORKSPACE.bazel",
+  "**/MODULE.bazel",
+  "**/*.bzl",
+  "**/.bazelrc",
+  "**/SConstruct",
+  "**/SConscript",
+  // Python
+  "**/pyproject.toml",
+  "**/setup.py",
+  "**/setup.cfg",
+  "**/tox.ini",
+  "**/noxfile.py",
+  "**/pytest.ini",
+  "**/conftest.py",
+  "**/requirements*.txt",
+  "**/Pipfile",
+  "**/Pipfile.lock",
+  "**/poetry.lock",
+  "**/uv.lock",
+  // JVM
+  "**/build.gradle",
+  "**/build.gradle.kts",
+  "**/settings.gradle",
+  "**/settings.gradle.kts",
+  "**/gradle.properties",
+  "**/gradlew",
+  "**/gradlew.bat",
+  "**/gradle/wrapper/**",
+  "**/pom.xml",
+  "**/mvnw",
+  "**/mvnw.cmd",
+  "**/.mvn/**",
+  "**/build.sbt",
+  // Rust, Go, .NET, PHP, containers
+  "**/Cargo.toml",
+  "**/Cargo.lock",
+  "**/build.rs",
+  "**/.cargo/config",
+  "**/.cargo/config.toml",
+  "**/go.mod",
+  "**/go.sum",
+  "**/Directory.Build.props",
+  "**/Directory.Build.targets",
+  "**/*.csproj",
+  "**/composer.json",
+  "**/composer.lock",
+  "**/Dockerfile",
+  "**/Dockerfile.*",
+  "**/docker-compose*.yml",
+  "**/docker-compose*.yaml",
+  "**/compose.yml",
+  "**/compose.yaml",
+  ".pre-commit-config.yaml",
+  // CI outside .github
+  "**/Jenkinsfile",
+  "**/azure-pipelines.yml",
+  "**/azure-pipelines.yaml",
+  ".circleci/**",
+  ".buildkite/**",
+  "bitbucket-pipelines.yml",
+  ".travis.yml",
   ".github/**",
   ".gitlab-ci.yml",
   ".devcontainer/**",
@@ -212,7 +300,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
 }
 
 
-/** package.json files, lockfiles, CI, dev containers, git hooks and .vscode: accepted only by the user, or by the "sensitive files" switch. */
+/** package.json files, lockfiles, build files, CI, dev containers, git hooks and .vscode: accepted only by the user, or by the "sensitive files" switch. */
 export function isSensitivePath(path: string): boolean {
   const p = normalizeWorkspacePath(path);
   return p !== undefined && matchesNoCase(p, SENSITIVE);

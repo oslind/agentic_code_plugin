@@ -45,6 +45,13 @@ const CREDENTIAL_ENV = new Set([
 ]);
 
 /**
+ * Handles to VS Code itself: its git credential helper (which can hand out
+ * your GitHub sign-in), the `code` command channel into this window, and the
+ * extension host's own IPC. A check never needs them.
+ */
+const EDITOR_CHANNEL_ENV = /^(VSCODE_GIT_|VSCODE_IPC_HOOK|VSCODE_HANDLES_|VSCODE_PID$|VSCODE_CODE_CACHE_PATH$|VSCODE_CRASH_REPORTER|ELECTRON_RUN_AS_NODE$)/i;
+
+/**
  * The environment a check runs with: yours, minus variables whose names look
  * like credentials (GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, OPENAI_API_KEY, ...).
  * This only lowers the chance of a leak; a command can still read files your
@@ -52,7 +59,9 @@ const CREDENTIAL_ENV = new Set([
  */
 export function checkEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(env)) if (!SECRET_ENV.test(k) && !CREDENTIAL_ENV.has(k.toUpperCase())) out[k] = v;
+  for (const [k, v] of Object.entries(env)) {
+    if (!SECRET_ENV.test(k) && !CREDENTIAL_ENV.has(k.toUpperCase()) && !EDITOR_CHANNEL_ENV.test(k)) out[k] = v;
+  }
   return out;
 }
 

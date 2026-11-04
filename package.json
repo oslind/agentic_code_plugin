@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -232,7 +232,7 @@
         "agentic.autoApprove.sensitiveFiles": {
           "type": "boolean",
           "default": false,
-          "description": "Changes to package.json files, lockfiles, CI (.github), dev containers, git hooks and .vscode files are written right away too. When off, they always wait for your Accept. Only your user settings count: a project cannot turn this on.",
+          "description": "Changes to package.json files, lockfiles, build files (Makefile, pyproject.toml, setup.py, build.gradle, ...), CI (.github), dev containers, git hooks and .vscode files are written right away too. When off, they always wait for your Accept. Only your user settings count: a project cannot turn this on.",
           "scope": "machine"
         },
         "agentic.autoApprove.commands": {
