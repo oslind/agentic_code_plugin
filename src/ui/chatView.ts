@@ -1,7 +1,7 @@
 import { randomBytes } from "crypto";
 import * as vscode from "vscode";
 import { ChatController, Decision } from "../chat/chatController";
-import { safeExternalUrl } from "../chat/links";
+import { checkLink } from "../chat/links";
 import { PERMISSION_KEYS } from "../config";
 import { TaskStore } from "../state/taskStore";
 
@@ -142,12 +142,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "editChecks":
           await this.controller.editChecks();
           return;
-        case "openLink": {
-          // VS Code asks before opening a site that is not on the user's trusted list.
-          const url = safeExternalUrl(m.url);
-          if (url) await vscode.env.openExternal(vscode.Uri.parse(url, true));
-          return;
-        }
+        case "openLink":
+          return this.openLink(m.url);
         case "review":
           if (isId(m.runId) && REVIEW_ACTIONS.has(m.action) && (m.path === undefined || isRelPath(m.path)) && (m.taskId === undefined || isId(m.taskId))) {
             await this.controller.review(m.runId, m.action, m.path, m.taskId);
@@ -163,6 +159,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (err) {
       this.output.error((err as Error).message);
       vscode.window.showErrorMessage((err as Error).message);
+    }
+  }
+
+  /**
+   * Opens a link from a model reply only after the user has seen where it really goes: the
+   * link text is written by the model, so the dialog names the host and the full address and
+   * warns about local, private and other unusual destinations.
+   */
+  private async openLink(raw: unknown): Promise<void> {
+    const link = checkLink(raw);
+    if (!link) return;
+    const detail = [
+      `Site: ${link.host}`,
+      `Full address: ${link.url}`,
+      "",
+      "The link comes from a model reply. Its text may not match where it goes.",
+      ...link.warnings.map((w) => `⚠ ${w}`),
+    ].join("\n");
+    const open = "Open in browser";
+    const copy = "Copy address";
+    const pick = await vscode.window.showWarningMessage(link.warnings.length ? "Open this link? Check the address first." : "Open this link?", { modal: true, detail }, open, copy);
+    if (pick === open) {
+      this.output.info(`Opening a link from a reply: ${link.url}`);
+      await vscode.env.openExternal(vscode.Uri.parse(link.url, true));
+    } else if (pick === copy) {
+      await vscode.env.clipboard.writeText(link.url);
     }
   }
 

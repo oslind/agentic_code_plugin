@@ -21,6 +21,14 @@
   const MAX_TABLE_COLS = 20;
   /** How far ahead a closing marker is searched for, so unclosed markers cannot make parsing slow. */
   const SPAN = 3000;
+  /**
+   * Work budget for one parse, in characters looked at. Each search for a closing marker is
+   * bounded by SPAN, but many unclosed markers ("[[[[...") would each search again, so all
+   * searches share this budget. Once it is spent, the rest of the text is shown as plain text.
+   */
+  const MAX_WORK = 4000000;
+  let work = 0;
+  const spend = (n) => (work += n) <= MAX_WORK;
 
   const FENCE = /^( {0,3})(`{3,}|~{3,})[ \t]*([^`\s]*)[^`]*$/;
   const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
@@ -35,6 +43,7 @@
     let t = String(text == null ? "" : text);
     if (t.length > MAX_INPUT) t = t.slice(0, MAX_INPUT) + "\n\n…";
     const lines = t.replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n");
+    work = 0;
     return blocks(lines, 0);
   }
 
@@ -270,6 +279,10 @@
     if (depth >= MAX_INLINE_DEPTH) return s ? [{ t: "text", v: s }] : [];
     let i = 0;
     while (i < s.length) {
+      if (!spend(1)) {
+        buf += s.slice(i);
+        break;
+      }
       const ch = s[i];
       if (ch === "\\" && i + 1 < s.length && PUNCT.test(s[i + 1])) {
         buf += s[i + 1];
@@ -289,8 +302,7 @@
         const fence = "`".repeat(n);
         let j = i + n;
         let end = -1;
-        const hay = s.slice(0, i + SPAN);
-        while ((j = hay.indexOf(fence, j)) !== -1) {
+        while ((j = find(s, fence, j, i + SPAN)) !== -1) {
           if (s[j + n] !== "`" && s[j - 1] !== "`") {
             end = j;
             break;
@@ -400,15 +412,14 @@
     }
     const mark = ch.repeat(size);
     let j = i + size;
-    const hay = s.slice(0, i + SPAN);
-    while ((j = hay.indexOf(mark, j)) !== -1) {
+    while ((j = find(s, mark, j, i + SPAN)) !== -1) {
       const prev = s[j - 1];
       const next = s[j + size];
       const okClose = prev !== undefined && !/\s/.test(prev) && next !== ch && (ch !== "_" || next === undefined || !WORD.test(next));
       if (okClose && j > i + size) {
         // A code span between the markers wins over the emphasis.
         const inner = s.slice(i + size, j);
-        if ((inner.match(/`/g) || []).length % 2 === 1) return null;
+        if (!spend(inner.length) || (inner.match(/`/g) || []).length % 2 === 1) return null;
         const c = inline(inner, depth + 1);
         const node = type === "strongem" ? { t: "strong", c: [{ t: "em", c }] } : { t: type, c };
         return { node, end: j + size };
@@ -419,27 +430,37 @@
     return null;
   }
 
+  /** indexOf within s[from, limit), charged to the work budget. */
+  function find(s, needle, from, limit) {
+    const end = Math.min(s.length, limit);
+    if (from >= end) return -1;
+    const k = s.slice(0, end).indexOf(needle, from);
+    spend((k === -1 ? end : k) - from + 1);
+    return k;
+  }
+
   /** Reads [label](url) at s[i] === "[". */
   function link(s, i) {
     let depth = 0;
     let j = i;
     const stop = Math.min(s.length, i + SPAN);
     for (; j < stop; j++) {
+      if (!spend(1)) return null;
       const c = s[j];
       if (c === "\\") {
         j++;
         continue;
       }
       if (c === "`") {
-        const close = s.indexOf("`", j + 1);
-        if (close !== -1 && close < stop) j = close;
+        const close = find(s, "`", j + 1, stop);
+        if (close !== -1) j = close;
         continue;
       }
       if (c === "[") depth++;
       else if (c === "]" && --depth === 0) break;
       if (c === "\n" && s[j + 1] === "\n") return null;
     }
-    if (j >= stop || s[j + 1] !== "(") return null;
+    if (j >= stop || s[j + 1] !== "(" || !spend(200)) return null;
     const m = /^\(\s*<?([^\s()<>]*(?:\([^\s()<>]*\)[^\s()<>]*)*)>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/.exec(s.slice(j + 1, j + 2200));
     if (!m) return null;
     return { label: s.slice(i + 1, j), url: m[1], end: j + 1 + m[0].length };
@@ -458,5 +479,14 @@
       .join("");
   }
 
-  return { parse, inline: (t) => inline(t, 0), safeUrl, plainText };
+  return {
+    parse,
+    inline: (t) => {
+      work = 0;
+      return inline(t, 0);
+    },
+    safeUrl,
+    plainText,
+    MAX_WORK,
+  };
 });

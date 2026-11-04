@@ -2,11 +2,12 @@ import { readFileSync } from "fs";
 import { createRequire } from "module";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { safeExternalUrl } from "../src/chat/links";
+import { checkLink, safeExternalUrl } from "../src/chat/links";
 
 type Node = { t: string; v?: string; c?: Node[]; href?: string; text?: string; lang?: string; level?: number; items?: Node[][]; ordered?: boolean; start?: number; head?: Node[][]; rows?: Node[][][]; align?: string[] };
 const md = createRequire(__filename)("../media/markdown.js") as {
   parse(text: string): Node[];
+  MAX_WORK: number;
   inline(text: string): Node[];
   safeUrl(url: string): string | null;
   plainText(nodes: Node[]): string;
@@ -211,5 +212,74 @@ describe("one-line previews of code", () => {
     const { stripMarkdown } = await import("../src/chat/dashboard");
     expect(stripMarkdown("Here it is:\n\n```ts\nconst x = 1;\n```\nDone.").replace(/\s+/g, " ").trim()).toBe("Here it is: [code] Done.");
     expect(stripMarkdown("Open:\n```\nnever closed").replace(/\s+/g, " ").trim()).toBe("Open: [code]");
+  });
+});
+
+describe("parsing work budget", () => {
+  const cases: Record<string, string> = {
+    brackets: "[".repeat(200000),
+    bracketLines: ("[".repeat(100) + "\n").repeat(1990),
+    stars: "*a ".repeat(66000),
+    underscores: "_a ".repeat(66000),
+    tildes: "~~a ".repeat(50000),
+    images: "![".repeat(100000),
+    backticks: "`a ".repeat(66000),
+    mixed: "[*`_~".repeat(40000),
+  };
+  for (const [name, text] of Object.entries(cases)) {
+    it(`stays fast on unclosed markers: ${name}`, () => {
+      const started = Date.now();
+      const tree = md.parse(text);
+      expect(Date.now() - started).toBeLessThan(1500);
+      // Nothing is lost: past the budget the rest is plain text.
+      expect(md.plainText(tree).replace(/\s+/g, "").length).toBeGreaterThan(0);
+    });
+  }
+
+  it("shows the rest as plain text once the budget is spent", () => {
+    const text = "[".repeat(150000) + " **end**";
+    expect(md.plainText(md.parse(text))).toContain("**end**");
+  });
+
+  it("does not affect normal replies", () => {
+    const reply = "Some **bold** and `code` and [a link](https://a.b).\n".repeat(2000);
+    const tree = md.parse(reply);
+    expect(walk(tree).filter((n) => n.t === "strong")).toHaveLength(2000);
+    expect(walk(tree).filter((n) => n.t === "link")).toHaveLength(2000);
+  });
+
+  it("starts fresh for every reply", () => {
+    md.parse("[".repeat(200000));
+    expect(walk(md.parse("**x**")).some((n) => n.t === "strong")).toBe(true);
+  });
+});
+
+describe("link confirmation", () => {
+  it("names the real host and full address", () => {
+    expect(checkLink("https://code.visualstudio.com/docs")).toEqual({ url: "https://code.visualstudio.com/docs", host: "code.visualstudio.com", warnings: [] });
+  });
+
+  it("warns about local, private and unusual destinations", () => {
+    const local = ["http://127.0.0.1:8080/admin", "http://localhost:3000/", "http://192.168.1.1/", "http://10.0.0.5/", "http://172.20.1.1/", "http://169.254.169.254/latest/meta-data", "http://[::1]/", "http://[fd00::1]/", "http://2130706433/", "http://0x7f.0.0.1/", "http://0/", "http://app.localhost/", "http://[::ffff:127.0.0.1]/"];
+    for (const url of local) expect(checkLink(url)!.warnings.join(" "), url).toMatch(/your own computer or local network/);
+    expect(checkLink("https://printer.local/")!.warnings.join(" ")).toMatch(/local or company network/);
+    expect(checkLink("https://intranet/")!.warnings.join(" ")).toMatch(/local or company network/);
+    expect(checkLink("https://8.8.8.8/")!.warnings.join(" ")).toMatch(/raw IP/);
+    expect(checkLink("https://xn--pple-43d.com/")!.warnings.join(" ")).toMatch(/international/);
+    expect(checkLink("https://аpple.com/")!.host).toMatch(/^xn--/);
+    expect(checkLink("https://example.com:8443/")!.warnings.join(" ")).toMatch(/port \(8443\)/);
+    expect(checkLink("http://example.com/")!.warnings.join(" ")).toMatch(/not encrypted/);
+  });
+
+  it("refuses what safeExternalUrl refuses", () => {
+    for (const bad of ["javascript:alert(1)", "command:x", "file:///etc/passwd", "https://u:p@x.io"]) expect(checkLink(bad)).toBeUndefined();
+  });
+
+  it("is always shown before a link opens", () => {
+    const view = readFileSync(path.join(__dirname, "..", "src", "ui", "chatView.ts"), "utf8");
+    const open = view.slice(view.indexOf("private async openLink"));
+    expect(open.indexOf("showWarningMessage")).toBeGreaterThan(-1);
+    expect(open.indexOf("showWarningMessage")).toBeLessThan(open.indexOf("openExternal"));
+    expect(view.match(/openExternal/g)).toHaveLength(1);
   });
 });

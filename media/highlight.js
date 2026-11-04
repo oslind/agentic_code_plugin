@@ -174,6 +174,15 @@
     });
   }
 
+  /** True when only spaces stand between position j and the start of its line (looks back, never copies). */
+  function startsLine(src, j) {
+    for (let k = j - 1; k >= 0; k--) {
+      if (src[k] === "\n") return true;
+      if (src[k] !== " " && src[k] !== "\t") return false;
+    }
+    return true;
+  }
+
   function shell(code) {
     const rules = [
       [/[ \t]+/y, null],
@@ -192,7 +201,7 @@
     return scan(code, rules, (w, src, end, out) => {
       if (SH_KW.has(w)) return "keyword";
       const prev = prevToken(out);
-      const atStart = !prev || /[|&;(]$/.test(prev.v) || prev.k === "keyword" || prev.k === "meta" || /\n\s*$/.test(src.slice(0, end - w.length));
+      const atStart = !prev || /[|&;(]$/.test(prev.v) || prev.k === "keyword" || prev.k === "meta" || startsLine(src, end - w.length);
       if (atStart && (SH_BUILTIN.has(w) || /^[a-z][\w.-]*$/.test(w))) return "function";
       return null;
     });

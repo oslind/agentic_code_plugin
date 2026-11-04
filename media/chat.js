@@ -461,7 +461,7 @@
         return el("del", {}, n.c.map(mdInline));
       case "link": {
         // The link has no href attribute: the page never navigates. A click asks the extension, which checks the address
-        // again and lets VS Code open it in the browser (with its own prompt for unknown sites).
+        // again and shows a confirmation with the real site and full address before anything opens.
         const url = MD.safeUrl(n.href);
         if (!url) return el("span", {}, n.c.map(mdInline));
         const openIt = (ev) => {
