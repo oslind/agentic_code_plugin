@@ -1,6 +1,7 @@
 // Chat sidebar page: an orchestration dashboard with Overview, Agents, Drafts and Checks tabs
 // and a prompt fixed at the bottom. It renders state from the extension and sends user actions back.
-// Everything from the model is inserted as text, never as HTML.
+// Everything from the model is inserted as text, never as HTML. Replies are shown as markdown
+// through markdown.js, which only returns plain objects that are built here with createElement.
 (function () {
   "use strict";
   const vscode = acquireVsCodeApi();
@@ -358,13 +359,99 @@
     return el("div", { class: "row" }, o.failed ? cmd("retryFailed", "Retry failed tasks", "Start the failed tasks again; they are told why they failed") : null, cmd("showTaskLog", "Details", "Every step the sub-agents took"));
   }
 
-  /** Long text is cut to a summary with the rest behind "Show more". */
-  function longText(key, text, cls) {
+  // ---- markdown ----
+
+  const MD = window.AgenticMarkdown;
+  const ALIGN = new Set(["left", "center", "right"]);
+
+  /** A model reply as markdown. Only these fixed tags are made, and all text goes in as text nodes. */
+  function markdown(text, cls) {
+    if (!MD) return el("div", { class: cls || "msg-text" }, text);
+    let tree;
+    try {
+      tree = MD.parse(text);
+    } catch {
+      return el("div", { class: cls || "msg-text" }, text);
+    }
+    return el("div", { class: "md " + (cls || "msg-text") }, tree.map(mdBlock));
+  }
+
+  function mdBlock(b) {
+    switch (b.t) {
+      case "p":
+        return el("p", {}, b.c.map(mdInline));
+      case "h":
+        return el("h" + Math.min(6, Math.max(1, b.level | 0)), { class: "md-h" }, b.c.map(mdInline));
+      case "hr":
+        return el("hr");
+      case "code":
+        return el("pre", { class: "md-code", "data-lang": b.lang || undefined }, el("code", {}, b.text));
+      case "quote":
+        return el("blockquote", {}, b.c.map(mdBlock));
+      case "list":
+        return el(
+          b.ordered ? "ol" : "ul",
+          { start: b.ordered && b.start !== 1 ? String(b.start | 0) : undefined },
+          b.items.map((item) => el("li", {}, item.map(mdBlock))),
+        );
+      case "table":
+        return el(
+          "div",
+          { class: "md-table" },
+          el(
+            "table",
+            {},
+            el("thead", {}, el("tr", {}, b.head.map((c, k) => el("th", { class: ALIGN.has(b.align[k]) ? "al-" + b.align[k] : undefined }, c.map(mdInline))))),
+            el("tbody", {}, b.rows.map((row) => el("tr", {}, row.map((c, k) => el("td", { class: ALIGN.has(b.align[k]) ? "al-" + b.align[k] : undefined }, c.map(mdInline)))))),
+          ),
+        );
+      default:
+        return null;
+    }
+  }
+
+  function mdInline(n) {
+    switch (n.t) {
+      case "text":
+        return n.v;
+      case "br":
+        return el("br");
+      case "code":
+        return el("code", {}, n.v);
+      case "strong":
+        return el("strong", {}, n.c.map(mdInline));
+      case "em":
+        return el("em", {}, n.c.map(mdInline));
+      case "del":
+        return el("del", {}, n.c.map(mdInline));
+      case "link": {
+        // The link has no href attribute: the page never navigates. A click asks the extension, which checks the address
+        // again and lets VS Code open it in the browser (with its own prompt for unknown sites).
+        const url = MD.safeUrl(n.href);
+        if (!url) return el("span", {}, n.c.map(mdInline));
+        const openIt = (ev) => {
+          ev.preventDefault();
+          post({ type: "openLink", url });
+        };
+        return el(
+          "a",
+          { class: "md-link", role: "link", tabindex: "0", title: url, onclick: openIt, onkeydown: (ev) => (ev.key === "Enter" ? openIt(ev) : undefined) },
+          n.c.map(mdInline),
+        );
+      }
+      default:
+        return null;
+    }
+  }
+
+  /** Long text is cut to a summary with the rest behind "Show more". Model text is shown as markdown. */
+  function longText(key, text, cls, plain) {
     const t = String(text || "");
+    const show = (x) => (plain ? el("div", { class: cls || "msg-text" }, x) : markdown(x, cls));
     const lines = t.split("\n");
-    if (t.length <= 420 && lines.length <= 8) return el("div", { class: cls || "msg-text" }, t);
+    if (t.length <= 420 && lines.length <= 8) return show(t);
     const short = lines.slice(0, 6).join("\n").slice(0, 400);
-    return el("div", {}, el("div", { class: cls || "msg-text" }, short + "…"), details(key, "Show more", el("div", { class: cls || "msg-text" }, t), "fold more"));
+    return el("div", {}, show(short + "…"), details(key, "Show more", show(t), "fold more"));
   }
 
   function message(entry) {
@@ -384,7 +471,7 @@
       entry.thought && entry.thought !== entry.text ? el("div", { class: "thought" }, entry.thought) : null,
       entry.quote ? el("div", { class: "quote" }, entry.quote) : null,
       // The answer that combines the research reports is what the user asked for, so it is never folded.
-      kind === "answer" ? el("div", { class: "msg-text" }, entry.text) : longText("x:" + entry.id, entry.text),
+      kind === "answer" ? markdown(entry.text) : longText("x:" + entry.id, entry.text, undefined, entry.author === "user"),
       entry.thinking && String(entry.thinking).trim() ? details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking)) : null,
       kind === "plan" || kind === "research" ? planCard(entry) : null,
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
@@ -620,7 +707,7 @@
       el("div", { class: "step-head" }, el("span", { class: "step-tag" }, tag), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(e.time))),
       e.thought && e.thought !== e.text ? el("div", { class: "thought" }, e.thought) : null,
       coord && e.quote ? el("div", { class: "quote" }, e.quote) : null,
-      longText("s:" + e.id, e.text),
+      longText("s:" + e.id, e.text, undefined, mine),
       e.thinking ? details("t:" + e.id, "Thinking", el("pre", { class: "thinking-text" }, e.thinking)) : null,
       e.decided ? el("div", { class: "decided" }, "✓ " + e.decided) : null,
     );
@@ -798,7 +885,8 @@
       title = entry.rememberable ? "Command" : "Permission";
       body = [
         cmd ? el("code", { class: "command" }, cmd[1]) : null,
-        longText("ap:" + entry.id, entry.text, "msg-text small"),
+        // A permission request is shown exactly as written, so nothing in it can be hidden by formatting.
+        longText("ap:" + entry.id, entry.text, "msg-text small", true),
         entry.preview ? el("pre", { class: "change-preview" }, entry.preview) : null,
         el(
           "div",

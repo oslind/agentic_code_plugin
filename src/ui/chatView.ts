@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import * as vscode from "vscode";
 import { ChatController, Decision } from "../chat/chatController";
+import { safeExternalUrl } from "../chat/links";
 import { PERMISSION_KEYS } from "../config";
 import { TaskStore } from "../state/taskStore";
 
@@ -22,7 +23,8 @@ type FromView =
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
   | { type: "endAgentChat"; runId: string; taskId: string }
   | { type: "setPermission"; key: string; value: boolean }
-  | { type: "editChecks" };
+  | { type: "editChecks" }
+  | { type: "openLink"; url: string };
 
 const RUN_COMMANDS = new Set(["showTaskLog", "retryFailed"]);
 const REVIEW_ACTIONS = new Set(["show", "accept", "reject"]);
@@ -140,6 +142,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "editChecks":
           await this.controller.editChecks();
           return;
+        case "openLink": {
+          // VS Code asks before opening a site that is not on the user's trusted list.
+          const url = safeExternalUrl(m.url);
+          if (url) await vscode.env.openExternal(vscode.Uri.parse(url, true));
+          return;
+        }
         case "review":
           if (isId(m.runId) && REVIEW_ACTIONS.has(m.action) && (m.path === undefined || isRelPath(m.path)) && (m.taskId === undefined || isId(m.taskId))) {
             await this.controller.review(m.runId, m.action, m.path, m.taskId);
@@ -162,7 +170,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const nonce = randomBytes(16).toString("base64");
     const css = webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.css"));
     const js = webview.asWebviewUri(vscode.Uri.joinPath(media, "chat.js"));
-    // Model output is shown as text only; the page cannot load anything but its own files.
+    const md = webview.asWebviewUri(vscode.Uri.joinPath(media, "markdown.js"));
+    // Model output is never inserted as HTML (markdown is built as DOM nodes); the page cannot load anything but its own files.
     const csp = [
       "default-src 'none'",
       `style-src ${webview.cspSource}`,
@@ -180,6 +189,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 <div id="app"></div>
+<script nonce="${nonce}" src="${md}"></script>
 <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;

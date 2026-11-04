@@ -92,8 +92,21 @@ const FOLLOW_UP_LABEL: Record<FollowUpState, string> = {
   ending: "Updating the coordinator",
 };
 
+/** Markdown marks taken out of one-line previews, where the reply is not rendered. */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/^ {0,3}(`{3,}|~{3,}).*$/gm, "")
+    .replace(/^ {0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/^ {0,3}>[ \t]?/gm, "")
+    .replace(/^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+/gm, "")
+    .replace(/^ {0,3}\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/gm, "")
+    .replace(/!?\[([^\]\n]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g, "$2")
+    .replace(/`([^`\n]+)`/g, "$1");
+}
+
 function oneLine(text: string | undefined, max = 140): string {
-  const flat = (text ?? "").replace(/\s+/g, " ").trim();
+  const flat = stripMarkdown(text ?? "").replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
