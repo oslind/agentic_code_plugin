@@ -8,7 +8,7 @@ import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
 import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
 import { compactConversation, compactionNote, planCompaction } from "./compaction";
-import { coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
+import { continueChange, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { AnswerCheck, Verification, verifyRoundLimit } from "../coordinator/verify";
@@ -216,6 +216,9 @@ export class RunLoop {
           "info",
           `Coordinator after research round ${round} of ${maxRounds} chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`,
         );
+        // The user asked for a change and research was the first step: answering now would leave it undone.
+        // qwen3:8b researched a bug fix, then answered "I've fixed it" with nothing changed.
+        answer = continueChange(answer, turn.goal, text);
         if (answer.action === "plan" || answer.action === "research") {
           await this.s.append(c.id, { author: "coordinator", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
         }

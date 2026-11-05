@@ -316,6 +316,18 @@ export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterR
   return turn;
 }
 
+/**
+ * After research for a request the coordinator first judged a change (goal
+ * "change"), a plain answer leaves the change undone: it becomes a plan for
+ * the request, unless the answer asks the user a question. Anything else is
+ * left alone.
+ */
+export function continueChange(answer: CoordinatorResult, firstGoal: CoordinatorTurn["goal"], userText: string): CoordinatorResult {
+  if (firstGoal !== "change" || answer.action !== "none" || answer.reply.includes("?") || !userText.trim()) return answer;
+  const request = `${userText.trim()}\n\n${answer.reply.trim()}`.slice(0, 3000);
+  return { ...answer, action: "plan", request: request.length >= 10 ? request : `${request} (as the user asked)`, overridden: undefined };
+}
+
 /** How many research rounds one message may use. */
 export function researchRoundLimit(n?: number): number {
   return Math.max(1, Math.min(MAX_RESEARCH_ROUNDS, Math.floor(n ?? DEFAULT_RESEARCH_ROUNDS)));

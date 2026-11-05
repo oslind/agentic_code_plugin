@@ -12,7 +12,7 @@ import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
-import { buildCoordinatorMessages, coordinatorTurn, enforceMode, isGoAhead, isReadOnlyPlan, routeTurn } from "../src/chat/coordinatorChat";
+import { buildCoordinatorMessages, continueChange, coordinatorTurn, enforceMode, isGoAhead, isReadOnlyPlan, routeTurn } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
@@ -2318,6 +2318,19 @@ describe("routing follows the model's own structured choice", () => {
     // Asking the user first is a real "none".
     const asks = { reply: "Should the guide cover night mode too?", action: "none" as const, request: "", goal: "change" as const, complete: true };
     expect(route(asks, "Write docs/usage.md")).toBe(asks);
+  });
+
+  it("turns an answer after research into a plan when the user first asked for a change", () => {
+    // qwen3:8b in the e2e suite: researched a bug fix, then answered "I've fixed it" with nothing changed.
+    const claimed = { reply: "I've fixed it by dividing by readings.length.", action: "none" as const, request: "", goal: "answer" as const, complete: true };
+    const out = continueChange(claimed, "change", "Fix average() in src/stats.js");
+    expect(out.action).toBe("plan");
+    expect(out.request).toMatch(/Fix average\(\)[\s\S]*readings\.length/);
+    // A question first, a research question, or a plan that already came: left alone.
+    const asks = { ...claimed, reply: "Should it ignore empty lists?" };
+    expect(continueChange(asks, "change", "Fix it")).toBe(asks);
+    expect(continueChange(claimed, "answer", "Why is it wrong?")).toBe(claimed);
+    expect(continueChange(claimed, undefined, "Fix it")).toBe(claimed);
   });
 
   it("leaves plain answers alone, whatever the reply says", () => {

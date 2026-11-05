@@ -65,6 +65,8 @@ export interface Scenario {
   endsWithAnswer?: boolean;
   /** Model settings for this scenario only, such as a small context to force compaction. Applied by the suite. */
   model?: { contextWindow?: number; maxOutputTokens?: number; structuredOutput?: "json_schema" | "json_object" | "none" };
+  /** Answer "Yes, please go ahead." when the coordinator ends the last prompt with a question and started nothing. Default true. */
+  confirm?: boolean;
   /** Deny every approval card (commands, sensitive files), like a cautious user. Default: allow. */
   deny?: boolean;
   /** Press Stop this long after sub-agents start working on the first prompt, then go on with the next prompt. */
@@ -108,7 +110,9 @@ export interface ScenarioResult {
   transcript: string;
 }
 
-const DEFAULT_ANSWER = "Yes, go ahead. Use your best judgment and finish the task without asking me again.";
+const DEFAULT_ANSWER = "I have nothing to add to my request. Use your best judgment, check the project files yourself if something is unclear, and finish without asking me again.";
+/** What the user says when the coordinator ends a prompt by asking whether to go ahead. Sent at most once per scenario. */
+const CONFIRM = "Yes, please go ahead.";
 
 function sh(cwd: string, command: string, args: string[]): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
@@ -313,6 +317,7 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
   let transcript = "";
   let done: DoneBar | undefined;
   try {
+    let confirmed = false;
     for (const [i, prompt] of scenario.prompts.entries()) {
       log(`user: ${prompt}`);
       // A user who presses Stop while sub-agents work on the first prompt.
@@ -336,6 +341,19 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
         if (pressStop) clearInterval(pressStop);
       }
       if (stopped) break;
+      // A user answers "go ahead" when the coordinator ends the last prompt with a question and started nothing.
+      if (i === scenario.prompts.length - 1 && !confirmed && scenario.confirm !== false) {
+        const st = await controller.state();
+        const last = [...(st.current?.entries ?? [])].reverse().find((e) => e.author === "coordinator");
+        const ranSomething = Object.keys(st.plans).length > 0;
+        if (last && last.kind !== "answer" && /\?\s*$/.test(last.text.trim()) && !ranSomething) {
+          confirmed = true;
+          log(`user: ${CONFIRM}`);
+          cards.push({ kind: "confirm", text: last.text, answer: CONFIRM });
+          await controller.send(CONFIRM);
+          if (stopped) break;
+        }
+      }
     }
     let state = await controller.state();
     if (stopped) {

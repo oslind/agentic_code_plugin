@@ -107,7 +107,9 @@ export const SCENARIOS: Scenario[] = [
     prompts: ["Run `node test.js` and tell me which test fails. Do not change any files."],
     expect: async (r) => {
       const failures: string[] = [];
-      if (!r.entries.some((e) => e.kind === "command" && /node\s+test\.js/.test(e.command?.line ?? ""))) failures.push("node test.js was never run");
+      // npm test runs node test.js too.
+      if (!r.entries.some((e) => e.kind === "command" && /node\s+test\.js|npm\s+(run\s+)?test\b/.test(e.command?.line ?? ""))) failures.push("node test.js was never run");
+      if (/does not exist|no test\.js|not found/i.test(r.lastCoordinator?.text ?? "")) failures.push(`the answer says test.js does not exist, although it does: ${r.lastCoordinator!.text.slice(0, 300)}`);
       failures.push(...mentions(r.lastCoordinator?.text, /average/i, "the failing average test"));
       if (r.entries.some((e) => e.kind === "review")) failures.push("files were changed although the prompt said not to");
       return failures;
