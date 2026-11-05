@@ -368,6 +368,32 @@
     );
   }
 
+  /** A run VS Code closed under, or one that was stopped, with a button to continue it. */
+  function resumeBanner() {
+    if (state.busy) return null;
+    const runId = Object.keys(state.plans).reverse().find((id) => state.plans[id].resumable);
+    if (!runId) return null;
+    const plan = state.plans[runId];
+    const interrupted = plan.resumable === "interrupted";
+    const drafts = (plan.changes || []).filter((c) => c.state === "draft").length;
+    return el(
+      "section",
+      { class: "card finished done-partial", role: "status" },
+      el("div", { class: "card-head" }, el("span", { class: "done-icon" }, "■"), el("span", { class: "card-title" }, interrupted ? "Interrupted when VS Code closed" : "Stopped before it was done")),
+      el(
+        "div",
+        { class: "finished-text" },
+        `${plural(plan.tasksLeft || 0, "task")} left. Resume continues where it stopped: sub-agents that were cut off pick up from their last step.` + (drafts ? ` ${plural(drafts, "draft")} from before wait under Drafts.` : ""),
+      ),
+      el(
+        "div",
+        { class: "row" },
+        el("button", { class: "primary", onclick: () => post({ type: "resumeRun", runId }) }, "Resume"),
+        drafts ? el("button", { class: "ghost", onclick: () => setTab("drafts") }, "Review drafts") : null,
+      ),
+    );
+  }
+
   /** Cards waiting for the user. Never hidden in another tab without a sign here. */
   function attentionSection(scope, filter) {
     const entries = state.current.entries.filter((e) => isWaiting(e) && (!filter || filter(e)));
@@ -396,6 +422,7 @@
     const entries = state.current.entries.filter(feedEntry);
     return [
       el("div", { class: "sticky-top" }, summaryCard()),
+      resumeBanner(),
       finishedBanner(),
       attentionSection("ov"),
       el("section", { class: "feed" }, el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Activity")), entries.map(message)),
@@ -428,6 +455,7 @@
         "div",
         { class: "row" },
         canRun ? el("button", { class: "primary", onclick: () => post({ type: "runPlan", runId: entry.runId }) }, "Run it") : null,
+        plan.resumable && !state.busy ? el("button", { class: "primary", title: "Continue the tasks that were stopped or cut off", onclick: () => post({ type: "resumeRun", runId: entry.runId }) }, "Resume") : null,
         plan.started ? el("button", { class: "ghost", onclick: () => setTab("agents") }, "See agents") : null,
       ),
     );

@@ -199,6 +199,12 @@ describe("eventToEntry", () => {
     expect(kept!.text).toMatch(/drafts of src\/a\.ts are kept.*Drafts/);
   });
 
+  it("says a sub-agent picks up where a restart cut it off", () => {
+    const entry = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "resumed", message: "Continuing", data: { turns: 4, drafts: 1 } }, tasks);
+    expect(entry).toMatchObject({ tag: "resumed" });
+    expect(entry!.text).toMatch(/after 4 step\(s\)/);
+  });
+
   it("ignores bookkeeping events", () => {
     expect(eventToEntry({ time: "", runId: "r", taskId: "t1", type: "worktree", message: "/x" }, tasks)).toBeUndefined();
   });
@@ -688,6 +694,79 @@ describe("ChatController", () => {
       const { controller } = setup([], "act");
       controller.cancel();
       expect((await controller.state()).busy).toBeUndefined();
+    });
+  });
+
+  describe("resuming a run after VS Code restarts", () => {
+    /** A change run left as VS Code leaves it when it closes mid-run: one task done, one running, a card nobody answered. */
+    async function interruptedRun() {
+      const first = setup([turn("Plan below.", "plan", "Add a User model and an API that uses it."), plan], "act", { saved: [] });
+      await first.controller.send("add users");
+      const state = await first.controller.state();
+      const conversationId = state.current!.id;
+      const runId = state.current!.entries.find((e) => e.kind === "plan")!.runId!;
+      const { tasks } = first;
+      await tasks.setStatus(runId, "add-model", "running");
+      await tasks.setStatus(runId, "add-model", "done");
+      await tasks.setStatus(runId, "add-api", "running");
+      await tasks.addChanges(runId, [{ path: "src/model.ts", taskId: "add-model", original: null, proposed: "export type User = {};\n", status: "pending" }]);
+      const run = await tasks.load(runId);
+      run.activeIn = { pid: 2 ** 22 + 4242, since: new Date().toISOString() };
+      await tasks.save(run);
+      const conversations = new ConversationStore(path.join(dir, "state"));
+      await conversations.append(conversationId, { author: "agent", kind: "question", runId, taskId: "add-api", text: "Which framework?" });
+      first.controller.dispose();
+      return { runId, conversationId };
+    }
+
+    it("marks the run interrupted, keeps its drafts, expires old cards and offers Resume", async () => {
+      const { runId, conversationId } = await interruptedRun();
+      const { controller, tasks } = setup([], "act", { saved: [] });
+      const state = await controller.state();
+      expect(state.current!.id).toBe(conversationId);
+      const run = await tasks.load(runId);
+      expect(run.tasks.map((t) => [t.id, t.status])).toEqual([
+        ["add-model", "done"],
+        ["add-api", "cancelled"],
+      ]);
+      expect(run.activeIn).toBeUndefined();
+      expect(state.plans[runId]).toMatchObject({ resumable: "interrupted", tasksLeft: 1 });
+      const note = state.current!.entries.find((e) => e.tag === "interrupted")!;
+      expect(note.text).toMatch(/VS Code closed while this run was working on 1 task\. 1 of 2 task\(s\) are done\. 1 draft are kept/);
+      expect(state.current!.entries.find((e) => e.kind === "question")!.decided).toMatch(/VS Code was closed/);
+      expect(state.waiting).toEqual([]);
+      expect(await controller.interruptedRuns()).toEqual([{ runId, conversationId, request: run.request }]);
+    });
+
+    it("resumes only what is left, keeps the drafts, and ends with a summary", async () => {
+      const { runId } = await interruptedRun();
+      let statuses: string[] = [];
+      const { controller, started, tasks } = setup([turn("Done: the API is drafted.")], "act", {
+        saved: [],
+        during: async (_hooks, id, store) => void (statuses = (await store.load(id)).tasks.map((t) => t.status)),
+      });
+      await controller.resumeRun(runId);
+      expect(started).toEqual([runId]);
+      // The done task stays done; the cut-off one is queued again.
+      expect(statuses).toEqual(["done", "pending"]);
+      const state = await controller.state();
+      expect(state.current!.entries.find((e) => e.tag === "resumed")!.text).toMatch(/1 task left, 1 of 2 already done.*1 draft from before/);
+      expect((await tasks.load(runId)).changes!.map((c) => c.status)).toEqual(["pending"]);
+      expect(state.done?.status).toBeDefined();
+      expect(state.busy).toBeUndefined();
+    });
+
+    it("does not resume a run another VS Code window is still running", async () => {
+      const { runId } = await interruptedRun();
+      const { controller, tasks, started } = setup([], "act", { saved: [] });
+      await controller.state();
+      const run = await tasks.load(runId);
+      // Another live process (this test's parent) holds it.
+      run.activeIn = { pid: process.ppid, since: new Date().toISOString() };
+      await tasks.save(run);
+      await controller.resumeRun(runId);
+      expect(started).toEqual([]);
+      expect((await controller.state()).current!.entries.at(-1)!.text).toMatch(/another VS Code window/);
     });
   });
 

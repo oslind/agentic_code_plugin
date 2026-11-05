@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
+import { resumeState } from "../state/resume";
 import { CheckConfig } from "../checks/runner";
 import { createProvider, readPermissions, readRunConfig } from "../config";
 import { acceptChange, rejectChange } from "../changes/review";
@@ -82,9 +83,11 @@ export function autoApproved(call: ToolCall): boolean {
 }
 
 /** Offers to resume runs that stopped mid-way, for example when VS Code was closed. */
-export async function offerResume(store: TaskStore): Promise<void> {
+export async function offerResume(store: TaskStore, ownedByChat: (runId: string) => boolean = () => false): Promise<void> {
   const unfinished = new Set<string>(["running", "verifying"]);
   for (const run of await store.listRuns()) {
+    // The chat offers its own runs itself, and a run another window is working on is left alone.
+    if (ownedByChat(run.id) || resumeState(run, process.pid) !== "interrupted") continue;
     if (run.kind === "research" || !run.tasks.some((t) => unfinished.has(t.status))) continue;
     if (!(await confinedFolder(run).catch(() => undefined))) continue;
     const choice = await vscode.window.showInformationMessage(`"${run.request}" was interrupted.`, "Resume", "Later");

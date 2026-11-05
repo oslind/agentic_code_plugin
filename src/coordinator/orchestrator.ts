@@ -16,6 +16,10 @@ import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../wor
 
 export const AGENT_DIR = ".agentic";
 
+/** Told to a sub-agent that continues from its checkpoint. */
+export const RESUME_NOTE =
+  "VS Code was restarted (or the run was stopped) while you were working, and you now continue where you left off. Everything above is your own earlier work on this task. Your drafts are kept. Files on disk may have changed in the meantime, so read a file again before you change it. Then continue with your task.";
+
 export interface OrchestratorOptions {
   store: TaskStore;
   runId: string;
@@ -113,6 +117,16 @@ export class Orchestrator {
     this.root = await fs.realpath(this.o.workspaceRoot);
     // Tasks that were mid-flight when VS Code stopped have no live worker; start them again.
     await this.o.store.recoverInterrupted(this.o.runId);
+    // Marks the run as running here, so a restart can tell it was cut off and another window leaves it alone.
+    await this.o.store.setActive(this.o.runId, process.pid);
+    try {
+      return await this.runAll();
+    } finally {
+      await this.o.store.setActive(this.o.runId, undefined).catch(() => undefined);
+    }
+  }
+
+  private async runAll(): Promise<RunOutcome> {
     const active = new Map<string, Promise<void>>();
 
     for (;;) {
@@ -188,12 +202,21 @@ export class Orchestrator {
     const published = new Map<string, string>();
     try {
       const fresh = (await this.current(task.id)) ?? task;
-      const note = [await this.briefingFor(fresh), this.previousAttemptNote(fresh)].filter(Boolean).join("\n\n") || undefined;
+      // A sub-agent cut off by a restart or Stop continues its own conversation instead of starting over.
+      const checkpoint = fresh.attempts > 0 ? await this.o.store.loadCheckpoint(this.o.runId, task.id) : undefined;
+      const note = checkpoint ? undefined : [await this.briefingFor(fresh), this.previousAttemptNote(fresh)].filter(Boolean).join("\n\n") || undefined;
       await this.setStatus(task, "running");
       // The project as on disk, plus what earlier tasks of this run proposed.
       const run = await this.o.store.load(this.o.runId);
       files = new OverlayFiles(await WorkspaceSandbox.create(this.root), pendingBase(run.changes));
       const overlay = files;
+      if (checkpoint) {
+        // Drafts it already put up for review are pending changes of the run (or were decided): those are not restored.
+        const recorded = new Set((run.changes ?? []).filter((c) => c.taskId === task.id).map((c) => c.path));
+        await overlay.restore(checkpoint.drafts.filter((d) => !recorded.has(d.path)));
+        for (const c of run.changes ?? []) if (c.taskId === task.id && c.status === "pending") published.set(c.path, c.proposed);
+        await this.log("resumed", `Continuing after ${checkpoint.turns} step(s)`, task.id, { turns: checkpoint.turns, drafts: checkpoint.drafts.length });
+      }
       const checkDir = () => scratch.sync(overlay.allChanges());
 
       worker = new Worker({
@@ -215,10 +238,13 @@ export class Orchestrator {
         beforeAsk: async () => void (await this.publishDrafts(task, overlay, published)),
         inbox: this.o.inbox && (() => this.o.inbox!(task.id)),
         log: (type, message, data) => void this.log(type, message, task.id, data),
+        history: checkpoint?.history,
+        // Saved before every step, so a restart loses at most the step in progress.
+        onTurn: (turns) => this.saveCheckpoint(task.id, turns, w, overlay, checkpoint?.turns ?? 0),
       });
 
-      const w = worker;
-      let result = await w.run();
+      const w: Worker = worker;
+      let result = await w.run(checkpoint ? RESUME_NOTE : undefined);
       for (let round = 0; w.checks.length > 0 && overlay.writes.size > 0; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the checks decide. They run on a scratch copy.
@@ -248,6 +274,7 @@ export class Orchestrator {
       // Saved before "done", so a follow-up the user starts right away has it.
       await this.o.store.saveHistory(this.o.runId, task.id, w.history()).catch(() => undefined);
       worker = undefined;
+      await this.o.store.deleteCheckpoint(this.o.runId, task.id).catch(() => undefined);
       await this.setStatus(task, "done");
       if (changes.length) await this.o.onChanges?.(task, changes);
     } catch (err) {
@@ -264,12 +291,20 @@ export class Orchestrator {
         if (kept.length) await this.o.store.updateTask(this.o.runId, task.id, { changedFiles: kept }).catch(() => undefined);
       }
       await this.handleFailure(task, err, controller.signal.aborted, kept);
+      // A stopped sub-agent keeps its checkpoint so it can continue; a failed one starts over with a note on what went wrong.
+      if (!signal.aborted) await this.o.store.deleteCheckpoint(this.o.runId, task.id).catch(() => undefined);
     } finally {
       // Kept so the user can reopen this sub-agent later and it remembers its work.
       if (worker) await this.o.store.saveHistory(this.o.runId, task.id, worker.history()).catch(() => undefined);
       this.taskControllers.delete(task.id);
       await scratch.remove().catch(() => undefined);
     }
+  }
+
+  private async saveCheckpoint(taskId: string, turns: number, worker: Worker, overlay: OverlayFiles, earlierTurns: number): Promise<void> {
+    await this.o.store
+      .saveCheckpoint(this.o.runId, taskId, { turns: earlierTurns + turns, history: worker.history(), drafts: overlay.snapshot() })
+      .catch(() => undefined);
   }
 
   /**
