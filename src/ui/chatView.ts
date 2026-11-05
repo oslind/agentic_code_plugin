@@ -18,7 +18,7 @@ type FromView =
   | { type: "cancel" }
   | { type: "settings" }
   | { type: "runCommand"; command: "showTaskLog" | "retryFailed"; runId: string }
-  | { type: "review"; runId: string; action: "show" | "accept" | "reject"; path?: string; taskId?: string }
+  | { type: "review"; runId: string; action: "show" | "open" | "accept" | "reject"; path?: string; taskId?: string }
   | { type: "decide"; entryId: string; decision: unknown }
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
   | { type: "endAgentChat"; runId: string; taskId: string }
@@ -27,7 +27,7 @@ type FromView =
   | { type: "openLink"; url: string };
 
 const RUN_COMMANDS = new Set(["showTaskLog", "retryFailed"]);
-const REVIEW_ACTIONS = new Set(["show", "accept", "reject"]);
+const REVIEW_ACTIONS = new Set(["show", "open", "accept", "reject"]);
 /** A workspace-relative path as the page sends it back. The store only holds paths the policy already accepted. */
 const isRelPath = (x: unknown): x is string => typeof x === "string" && x.length > 0 && x.length < 1000 && !x.startsWith("/") && !x.split("/").includes("..");
 
@@ -52,6 +52,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly output: vscode.LogOutputChannel,
   ) {
     controller.onChange(() => this.schedulePush());
+    // Live model output goes on its own small message: a full state push for every few tokens would be far too heavy.
+    controller.live.onChange(() => {
+      if (this.view?.visible) void this.view.webview.postMessage({ type: "live", live: controller.live.snapshot() }).then(undefined, () => undefined);
+    });
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {

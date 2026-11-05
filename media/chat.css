@@ -1379,3 +1379,85 @@ body.vscode-high-contrast-light [class^="tok-"] {
 .md a.md-link:hover {
   color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
+
+/* ---- live model output: what a "thinking" agent is doing right now ---- */
+.live {
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.live[hidden] {
+  display: none;
+}
+
+.live-head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.live-phase {
+  color: var(--info);
+  white-space: nowrap;
+}
+
+.live-meta {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-tail {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  /* A fixed height, so the stream never pushes the page around while it grows. */
+  height: 5.6em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  border-left: 2px solid var(--info);
+  border-radius: 0 4px 4px 0;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.live-tail.is-thinking {
+  font-style: italic;
+}
+
+/* The oldest visible line fades out instead of being cut in half. */
+.live-tail {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.6em);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.6em);
+}
+
+/* The summary at the top of Overview stays on screen, so it keeps its stream short. */
+.summary .live-tail {
+  height: 4.2em;
+}
+
+.accepted-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.accepted-group > .section-head {
+  margin-bottom: 0;
+}
+
+.drafts-now {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+  margin-top: 4px;
+}
