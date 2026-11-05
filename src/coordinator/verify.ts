@@ -21,7 +21,7 @@ import { ChatMessage, ModelProvider } from "../providers/types";
  * whatever the model says. The rules fail closed: "not done" is never turned
  * into "verified", even when the model cannot say what is missing; that is
  * an unverified result that needs the user's own review. When it is not done, the chat plans fix-up tasks
- * for what is left and runs them, up to agentic.delegation.verifyRounds times.
+ * for what is left and runs them, up to the fix-up rounds of the oversight level (agentic.delegation.oversight).
  */
 
 /** Most fix-up rounds after one request, whatever the setting says. */

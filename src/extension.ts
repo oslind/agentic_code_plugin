@@ -1,11 +1,12 @@
 import { ChangeViews } from "./ui/changeViews";
-import { promises as fs } from "fs";
+import { promises as fs, readFileSync } from "fs";
+import * as path from "path";
 import { relativeInside } from "./tools/paths";
 import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readOversightLimits, readPermissions, readRunConfig, setSecretApiKey } from "./config";
-import { legacyApiKeyFrom, verificationFrom } from "./userSettings";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, setSecretApiKey } from "./config";
+import { legacyApiKeyFrom } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -66,6 +67,23 @@ async function loadApiKey(context: vscode.ExtensionContext, output: vscode.LogOu
   setSecretApiKey(key);
 }
 
+/**
+ * When this VSIX was packaged (out/build.json, written by scripts/stamp-build.mjs), as " · built 11-05 13:02".
+ * The version only changes at a release, so the build time tells two builds of the same version apart.
+ */
+function buildStamp(extensionPath: string): string {
+  try {
+    const { builtAt } = JSON.parse(readFileSync(path.join(extensionPath, "out", "build.json"), "utf8")) as { builtAt?: unknown };
+    const d = typeof builtAt === "string" ? new Date(builtAt) : undefined;
+    if (!d || Number.isNaN(d.getTime())) return "";
+    const two = (n: number) => String(n).padStart(2, "0");
+    return ` · built ${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+  } catch {
+    // A development build (F5) has no stamp.
+    return "";
+  }
+}
+
 /** Says, once per folder and session, that the project's own settings tried to change security settings and were ignored. */
 function warnAboutProjectSettings(output: vscode.LogOutputChannel): vscode.Disposable {
   const warned = new Set<string>();
@@ -80,17 +98,29 @@ function warnAboutProjectSettings(output: vscode.LogOutputChannel): vscode.Dispo
       void vscode.window.showWarningMessage(message);
     }
   };
+  let retiredWarned = "";
+  const checkRetired = () => {
+    const keys = readRetiredOversightSettings();
+    if (!keys.length || keys.join(",") === retiredWarned) return;
+    retiredWarned = keys.join(",");
+    const message = `${keys.join(", ")} ${keys.length === 1 ? "is" : "are"} no longer used. Agentic Code now has one setting for how closely the coordinator watches and checks sub-agents: agentic.delegation.oversight ("off", "light", "standard" or "thorough"). You can remove the old ${keys.length === 1 ? "setting" : "settings"}.`;
+    output.warn(message);
+    void vscode.window.showInformationMessage(message);
+  };
   check();
+  checkRetired();
   return vscode.Disposable.from(
     vscode.workspace.onDidChangeWorkspaceFolders(check),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.model") || e.affectsConfiguration("agentic.chat") || e.affectsConfiguration("agentic.delegation")) check();
+      if (e.affectsConfiguration("agentic.delegation")) checkRetired();
     }),
   );
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Agentic Code", { log: true });
+  const build = buildStamp(context.extensionPath);
   void loadApiKey(context, output).catch((err) => output.warn(`Could not read the API key from secret storage: ${(err as Error).message}`));
   context.subscriptions.push(warnAboutProjectSettings(output));
   setExtraSecretPatterns(readProtectedFiles());
@@ -114,8 +144,8 @@ export function activate(context: vscode.ExtensionContext): void {
     coordinatorHistoryTokens: () => readCoordinatorHistoryTokens(),
     modelLabel: (root) => {
       const c = readModelConfig(root ? vscode.Uri.file(root) : undefined);
-      // The version shows which build is installed, which helps when trying a new VSIX.
-      return `${c.model} at ${c.baseUrl} · v${context.extension.packageJSON.version as string}`;
+      // The version and build time show which build is installed, which helps when trying a new VSIX.
+      return `${c.model} at ${c.baseUrl} · v${context.extension.packageJSON.version as string}${build}`;
     },
     pickWorkspace: async () => (await pickWorkspaceFolder())?.uri.fsPath,
     // Only paths inside the conversation's folder can be attached, and only the paths are sent.
@@ -185,9 +215,8 @@ export function activate(context: vscode.ExtensionContext): void {
         maxTasks: c.get<number>("maxTasks", 12),
         maxResearchers: c.get<number>("maxResearchers", 8),
         maxResearchRounds: c.get<number>("maxResearchRounds", 3),
-        // These add model calls on their own, so only user settings count (a project cannot raise them).
+        // The oversight level adds model calls on its own, so only user settings count (a project cannot raise it).
         ...readOversightLimits(),
-        ...verificationFrom(c),
       };
     },
     scratchLinkDirs: (workspaceRoot) => readRunConfig(vscode.Uri.file(workspaceRoot)).linkDirs,

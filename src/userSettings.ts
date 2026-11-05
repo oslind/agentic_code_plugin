@@ -42,25 +42,23 @@ export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens"] as const;
 
 /**
  * Keys under "agentic.delegation" that decide how many extra model calls the
- * coordinator makes on its own (progress checks, check-ins, result reviews,
- * verification and its fix-up rounds), and the per-run cap on all model
- * calls. A project could otherwise turn a run into many more requests to
- * your model server.
+ * coordinator makes on its own (the oversight level: check-ins, progress
+ * looks, result reviews, verification and its fix-up rounds), and the
+ * per-run cap on all model calls. A project could otherwise turn a run into
+ * many more requests to your model server.
  */
-export const USER_ONLY_DELEGATION_KEYS = ["checkIns", "progressEvery", "reviewRounds", "maxModelCallsPerRun", "verify", "verifyRounds", "autoRetries"] as const;
+export const USER_ONLY_DELEGATION_KEYS = ["oversight", "maxModelCallsPerRun", "autoRetries"] as const;
 
 /** Times a failed sub-agent is started again on its own, 0 (off) to 3, default 1. From user settings only: each retry calls the model again. */
 export function autoRetriesFrom(section: InspectableSection): number {
   return Math.max(0, Math.min(3, Math.floor(userValue(section, "autoRetries", 1, isNumber))));
 }
 
-/** Whether the coordinator verifies a request, and its most fix-up rounds (0 to 5), from user settings only. */
-export function verificationFrom(section: InspectableSection): { verify: boolean; verifyRounds: number } {
-  return {
-    verify: userValue(section, "verify", true, isBoolean),
-    verifyRounds: Math.max(0, Math.min(5, Math.floor(userValue(section, "verifyRounds", 2, isNumber)))),
-  };
-}
+/**
+ * Settings replaced by agentic.delegation.oversight. They are no longer read;
+ * a user who still has one set is told once which level to pick instead.
+ */
+export const RETIRED_OVERSIGHT_KEYS = ["checkIns", "progressEvery", "reviewRounds", "verify", "verifyRounds"] as const;
 
 export const DEFAULT_BASE_URL = "http://localhost:11434/v1";
 
@@ -109,27 +107,54 @@ export function coordinatorHistoryTokensFrom(section: InspectableSection): numbe
   return Math.max(0, Math.floor(userValue(section, "coordinatorHistoryTokens", 12000, isNumber)));
 }
 
-export interface OversightLimits {
-  /** Looks at a sub-agent that seems stuck, per sub-agent. 0 to 5, default 2. */
+/** How closely the coordinator watches and checks its sub-agents. One setting instead of five overlapping ones. */
+export const OVERSIGHT_LEVELS = ["off", "light", "standard", "thorough"] as const;
+export type OversightLevel = (typeof OVERSIGHT_LEVELS)[number];
+export const DEFAULT_OVERSIGHT: OversightLevel = "standard";
+
+/** What each level does. Every look, review and verification is one model call; fix-up rounds start sub-agents again. */
+export interface OversightSteps {
+  /** Looks at a sub-agent that seems stuck, per sub-agent. */
   checkIns: number;
-  /** Steps between regular progress looks. 0 (off) to 40, default 8. */
+  /** Steps between regular progress looks. 0 is off. */
   progressEvery: number;
-  /** Times a result may be sent back, per task. 0 (no review) to 3, default 1. */
+  /** Times a result may be sent back, per task. 0 is no review. */
   reviewRounds: number;
+  /** Whether the coordinator verifies a request before calling it done. */
+  verify: boolean;
+  /** Fix-up rounds when verification finds work left. */
+  verifyRounds: number;
+}
+
+export const OVERSIGHT: Record<OversightLevel, OversightSteps> = {
+  off: { checkIns: 0, progressEvery: 0, reviewRounds: 0, verify: false, verifyRounds: 0 },
+  light: { checkIns: 1, progressEvery: 0, reviewRounds: 0, verify: true, verifyRounds: 1 },
+  standard: { checkIns: 2, progressEvery: 8, reviewRounds: 1, verify: true, verifyRounds: 2 },
+  thorough: { checkIns: 4, progressEvery: 4, reviewRounds: 2, verify: true, verifyRounds: 4 },
+};
+
+export interface OversightLimits extends OversightSteps {
+  level: OversightLevel;
   /** Most model calls one run may make, sub-agents and coordinator together. 0 means no limit. Default 500. */
   maxModelCallsPerRun: number;
 }
 
 const clampInt = (v: number, min: number, max: number) => Math.max(min, Math.min(max, Math.floor(v)));
+const isOversightLevel = (v: unknown): v is OversightLevel => typeof v === "string" && (OVERSIGHT_LEVELS as readonly string[]).includes(v);
 
-/** How much the coordinator oversees sub-agents, and the per-run model-call cap, from user settings only. */
+/** The oversight level and the per-run model-call cap, from user settings only. */
 export function oversightLimitsFrom(section: InspectableSection): OversightLimits {
+  const level = userValue(section, "oversight", DEFAULT_OVERSIGHT, isOversightLevel);
   return {
-    checkIns: clampInt(userValue(section, "checkIns", 2, isNumber), 0, 5),
-    progressEvery: clampInt(userValue(section, "progressEvery", 8, isNumber), 0, 40),
-    reviewRounds: clampInt(userValue(section, "reviewRounds", 1, isNumber), 0, 3),
+    level,
+    ...OVERSIGHT[level],
     maxModelCallsPerRun: clampInt(userValue(section, "maxModelCallsPerRun", 500, isNumber), 0, 100000),
   };
+}
+
+/** Retired oversight settings the user still has in their own settings, so they can be told to use the level instead. */
+export function retiredOversightSettings(section: InspectableSection): string[] {
+  return RETIRED_OVERSIGHT_KEYS.filter((k) => section.inspect<unknown>(k)?.globalValue !== undefined);
 }
 
 /** The auto-approve switches, from user settings only. Anything but an explicit `true` there is off. */

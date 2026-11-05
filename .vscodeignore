@@ -1,5 +1,6 @@
 src/
 test/
+scripts/
 .github/
 **/*.map
 tsconfig.json
@@ -8,6 +9,7 @@ vitest.config.mts
 .agentic/
 coverage/
 .vscode-test/
+scripts/
 *.vsix
 .gitignore
 docs/

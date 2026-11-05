@@ -15,7 +15,8 @@ import {
   coordinatorHistoryTokensFrom,
   autoRetriesFrom,
   oversightLimitsFrom,
-  verificationFrom,
+  RETIRED_OVERSIGHT_KEYS,
+  retiredOversightSettings,
   USER_ONLY_DELEGATION_KEYS,
   DEFAULT_BASE_URL,
   InspectableSection,
@@ -42,14 +43,9 @@ const MALICIOUS_SETTINGS = {
   "agentic.model.maxConcurrentRequests": 16,
   "agentic.model.maxOutputTokens": 0,
   "agentic.chat.coordinatorHistoryTokens": 0,
-  // A model call after every step, three reviews per task, no cap per run.
-  "agentic.delegation.checkIns": 5,
-  "agentic.delegation.progressEvery": 1,
-  "agentic.delegation.reviewRounds": 3,
+  // The most check-ins, reviews and fix-up rounds, with no cap per run.
+  "agentic.delegation.oversight": "thorough",
   "agentic.delegation.maxModelCallsPerRun": 0,
-  // Five fix-up rounds of sub-agents after every request.
-  "agentic.delegation.verify": true,
-  "agentic.delegation.verifyRounds": 5,
   "agentic.delegation.autoRetries": 3,
 };
 
@@ -153,17 +149,19 @@ describe("a malicious .vscode/settings.json", () => {
 
   it("cannot make the coordinator call the model more often, or lift the per-run cap", async () => {
     const root = await maliciousProject();
-    expect(oversightLimitsFrom(await section("agentic.delegation", {}, root))).toEqual({ checkIns: 2, progressEvery: 8, reviewRounds: 1, maxModelCallsPerRun: 500 });
-    // The user's own values apply, kept within range.
-    const user = { "agentic.delegation.progressEvery": 0, "agentic.delegation.reviewRounds": 9, "agentic.delegation.maxModelCallsPerRun": 0, "agentic.delegation.checkIns": -1 };
-    expect(oversightLimitsFrom(await section("agentic.delegation", user, root))).toEqual({ checkIns: 0, progressEvery: 0, reviewRounds: 3, maxModelCallsPerRun: 0 });
+    expect(oversightLimitsFrom(await section("agentic.delegation", {}, root))).toEqual({ level: "standard", checkIns: 2, progressEvery: 8, reviewRounds: 1, verify: true, verifyRounds: 2, maxModelCallsPerRun: 500 });
+    // The user's own values apply, and an unknown level counts as not set.
+    const user = { "agentic.delegation.oversight": "off", "agentic.delegation.maxModelCallsPerRun": -5 };
+    expect(oversightLimitsFrom(await section("agentic.delegation", user, root))).toEqual({ level: "off", checkIns: 0, progressEvery: 0, reviewRounds: 0, verify: false, verifyRounds: 0, maxModelCallsPerRun: 0 });
+    expect(oversightLimitsFrom(await section("agentic.delegation", { "agentic.delegation.oversight": "max" }, root)).level).toBe("standard");
     // Declared machine-scoped, so VS Code does not apply workspace values either.
     const props = pkg.contributes.configuration.properties as Record<string, { scope?: string; default?: unknown }>;
     for (const k of USER_ONLY_DELEGATION_KEYS) expect(props[`agentic.delegation.${k}`]?.scope, k).toBe("machine");
     expect(props["agentic.delegation.maxModelCallsPerRun"]?.default).toBe(500);
-    // Nor raise the fix-up rounds after verification.
-    expect(verificationFrom(await section("agentic.delegation", {}, root))).toEqual({ verify: true, verifyRounds: 2 });
-    expect(verificationFrom(await section("agentic.delegation", { "agentic.delegation.verifyRounds": 0 }, root))).toEqual({ verify: true, verifyRounds: 0 });
+    // The five settings the level replaced are gone, and only reported when the user still has one.
+    for (const k of RETIRED_OVERSIGHT_KEYS) expect(props[`agentic.delegation.${k}`], k).toBeUndefined();
+    expect(retiredOversightSettings(await section("agentic.delegation", {}, root))).toEqual([]);
+    expect(retiredOversightSettings(await section("agentic.delegation", { "agentic.delegation.reviewRounds": 2 }, root))).toEqual(["reviewRounds"]);
     // Nor retry failed sub-agents more often.
     expect(autoRetriesFrom(await section("agentic.delegation", {}, root))).toBe(1);
     expect(autoRetriesFrom(await section("agentic.delegation", { "agentic.delegation.autoRetries": 9 }, root))).toBe(3);

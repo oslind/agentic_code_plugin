@@ -37,7 +37,7 @@ export type ReviewDecision = z.infer<typeof reviewSchema>;
  * - not_accepted: it read it and found something missing, but the sub-agent
  *   could not be sent back (too few steps left, or sent back as often as
  *   allowed). The user decides.
- * - off: the user turned review off (agentic.delegation.reviewRounds 0).
+ * - off: the user turned review off (agentic.delegation.oversight "off" or "light").
  * - failed / unclear / over_budget: a review was due but there was none (the
  *   model gave no usable reply, it asked for changes without saying which,
  *   or the run used its model-call budget). The user decides.

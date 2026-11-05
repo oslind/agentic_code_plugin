@@ -289,29 +289,23 @@
           "maximum": 10,
           "description": "Most read-only sub-agents the coordinator may send in one research round. How many run at the same time is agentic.maxParallelWorkers."
         },
-        "agentic.delegation.checkIns": {
-          "type": "number",
-          "default": 2,
-          "minimum": 0,
-          "maximum": 5,
-          "description": "How often the coordinator may step in with one sub-agent while it works. Every step is watched without extra model calls; when a sub-agent seems stuck (the same call over and over, steps refused by the rules, many steps without a draft, checks that keep failing), the coordinator looks at it and lets it continue, sends it a note, or stops it (only after a note, and its drafts are kept). 0 turns this off. Sub-agents can always ask the coordinator questions. Only your user settings count: a project cannot raise this.",
-          "scope": "machine"
-        },
-        "agentic.delegation.progressEvery": {
-          "type": "number",
-          "default": 8,
-          "minimum": 0,
-          "maximum": 40,
-          "description": "Every this many steps, the coordinator reads a sub-agent's progress (its thoughts are its reports) and sends it a note when it knows something useful the sub-agent does not: research findings, what other sub-agents found or changed, or a correction. It also looks soon after another sub-agent finishes. Each look is one model call. 0 turns regular looks off; looks when a sub-agent seems stuck are set by agentic.delegation.checkIns. Only your user settings count: a project cannot make the looks more frequent.",
-          "scope": "machine"
-        },
-        "agentic.delegation.reviewRounds": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "maximum": 3,
-          "description": "When a sub-agent finishes, the coordinator reads its report and drafts and checks them against the task and your request. If something is missing or wrong, it sends the sub-agent back with feedback, at most this many times per task. The checks still decide whether code works. When it can no longer send a sub-agent back (sent back this many times, or too few steps left), it still reads the result, and if something is missing its drafts wait for you with its feedback. When a review cannot happen (the model gives no usable reply), the chat says the result is unreviewed. In both cases nothing is written automatically, even when auto-approve is on. 0 turns the review off. Only your user settings count: a project cannot raise this.",
-          "scope": "machine"
+        "agentic.delegation.oversight": {
+          "type": "string",
+          "enum": [
+            "off",
+            "light",
+            "standard",
+            "thorough"
+          ],
+          "enumDescriptions": [
+            "No check-ins, progress looks, result reviews or verification. Sub-agents' own checks still run, and every change still waits for your review unless Edit files is on.",
+            "One look at a sub-agent that seems stuck, no result reviews, and verification with at most one fix-up round.",
+            "Up to two looks at a stuck sub-agent, a progress look every 8 steps, each result reviewed once (sent back at most once), and verification with up to two fix-up rounds.",
+            "Up to four looks at a stuck sub-agent, a progress look every 4 steps, results sent back up to twice, and verification with up to four fix-up rounds. The most model calls."
+          ],
+          "default": "standard",
+          "scope": "machine",
+          "description": "How closely the coordinator watches and checks its sub-agents. It watches every step without model calls, and when a sub-agent seems stuck it looks at it and lets it continue, sends a note, or stops it (only after a note; drafts are kept). It also looks at progress every few steps, reviews each result against the task before it counts (sending it back with feedback when something is missing), and verifies the whole request before calling it done: the approved checks run once more on a copy with all drafts together, the drafts are read against your request, and fix-up rounds go back for what is left. After research it checks the answer covers your question. Each look, review and verification is a model call, so higher levels cost more. A review that cannot happen never counts as passed: those drafts wait for you even with Edit files on. Replaces checkIns, progressEvery, reviewRounds, verify and verifyRounds. Only your user settings count: a project cannot raise this."
         },
         "agentic.delegation.maxModelCallsPerRun": {
           "type": "number",
@@ -320,20 +314,6 @@
           "maximum": 100000,
           "description": "Most model calls one run may make: every step of its sub-agents plus the coordinator's check-ins, progress looks, result reviews and answers to sub-agents. When a run reaches it, its sub-agents are stopped as if you pressed Stop, and their drafts are kept for your review (never written automatically). 0 means no limit. Only your user settings count: a project cannot raise this.",
           "scope": "machine"
-        },
-        "agentic.delegation.verify": {
-          "type": "boolean",
-          "scope": "machine",
-          "default": true,
-          "description": "Before the coordinator calls a request done, it verifies it. After a change, it runs the approved checks once more on a copy of the project with all drafts together (your files are not touched; commands still need your approval unless \"Run commands\" is on) and reads the drafts against your request. After research, it checks that the answer covers your question. If something is left, it sends sub-agents back for it (see agentic.delegation.verifyRounds). The final reply says what was verified and how. Read from user settings only."
-        },
-        "agentic.delegation.verifyRounds": {
-          "type": "number",
-          "scope": "machine",
-          "default": 2,
-          "minimum": 0,
-          "maximum": 5,
-          "description": "When verification finds work left (a failed check, a task that did not finish, a missing part of the request, or an open part of a research question), the coordinator plans fix-up tasks for exactly that and runs them, then verifies again, at most this many times per request. Fix-up tasks build on the drafts already made, and you still review every change. 0 verifies and reports without sending anyone back. Read from user settings only, so a project cannot make more model calls or rounds happen."
         },
         "agentic.delegation.autoRetries": {
           "type": "number",
@@ -470,7 +450,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && node scripts/stamp-build.mjs",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.e2e.json",

@@ -1,6 +1,6 @@
 import { AGENT_LABEL, AgentState, agentState, COORDINATOR_LABEL, CoordinatorState, coordinatorState, isActiveAgent } from "./lifecycle";
 import { ChatEntry } from "./types";
-import type { DoneBar, FollowUpState, PlanView } from "./chatController";
+import type { DoneBar, FollowUpState, PlanView } from "./viewState";
 
 /** One sub-agent as a card in the Agents view. */
 export interface AgentCard {

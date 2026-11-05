@@ -15,6 +15,7 @@ import {
   oversightLimitsFrom,
   PERMISSION_KEYS,
   permissionsFrom,
+  retiredOversightSettings,
   USER_ONLY_CHAT_KEYS,
   USER_ONLY_DELEGATION_KEYS,
   USER_ONLY_MODEL_KEYS,
@@ -176,11 +177,17 @@ export function readCoordinatorHistoryTokens(): number {
 }
 
 /**
- * Check-ins, progress looks, result reviews and the per-run model-call cap.
+ * The oversight level (check-ins, progress looks, result reviews,
+ * verification and fix-up rounds) and the per-run model-call cap.
  * User settings only, so a project cannot make a run call the model more.
  */
 export function readOversightLimits(): OversightLimits {
   return oversightLimitsFrom(vscode.workspace.getConfiguration("agentic.delegation"));
+}
+
+/** Retired oversight settings still in the user's settings, as full keys. */
+export function readRetiredOversightSettings(): string[] {
+  return retiredOversightSettings(vscode.workspace.getConfiguration("agentic.delegation")).map((k) => `agentic.delegation.${k}`);
 }
 
 /** Times a failed sub-agent is retried automatically. User settings only, so a project cannot make a run call the model more. */

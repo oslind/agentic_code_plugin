@@ -11,7 +11,7 @@ import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
-import { buildCoordinatorMessages, coordinatorTurn, editingReason, enforceMode, isGoAhead, isReadOnlyPlan, isReadOnlyRequest, keepPromise, steerToResearch } from "../src/chat/coordinatorChat";
+import { buildCoordinatorMessages, coordinatorTurn, enforceMode, isGoAhead, isReadOnlyPlan, routeTurn } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
@@ -37,7 +37,7 @@ function scripted(replies: string[], contextWindow = 32768): ModelProvider & { r
   };
 }
 
-const turn = (reply: string, action = "none", request = "") => JSON.stringify({ reply, action, request });
+const turn = (reply: string, action = "none", request = "", extra: Record<string, unknown> = {}) => JSON.stringify({ reply, action, request, ...extra });
 const plan = JSON.stringify({
   tasks: [
     { id: "add-model", title: "Add model", instructions: "Create src/model.ts with a User type.", dependsOn: [], fileScope: ["src/model.ts"] },
@@ -712,7 +712,7 @@ describe("ChatController", () => {
     await controller.send("add users");
     const runId = (await controller.state()).current!.entries.find((e) => e.kind === "plan")!.runId!;
     // Something else keeps the chat busy.
-    (controller as unknown as { busy?: string }).busy = "Coordinator is thinking…";
+    (controller as unknown as { s: { busy?: string } }).s.busy = "Coordinator is thinking…";
     await controller.runPlan(runId);
     release();
     await gate;
@@ -977,7 +977,8 @@ describe("ChatController", () => {
 
   it("runs a plan that only reads as research, in Plan mode, with no switch to Act", async () => {
     await fs.mkdir(path.join(dir, "ws"), { recursive: true });
-    const readPlan = JSON.stringify({ tasks: [{ id: "scan", title: "Scan sources", instructions: "Read the files in src and summarise each module.", dependsOn: [], fileScope: ["src/**"] }] });
+    // The planner marks the task as only reading, so it runs as research.
+    const readPlan = JSON.stringify({ tasks: [{ id: "scan", title: "Scan sources", instructions: "Read the files in src and summarise each module.", dependsOn: [], fileScope: ["src/**"], changes: false }] });
     const { controller, started } = setup(
       [
         turn("Plan below.", "plan", "Go through the sources module by module."),
@@ -1005,9 +1006,9 @@ describe("ChatController", () => {
     ] });
     const { controller, provider, tasks } = setup(
       [
-        // 1st message: the model wrongly plans; the plan only reads, so it becomes research.
+        // 1st message: the model plans, but the planner marks every task as only reading, so it becomes research.
         turn("Plan below.", "plan", "Read all files and summarise them."),
-        JSON.stringify({ tasks: ["server", "web", "tests", "docs"].map((id) => ({ id, title: `Read ${id}`, instructions: `Read the ${id} files and report what they do.`, dependsOn: [], fileScope: [`${id}/**`] })) }),
+        JSON.stringify({ tasks: ["server", "web", "tests", "docs"].map((id) => ({ id, title: `Read ${id}`, instructions: `Read the ${id} files and report what they do.`, dependsOn: [], fileScope: [`${id}/**`], changes: false })) }),
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "The server is webapp/pyserver.py; routes are inline." } }),
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
         JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "x" } }),
@@ -1119,6 +1120,9 @@ describe("ChatController", () => {
             thought: "I need to examine the actual code content. Let me send researchers to analyze the key files.",
             reply: "I'll analyze the main code files for issues like dead code, unused variables, and refactoring opportunities.",
             action: "none",
+            // It forgot the action, but said the work is not done.
+            goal: "answer",
+            complete: false,
             request: "",
           }),
           report("app.py: old_handler() is never called."),
@@ -1214,8 +1218,8 @@ describe("ChatController", () => {
       const { controller, started } = await inAct([
         JSON.stringify({ reply: "Reading first.", action: "research", request: "", questions: ["Where is the summary?"] }),
         finishReport("PROJECT_SUMMARY.md, formal tone."),
-        // What qwen did: it said it would delegate, but chose "none".
-        turn("I'll have a sub-agent update the summary to use less formal language.", "none"),
+        // What qwen did: it said it would delegate, but chose "none". Its goal and complete fields say what it meant.
+        turn("I'll have a sub-agent update the summary to use less formal language.", "none", "", { goal: "change", complete: false }),
         rewritePlan,
       ]);
       await controller.send("alter the summary to use less formal language");
@@ -2173,116 +2177,62 @@ describe("previewChange", () => {
   });
 });
 
-describe("questions about the project become research", () => {
-  it("tells questions from change requests", () => {
-    for (const t of ["Analyze this project, understand what it does, and repport back to me", "How do I run the tests?", "Explain the auth flow", "where is the config loaded?", "Förklara projektet"]) {
-      expect(isReadOnlyRequest(t), t).toBe(true);
-    }
-    for (const t of ["Add a dark mode toggle", "Can you fix the login bug?", "Refactor the parser and explain it", "go ahead", ""]) {
-      expect(isReadOnlyRequest(t), t).toBe(false);
-    }
-  });
+describe("routing follows the model's own structured choice", () => {
+  const route = (turn: Parameters<typeof routeTurn>[0], userText: string, afterResearch = false, canResearch = true) => routeTurn(turn, { userText, afterResearch, canResearch });
 
-  it("never overrides the model's choice to plan; the plan check decides later", () => {
-    const turn = { reply: "Switch to Act mode to run this.", action: "plan" as const, request: "Analyze the whole project and write a report" };
-    expect(steerToResearch(turn, "Analyze this project, understand what it does, and report back to me", 3)).toBe(turn);
-  });
-
-  it("turns a reply that tells the user to switch modes for a question into research with focused questions", () => {
-    const turn = { reply: "Switch to Act mode to run this.", action: "none" as const, request: "" };
-    const out = steerToResearch(turn, "Analyze this project, understand what it does, and report back to me", 3);
-    expect(out.action).toBe("research");
-    expect(out.questions).toHaveLength(3);
+  it("turns a plan for a question into read-only research, which works in Plan mode too", () => {
+    const out = route({ reply: "Switch to Act mode to run this.", action: "plan", goal: "answer", request: "Analyze the whole project and report back" }, "Analyze this project and report back to me");
+    expect(out).toMatchObject({ action: "research", questions: ["Analyze the whole project and report back"] });
     expect(out.reply).toMatch(/Nothing will be changed/);
     expect(out.overridden).toMatch(/Plan mode too/);
+    // The model's own questions are kept when it gave some.
+    expect(route({ reply: "x", action: "plan", goal: "answer", request: "r", questions: ["Where is the config loaded?"] }, "where?").questions).toEqual(["Where is the config loaded?"]);
   });
 
-  it("also catches a reply that only tells the user to switch to Act mode", () => {
-    const out = steerToResearch({ reply: "Please switch to Act mode so I can read the files.", action: "none", request: "" }, "What does src/app.ts do?");
-    expect(out).toMatchObject({ action: "research", questions: ["What does src/app.ts do?"] });
+  it("never second-guesses a plan for a change, or a plan with no goal", () => {
+    const change = { reply: "Plan below.", action: "plan" as const, goal: "change" as const, request: "Write the project summary to SUMMARY.md." };
+    expect(route(change, "write the summary to a file")).toBe(change);
+    const noGoal = { reply: "Plan below.", action: "plan" as const, request: "Add a dark mode toggle to settings." };
+    expect(route(noGoal, "Add a dark mode toggle")).toBe(noGoal);
   });
 
-  it("sees a plan whose tasks only read as research", () => {
-    expect(isReadOnlyPlan([
-      { title: "Read the source", instructions: "Read the files in src/ and summarise what each module does." },
-      { title: "Inspect config", instructions: "Look at package.json and tsconfig.json and report the build setup." },
-    ])).toBe(true);
-    expect(isReadOnlyPlan([
-      { title: "Read the source", instructions: "Read src/ and report." },
-      { title: "Add docs", instructions: "Write docs/overview.md describing the modules." },
-    ])).toBe(false);
-  });
-
-  it("catches Oskar's reading plan, including the task that combines the findings", () => {
-    expect(isReadOnlyPlan([
-      { title: "Summarize root documentation files", instructions: "Read README.md, tryapp_readme.md and .gitmodules and write a short summary of what they say." },
-      { title: "Explain shell scripts and dead-code report", instructions: "Read the shell scripts and DEAD_CODE_REPORT.md and explain what each one does." },
-      { title: "Summarize webapp Python server and test data", instructions: "Read webapp/*.py and describe the server, its routes and the test data." },
-      { title: "Combine findings into final project summary", instructions: "Combine the findings of the other tasks into one project overview for the user." },
-    ])).toBe(true);
-    // The planner's own flag decides when it is given.
-    expect(isReadOnlyPlan([{ title: "Tidy", instructions: "Update the README wording.", changes: false }])).toBe(true);
-    // "changes": true alone is not trusted; small models copy it from the example.
-    expect(isReadOnlyPlan([{ title: "Summarize", instructions: "Read src and summarise it.", changes: true }])).toBe(true);
-    // A report written to a file is a change.
-    expect(isReadOnlyPlan([{ title: "Report", instructions: "Read src and write a report to docs/report.md." }])).toBe(false);
-    expect(isReadOnlyRequest("Go through the project and make me a summary of what it does")).toBe(true);
-  });
-
-  it("catches Oskar's 6-task Read/Explore plan, even with changes: true on every task", () => {
-    const tasks = [
-      ["Read README and documentation files", "Read README.md, README_busshack.txt, tryapp_readme.md and DEAD_CODE_REPORT.md. Report what the project is for and how to set it up and run it."],
-      ["Explore Python server files", "Explore webapp/pyserver.py and the protoserver package. Describe how the server starts, which port it uses, and how commands are handled."],
-      ["Explore frontend structure", "Look through index.html, map.html, map.js and shared/utils.js. Explain how the pages are built and what changes when the map updates."],
-      ["Explore flight instrument panels", "Read the flight, FTI, FTF and termination panel HTML files and describe what each panel shows and how it gets its data."],
-      ["Explore data parsers", "Read flightplanparser.py, routeparser.py and restrictionsparser.py. Summarise what each parser reads and returns, and make sure to note the input formats."],
-      ["Explore configuration files", "Inspect configuration.json, proto/README.md and command.proto and explain the settings and message types."],
-    ].map(([title, instructions], i) => ({ id: `t${i}`, title, instructions, dependsOn: [], fileScope: ["webapp/**"], changes: true }));
-    expect(tasks.map(editingReason)).toEqual(tasks.map(() => undefined));
-    expect(isReadOnlyPlan(tasks)).toBe(true);
-  });
-
-  it("writing a summary to a file is a change, not a question", () => {
-    for (const t of ["write the summary to a file", "Write the summary into SUMMARY.md", "save the overview", "put the report in docs/overview.md", "skriv sammanfattningen till en fil", "make a report and save it as notes.md"]) {
-      expect(isReadOnlyRequest(t), t).toBe(false);
-    }
-    expect(steerToResearch({ reply: "A sub-agent will write it.", action: "plan", request: "Write the project summary to SUMMARY.md." }, "write the summary to a file").action).toBe("plan");
-    expect(editingReason({ title: "Write summary file", instructions: "Write the project summary from the research into SUMMARY.md." })).toBeDefined();
-    // Reading files and summarising them in the answer is still reading.
-    expect(isReadOnlyPlan([{ title: "Read docs", instructions: "Read README.md and docs/setup.md and write a short summary of what they say." }])).toBe(true);
-    expect(isReadOnlyRequest("read README.md and give me a summary")).toBe(true);
-  });
-
-  it("still sees real change plans as changes", () => {
-    expect(editingReason({ title: "User model", instructions: "Create src/model.ts with a User type." })).toMatch(/Create src/);
-    expect(editingReason({ title: "Wind", instructions: "Read src/physics.ts, then add a wind force to the step function." })).toMatch(/add a wind force/);
-    expect(editingReason({ title: "Docs", instructions: "You should update the README with the new flags." })).toMatch(/update the README/);
-  });
-
-  it("Oskar's phrasings are changes", () => {
-    for (const t of ["alter the summary to use less formal language", "summarize this for me in a file", "shorten the README", "rephrase the intro in docs/intro.md"]) {
-      expect(isReadOnlyRequest(t), t).toBe(false);
-    }
-    expect(editingReason({ title: "Casual", instructions: "Alter PROJECT_SUMMARY.md to use less formal language." })).toBeDefined();
-    // A file named like a report word is still a file to write.
-    expect(editingReason({ title: "Write SUMMARY.md", instructions: "Create SUMMARY.md with a short project summary." })).toBeDefined();
-  });
-
-  it("turns a promise to delegate into the action it promised", () => {
+  it("keeps a promise to delegate when the model says the work is not complete", () => {
     const promise = { reply: "I'll have a sub-agent update the summary to use less formal language.", action: "none" as const, request: "" };
-    const out = keepPromise(promise, "alter the summary to use less formal language", true);
-    expect(out.action).toBe("plan");
-    expect(out.request).toMatch(/alter the summary[\s\S]*less formal/);
-    // A plain answer is left alone.
-    const answer = { reply: "It is a web HMI.", action: "none" as const, request: "" };
-    expect(keepPromise(answer, "what is it?", true)).toBe(answer);
-    // After research, a question is answered, not planned.
-    expect(keepPromise({ ...promise, reply: "I'll have the sub-agents look into it." }, "what does it do?", true).action).toBe("none");
-    // ...unless more research rounds are left: then looking deeper is a research round.
-    const deeper = keepPromise({ ...promise, reply: "I'll analyze the main code files for dead code." }, "find dead code", true, true);
+    const plan = route({ ...promise, goal: "change", complete: false }, "alter the summary to use less formal language", true, false);
+    expect(plan.action).toBe("plan");
+    expect(plan.request).toMatch(/alter the summary[\s\S]*less formal/);
+    // A question that still needs reading becomes research, before research and while rounds are left after it.
+    expect(route({ ...promise, goal: "answer", complete: false }, "What does src/app.ts do?")).toMatchObject({ action: "research", questions: ["What does src/app.ts do?"] });
+    const deeper = route({ ...promise, reply: "I'll analyze the main code files for dead code.", goal: "answer", complete: false }, "find dead code", true, true);
     expect(deeper).toMatchObject({ action: "research", questions: [expect.stringMatching(/find dead code[\s\S]*Dig deeper/)] });
-    // A promise to change something is still a plan.
-    expect(keepPromise(promise, "alter the summary to use less formal language", true, true).action).toBe("plan");
+    // With no rounds left, it answers from the reports and says research stopped.
+    expect(route({ ...promise, goal: "answer", complete: false }, "find dead code", true, false)).toMatchObject({ action: "none", researchLimitReached: true });
+  });
+
+  it("leaves plain answers alone, whatever the reply says", () => {
+    for (const t of [
+      { reply: "It is a flight simulator, as the research found.", action: "none" as const, request: "", goal: "answer" as const, complete: true },
+      // No structured fields at all: the action stands.
+      { reply: "I'll have the sub-agents look into it.", action: "none" as const, request: "" },
+    ]) {
+      expect(route(t, "What is it again?")).toBe(t);
+    }
+  });
+
+  it("never runs and only researches within the round limit after research", () => {
+    expect(route({ reply: "Go.", action: "run", request: "" }, "x", true, true).action).toBe("none");
+    expect(route({ reply: "More.", action: "research", request: "", questions: ["List the functions in app.py."] }, "x", true, false)).toMatchObject({ action: "none", researchLimitReached: true });
+    expect(route({ reply: "More.", action: "research", request: "", questions: ["List the functions in app.py."] }, "x", true, true).action).toBe("research");
+    // A "plan" for a question after research means: answer from the reports.
+    expect(route({ reply: "Summary.", action: "plan", goal: "answer", request: "Summarise the findings" }, "x", true, true).action).toBe("none");
+  });
+
+  it("runs a plan as research only when the planner marks every task as only reading", () => {
+    expect(isReadOnlyPlan([{ changes: false }, { changes: false }])).toBe(true);
+    // One task that may write, or a task without the flag, keeps it a change plan, reviewed as one.
+    expect(isReadOnlyPlan([{ changes: false }, { changes: true }])).toBe(false);
+    expect(isReadOnlyPlan([{ changes: false }, {}])).toBe(false);
+    expect(isReadOnlyPlan([])).toBe(false);
   });
 
   it("knows a go-ahead", () => {
@@ -2290,17 +2240,15 @@ describe("questions about the project become research", () => {
     for (const t of ["go through the code", "yes but change the title first", "add users"]) expect(isGoAhead(t), t).toBe(false);
   });
 
-  it("leaves change requests and plain answers alone", () => {
-    const plan = { reply: "Plan below.", action: "plan" as const, request: "Add a dark mode toggle to settings." };
-    expect(steerToResearch(plan, "Add a dark mode toggle")).toBe(plan);
-    const none = { reply: "It is a flight simulator, as the research found.", action: "none" as const, request: "" };
-    expect(steerToResearch(none, "What is it again?")).toBe(none);
-  });
-
-  it("runs as research in Plan mode end to end, with no switch to Act", async () => {
-    const provider = scripted([JSON.stringify({ reply: "Switch to Act mode and I'll start.", action: "none", request: "" })]);
+  it("runs a question as research in Plan mode end to end, with no switch to Act", async () => {
+    const provider = scripted([JSON.stringify({ reply: "Switch to Act mode and I'll start.", action: "plan", goal: "answer", complete: false, request: "Analyze the project and say what it does." })]);
     const out = await coordinatorTurn(provider, { mode: "plan", entries: [{ id: "1", time: "", author: "user", text: "Analyze this project and tell me what it does" }] });
-    expect(out.action).toBe("research");
+    expect(out).toMatchObject({ action: "research", modelAction: "plan" });
   });
 
+  it("asks the model for its goal and whether its reply is complete", () => {
+    const system = buildCoordinatorMessages({ mode: "act", entries: [{ id: "1", time: "", author: "user", text: "hi" }] }, 32768)[0]!.content;
+    expect(system).toMatch(/"goal"/);
+    expect(system).toMatch(/"complete"/);
+  });
 });
