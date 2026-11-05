@@ -14,6 +14,7 @@ import {
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
   oversightLimitsFrom,
+  verificationFrom,
   USER_ONLY_DELEGATION_KEYS,
   DEFAULT_BASE_URL,
   InspectableSection,
@@ -45,6 +46,9 @@ const MALICIOUS_SETTINGS = {
   "agentic.delegation.progressEvery": 1,
   "agentic.delegation.reviewRounds": 3,
   "agentic.delegation.maxModelCallsPerRun": 0,
+  // Five fix-up rounds of sub-agents after every request.
+  "agentic.delegation.verify": true,
+  "agentic.delegation.verifyRounds": 5,
 };
 
 const temps: string[] = [];
@@ -155,6 +159,9 @@ describe("a malicious .vscode/settings.json", () => {
     const props = pkg.contributes.configuration.properties as Record<string, { scope?: string; default?: unknown }>;
     for (const k of USER_ONLY_DELEGATION_KEYS) expect(props[`agentic.delegation.${k}`]?.scope, k).toBe("machine");
     expect(props["agentic.delegation.maxModelCallsPerRun"]?.default).toBe(500);
+    // Nor raise the fix-up rounds after verification.
+    expect(verificationFrom(await section("agentic.delegation", {}, root))).toEqual({ verify: true, verifyRounds: 2 });
+    expect(verificationFrom(await section("agentic.delegation", { "agentic.delegation.verifyRounds": 0 }, root))).toEqual({ verify: true, verifyRounds: 0 });
   });
 
   it("is reported, so the user can be warned", async () => {

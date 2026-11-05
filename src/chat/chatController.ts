@@ -9,7 +9,7 @@ import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
 import { PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
-import { CheckConfig } from "../checks/runner";
+import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { CommandSink } from "../checks/commandTerminal";
 import { DetectedCheck } from "../checks/detect";
 import { ToolCall } from "../tools/protocol";
@@ -22,9 +22,10 @@ import { LiveItem, LiveTracker } from "./live";
 import { ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
 import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
-import { CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
+import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
-import { isUnreviewed, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { draftsForReview, isUnreviewed, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, Verification, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { CallBudget } from "./callBudget";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { eventToEntry } from "./eventFeed";
@@ -73,7 +74,13 @@ export interface ChatHost {
     reviewRounds?: number;
     /** Most model calls one run may make (sub-agents and the coordinator's calls about them). 0 or unset: no limit. */
     maxModelCallsPerRun?: number;
+    /** Whether the coordinator verifies a request before it calls it done. Unset: off. */
+    verify?: boolean;
+    /** Most fix-up rounds when verification finds work left (agentic.delegation.verifyRounds). */
+    verifyRounds?: number;
   };
+  /** Folders linked, not copied, into a scratch copy of the project, such as node_modules. */
+  scratchLinkDirs?(workspaceRoot: string): string[];
   /** Most tokens of earlier conversation sent with each coordinator message. 0 or unset: as much as fits. */
   coordinatorHistoryTokens?(): number;
   /** Opens a pending change in VS Code: a new file as its own editor, an edit as a side-by-side diff. */
@@ -1598,7 +1605,28 @@ export class ChatController {
       } else if (turn.action === "research") {
         await doResearch(turn);
       }
-      if (researchRuns.length && !planned) await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal);
+      if (researchRuns.length && !planned) {
+        // Before the answer goes out, the coordinator checks that it answers the question, and sends
+        // researchers after what is still open while research rounds are left.
+        const limits = this.host.delegationLimits();
+        // Extra research rounds the check may start (agentic.delegation.verifyRounds), within the research round limit.
+        let moreRounds = verifyRoundLimit(limits.verifyRounds);
+        for (;;) {
+          const review = limits.verify ? (answer: string) => this.checkResearchAnswer(c.workspaceRoot, text, answer, abort.signal) : undefined;
+          const open = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds);
+          if (!open) break;
+          moreRounds--;
+          await this.append(c.id, {
+            author: "coordinator",
+            tag: "not verified",
+            tone: "warning",
+            text: `I checked my answer against your question, and it does not cover everything yet. Sending researchers after what is still open:\n${open.map((q) => `- ${q}`).join("\n")}`,
+          });
+          round++;
+          researchRuns.push(await this.research(c, { ...turn, action: "research", request: "", questions: open }, abort.signal, learnedSoFar(c.entries)));
+          c = await this.conversations.load(c.id);
+        }
+      }
     } catch (err) {
       const message = abort.signal.aborted ? "Stopped." : (err as Error).message;
       ended = abort.signal.aborted ? { status: "stopped", text: "Stopped" } : { status: "failed", text: "Failed. See the message above." };
@@ -1661,13 +1689,17 @@ export class ChatController {
         text: `Starting sub-agents for ${run.tasks.length} task(s). Each may only change its own files, and you review every change before it is written.`,
       });
       this.supervise(runId, conversationId, this.host.researchLimits().maxTurns);
-      const outcome = await this.host.runPlan(runId, this.hooksFor(conversationId, runId, checks, workspaceRoot));
+      const hooks = this.hooksFor(conversationId, runId, checks, workspaceRoot);
+      let outcome = await this.host.runPlan(runId, hooks);
       // Let sub-agent messages that are still queued land before the summary.
       await this.eventQueue.run(async () => {});
       if (!outcome) {
         await this.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
         return;
       }
+      // A sub-agent saying "done" is not the end: the coordinator verifies the request and sends sub-agents back for what is left.
+      let verification: Verification | undefined;
+      if (!this.stopping) ({ outcome, verification } = await this.verifyUntilDone(conversationId, workspaceRoot, runId, hooks, outcome));
       const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
       const finished = await this.tasks.load(runId);
       const waitingReview = (finished.changes ?? []).filter((ch) => ch.status === "pending").length;
@@ -1676,9 +1708,13 @@ export class ChatController {
       const notDone = outcome.failed.length + outcome.blocked.length;
       ended = this.stopping
         ? { status: "stopped", text: `Stopped.${review}` }
-        : ok
-          ? { status: "finished", text: `Finished.${review}` }
-          : { status: "partial", text: `Finished, but ${notDone} of ${finished.tasks.length} task(s) did not complete.${review}` };
+        : verification
+          ? verification.verified
+            ? { status: "finished", text: `Finished and verified.${review}` }
+            : { status: "partial", text: `Finished, but not verified${verification.missing.length ? `: ${verification.missing.length} thing(s) still left` : ""}.${review}` }
+          : ok
+            ? { status: "finished", text: `Finished.${review}` }
+            : { status: "partial", text: `Finished, but ${notDone} of ${finished.tasks.length} task(s) did not complete.${review}` };
       await this.append(conversationId, {
         author: "coordinator",
         kind: "outcome",
@@ -1688,7 +1724,7 @@ export class ChatController {
         outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
       });
       // The outcome lists what happened; the coordinator's own reply says what it means. A stop skips it.
-      if (!this.stopping) await this.answerFromRun(conversationId, workspaceRoot, finished, outcome);
+      if (!this.stopping) await this.answerFromRun(conversationId, workspaceRoot, finished, outcome, verification);
     } catch (err) {
       this.host.log("error", (err as Error).message);
       ended = { status: "failed", text: "Failed. See the message above." };
@@ -1807,7 +1843,9 @@ export class ChatController {
     draft: { reply: string; thought?: string; thinking?: string } | undefined,
     limitReached: boolean,
     signal: AbortSignal,
-  ): Promise<void> {
+    review?: (answer: string) => Promise<{ answered: boolean; missing: string[] } | undefined>,
+    canResearchMore = false,
+  ): Promise<string[] | undefined> {
     this.busy = "Coordinator is combining the reports into an answer…";
     this.changed();
     const reports: ResearchReport[] = [];
@@ -1823,6 +1861,25 @@ export class ChatController {
       { signal, onError: (m) => this.host.log("warn", m) },
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
+    // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
+    let check: { answered: boolean; missing: string[] } | undefined;
+    if (review && !result.fallback) {
+      this.busy = "Coordinator is checking that the answer covers your question…";
+      this.changed();
+      check = await review(result.text);
+      signal.throwIfAborted();
+      if (check && !check.answered && check.missing.length && canResearchMore) return check.missing;
+    }
+    if (check) {
+      await this.append(c.id, {
+        author: "coordinator",
+        tag: check.answered ? "verified" : "not verified",
+        tone: check.answered ? "success" : "warning",
+        text: check.answered
+          ? "I checked the answer below against your question: it covers every part."
+          : `I checked the answer below against your question, and it may not cover everything. No research rounds are left to look further. Still open:\n${check.missing.map((q) => `- ${q}`).join("\n")}`,
+      });
+    }
     if (result.suspicious.length) {
       const which = result.suspicious.map((n) => `"${reports[n - 1]!.title}"`).join(", ");
       this.host.log("warn", `Research report(s) ${which} contain text that reads like instructions to an AI (possible prompt injection from a project file).`);
@@ -1840,6 +1897,20 @@ export class ChatController {
       thought: draft?.thought,
       thinking: clip(result.thinking ?? draft?.thinking),
     });
+    return undefined;
+  }
+
+  /** Does the combined answer cover the question? Undefined when the check itself failed; the answer is then sent as it is. */
+  private async checkResearchAnswer(workspaceRoot: string, question: string, answer: string, signal: AbortSignal): Promise<{ answered: boolean; missing: string[] } | undefined> {
+    try {
+      const res = await checkAnswer(this.coordinatorProvider(workspaceRoot), question, answer, { signal });
+      this.host.log("info", `Checked the research answer: ${res.answered ? "it answers the question" : `still open: ${res.missing.join(" | ")}`}.`);
+      return res;
+    } catch (err) {
+      if (signal.aborted) throw err;
+      this.host.log("warn", `Could not check the research answer: ${(err as Error).message}`);
+      return undefined;
+    }
   }
 
   /**
@@ -1847,14 +1918,14 @@ export class ChatController {
    * always ends with an answer in words and not only the outcome list. If the
    * model gives nothing usable, the outcome above is the reply.
    */
-  private async answerFromRun(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome): Promise<void> {
+  private async answerFromRun(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, verification?: Verification): Promise<void> {
     this.busy = "Coordinator is writing its final reply…";
     // Stop ends this call too; the outcome above then stays the reply.
     const abort = new AbortController();
     this.abort = abort;
     this.changed();
     try {
-      await this.writeRunReply(conversationId, workspaceRoot, run, outcome, abort.signal);
+      await this.writeRunReply(conversationId, workspaceRoot, run, outcome, abort.signal, verification);
     } catch (err) {
       if (!abort.signal.aborted) throw err;
     } finally {
@@ -1862,7 +1933,7 @@ export class ChatController {
     }
   }
 
-  private async writeRunReply(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, signal: AbortSignal): Promise<void> {
+  private async writeRunReply(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, signal: AbortSignal, verification?: Verification): Promise<void> {
     const c = await this.conversations.load(conversationId);
     const question = [...runScope(c.entries, run.id)].reverse().find((e) => e.author === "user" && e.kind !== "direct")?.text ?? run.request;
     const changes = run.changes ?? [];
@@ -1879,6 +1950,7 @@ export class ChatController {
           files: [...new Set(changes.filter((ch) => ch.taskId === t.id).map((ch) => ch.path))],
         })),
         drafts: { pending: of("pending"), accepted: of("accepted"), rejected: of("rejected") },
+        verification: verification && { verified: verification.verified, evidence: verification.evidence, summary: verification.summary, missing: verification.missing },
       },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
@@ -1892,6 +1964,244 @@ export class ChatController {
       });
     }
     await this.append(conversationId, { author: "coordinator", kind: "answer", tag: "final reply", runId: run.id, text: result.text, thinking: clip(result.thinking) });
+  }
+
+  /**
+   * The coordinator keeps going until it can verify the request is done.
+   * After the sub-agents finish, it runs the approved checks on all drafts
+   * together and reads the drafts against the request. If something is left,
+   * it plans fix-up tasks for exactly that, runs them in the same run (so
+   * they build on the drafts), and verifies again, at most
+   * agentic.delegation.verifyRounds times. Every write and command still
+   * needs the same approval as before, and drafts stay pending.
+   */
+  private async verifyUntilDone(
+    conversationId: string,
+    workspaceRoot: string,
+    runId: string,
+    hooks: RunHooks,
+    first: RunOutcome,
+  ): Promise<{ outcome: RunOutcome; verification?: Verification }> {
+    const limits = this.host.delegationLimits();
+    if (!limits.verify) return { outcome: first };
+    const maxRounds = verifyRoundLimit(limits.verifyRounds);
+    let outcome = first;
+    let verification: Verification | undefined;
+    // Tasks of the latest round: one of them not finishing means the request is not done.
+    let latest = new Set((await this.tasks.load(runId)).tasks.map((t) => t.id));
+    for (let round = 0; ; round++) {
+      if (this.stopping) return { outcome, verification };
+      const abort = new AbortController();
+      this.abort = abort;
+      this.runningRunId = undefined;
+      try {
+        verification = await this.verifyOnce(conversationId, workspaceRoot, runId, hooks.checks, latest, round, abort.signal);
+        if (verification.verified) return { outcome, verification };
+        if (round >= maxRounds) {
+          await this.append(conversationId, {
+            author: "coordinator",
+            runId,
+            tone: "warning",
+            tag: "not verified",
+            text: maxRounds
+              ? `I sent sub-agents back ${maxRounds} time(s) and still cannot verify that the request is done, so I stopped here. Tell me how to go on, or raise agentic.delegation.verifyRounds to allow more rounds.`
+              : "Fix-up rounds are off (agentic.delegation.verifyRounds is 0), so I did not send sub-agents back for what is left.",
+          });
+          return { outcome, verification };
+        }
+        if (verification.missing.length === 0) return { outcome, verification };
+        if (this.budget.exhausted(runId)) {
+          await this.append(conversationId, {
+            author: "coordinator",
+            runId,
+            tone: "warning",
+            tag: "not verified",
+            text: "This run used its model-call limit (agentic.delegation.maxModelCallsPerRun), so I did not send sub-agents back for what is left. Raise the limit or tell me how to go on.",
+          });
+          return { outcome, verification };
+        }
+        const added = await this.planFixUp(conversationId, workspaceRoot, runId, verification, round + 1, abort.signal);
+        if (added.length === 0) return { outcome, verification };
+        latest = new Set(added.map((t) => t.id));
+        await this.append(conversationId, {
+          author: "coordinator",
+          runId,
+          tag: `fix-up ${round + 1} of ${maxRounds}`,
+          text: `The work is not done yet, so I am sending ${added.length} sub-agent(s) back for what is left: ${added.map((t) => `"${t.title}"`).join(", ")}. They start from the drafts already made, and you still review every change.`,
+        });
+      } catch (err) {
+        if (abort.signal.aborted || this.stopping) return { outcome, verification };
+        throw err;
+      } finally {
+        if (this.abort === abort) this.abort = undefined;
+      }
+      this.busy = `Sub-agents are working on what is left (fix-up round ${round + 1})…`;
+      this.runningRunId = runId;
+      this.changed();
+      outcome = (await this.host.runPlan(runId, hooks)) ?? outcome;
+      await this.eventQueue.run(async () => {});
+    }
+  }
+
+  /** One verification: the checks on all drafts together, then one model call. The result is shown in the chat. */
+  private async verifyOnce(
+    conversationId: string,
+    workspaceRoot: string,
+    runId: string,
+    checks: CheckConfig[],
+    latest: ReadonlySet<string>,
+    round: number,
+    signal: AbortSignal,
+  ): Promise<Verification> {
+    this.busy = "Coordinator is verifying the work…";
+    this.changed();
+    await this.append(conversationId, {
+      author: "coordinator",
+      runId,
+      tag: "verifying",
+      text: checks.length
+        ? `Verifying the work before I call it done: running ${checks.length} check(s) on a copy of the project with all drafts together, then reading the drafts against your request.`
+        : "Verifying the work before I call it done: reading the drafts against your request. No checks are set up for this project, so nothing is run.",
+    });
+    const results = await this.runVerifyChecks(conversationId, workspaceRoot, runId, checks, signal);
+    signal.throwIfAborted();
+    const run = await this.tasks.load(runId);
+    const c = await this.conversations.load(conversationId);
+    const tasks: VerifyTask[] = run.tasks.map((t) => {
+      const notStarted = t.status === "pending";
+      return {
+        title: t.title,
+        status: notStarted ? "did not start" : t.status.replace("_", " "),
+        summary: t.summary ?? (t.error ? `No report: ${t.error}` : ""),
+        unfinished: latest.has(t.id) && t.status !== "done" ? (notStarted ? "a task it depends on did not finish" : (t.error ?? t.status)) : undefined,
+      };
+    });
+    // The newest draft of each file that is not rejected: what the user would get.
+    const newest = new Map<string, PendingChange>();
+    for (const ch of run.changes ?? []) if (ch.status !== "rejected") newest.set(ch.path, ch);
+    const ctx = {
+      userMessages: userMessagesOf(runScope(c.entries, runId)),
+      request: run.request,
+      tasks,
+      drafts: draftsForReview([...newest.values()]),
+      checks: results,
+      round,
+    };
+    let v: Verification;
+    try {
+      // Counted against the run's model-call budget, like every other coordinator call about its sub-agents.
+      v = await verifyRun(this.coordinatorProvider(workspaceRoot, runId), ctx, { signal });
+    } catch (err) {
+      if (signal.aborted) throw err;
+      this.host.log("warn", `The coordinator could not verify the run: ${(err as Error).message}`);
+      v = factsOnlyVerification(ctx, "the model call failed");
+    }
+    signal.throwIfAborted();
+    this.host.log("info", `Verification ${round + 1}: ${v.verified ? "verified" : "not verified"}.${v.adjusted ? ` ${v.adjusted}` : ""}`);
+    const left = v.missing.length ? `\n\nStill left:\n${v.missing.map((m) => `- ${m}`).join("\n")}` : "";
+    await this.append(conversationId, {
+      author: "coordinator",
+      runId,
+      tag: v.verified ? "verified" : "not verified",
+      tone: v.verified ? "success" : "warning",
+      text: `${v.verified ? "Verified: the request is done." : "Not verified yet."} ${v.evidence}${v.summary ? ` ${v.summary}` : ""}${left}`,
+      thought: v.thought,
+      thinking: clip(v.thinking),
+    });
+    return v;
+  }
+
+  /**
+   * The run's approved checks, on a scratch copy of the project with every
+   * pending draft of the run written in. Accepted drafts are already on disk.
+   * Each one needs the same approval as a sub-agent's check.
+   */
+  private async runVerifyChecks(conversationId: string, workspaceRoot: string, runId: string, checks: CheckConfig[], signal: AbortSignal): Promise<CheckResult[]> {
+    if (checks.length === 0) return [];
+    const root = await this.host.openFolder(workspaceRoot);
+    if (!root) throw new Error(`${workspaceRoot} is not open in VS Code, so the work cannot be verified.`);
+    const run = await this.tasks.load(runId);
+    const scratch = new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `verify-${runId.slice(0, 8)}`), this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    const trusted = new Set(checks.map((c) => c.command));
+    try {
+      const dir = await scratch.sync(pendingBase(run.changes));
+      const results = await runAllChecks(checks, dir, signal, (check) => this.approveVerifyCheck(conversationId, runId, check, trusted), this.host.terminal?.(workspaceRoot));
+      for (const r of results) {
+        const command = checks.find((k) => k.name === r.name)?.command;
+        if (r.skipped || !command) continue;
+        const data = commandEventData(command, r);
+        await this.append(conversationId, {
+          author: "coordinator",
+          runId,
+          kind: "command",
+          tag: `check ${r.name}`,
+          tone: r.passed ? "success" : "warning",
+          text: `Check "${r.name}" on all drafts together: ${r.passed ? "passed" : r.timedOut ? "timed out" : "failed"}. The full output is in the Agentic Code terminal.`,
+          command: { line: command, output: String(data.output ?? "") },
+        });
+      }
+      return results;
+    } finally {
+      await scratch.remove().catch(() => undefined);
+    }
+  }
+
+  /** Same rule as a sub-agent's checks: approved checks run when "Run commands" is on or allowed for this run, otherwise the user is asked. */
+  private async approveVerifyCheck(conversationId: string, runId: string, check: CheckConfig, trusted: ReadonlySet<string>): Promise<boolean> {
+    if (isCheckAutoApproved(this.host.permissions().commands, trusted, check.command) || this.allowedFor(runId).has(check.command)) return true;
+    const { decision } = await this.waitFor(conversationId, {
+      author: "coordinator",
+      kind: "approval",
+      runId,
+      rememberable: true,
+      rememberLabel: "Allow for the rest of this run",
+      text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify the work with all drafts together. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+    });
+    if (decision?.kind !== "allow") return false;
+    if (decision.remember) this.allowedFor(runId).add(check.command);
+    return true;
+  }
+
+  /** Plans fix-up tasks for what verification found left, and adds them to the run. Returns the tasks added. */
+  private async planFixUp(conversationId: string, workspaceRoot: string, runId: string, v: Verification, round: number, signal: AbortSignal): Promise<Task[]> {
+    this.busy = "Coordinator is planning what is left…";
+    this.changed();
+    const run = await this.tasks.load(runId);
+    const fileTree = await this.host.fileTree(workspaceRoot, signal).catch(() => undefined);
+    const reports: VerifyTask[] = run.tasks.map((t) => ({ title: t.title, status: t.status.replace("_", " "), summary: t.summary ?? t.error ?? "" }));
+    let result;
+    try {
+      result = await planRequest(
+        this.coordinatorProvider(workspaceRoot, runId),
+        { request: fixUpRequest(run.request, round), fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks) },
+        { signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Fix-up plan retry ${n}: ${err}`) },
+      );
+    } catch (err) {
+      if (signal.aborted) throw err;
+      await this.append(conversationId, { author: "system", runId, tone: "warning", text: `I could not plan the fix-up tasks (${(err as Error).message}), so the work stays unverified.` });
+      return [];
+    }
+    if (isReadOnlyPlan(result.plan.tasks)) {
+      await this.append(conversationId, { author: "system", runId, tone: "warning", text: "The fix-up plan only read files and changed nothing, so it was not started. Say what should change to finish the request." });
+      return [];
+    }
+    // New ids, so they never clash with the run's earlier tasks; dependencies point at the new ids.
+    const taken = new Set(run.tasks.map((t) => t.id));
+    const ids = new Map<string, string>();
+    for (const t of result.plan.tasks) {
+      let id = `fix${round}-${t.id}`;
+      for (let n = 2; taken.has(id); n++) id = `fix${round}-${t.id}-${n}`;
+      taken.add(id);
+      ids.set(t.id, id);
+    }
+    const added = await this.tasks.addTasks(
+      runId,
+      result.plan.tasks.map((t) => ({ ...t, id: ids.get(t.id)!, dependsOn: t.dependsOn.map((d) => ids.get(d)!).filter(Boolean) })),
+    );
+    for (const r of result.repairs) {
+      await this.tasks.log({ runId, taskId: ids.get(r.taskId), type: "plan_repair", message: `${ids.get(r.taskId)} now waits for ${ids.get(r.addedDependency)}: ${r.reason}` });
+    }
+    return added;
   }
 
   /**

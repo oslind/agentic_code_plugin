@@ -5,7 +5,7 @@ import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
 import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readOversightLimits, readPermissions, readRunConfig, setSecretApiKey } from "./config";
-import { legacyApiKeyFrom } from "./userSettings";
+import { legacyApiKeyFrom, verificationFrom } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -187,8 +187,10 @@ export function activate(context: vscode.ExtensionContext): void {
         maxResearchRounds: c.get<number>("maxResearchRounds", 3),
         // These add model calls on their own, so only user settings count (a project cannot raise them).
         ...readOversightLimits(),
+        ...verificationFrom(c),
       };
     },
+    scratchLinkDirs: (workspaceRoot) => readRunConfig(vscode.Uri.file(workspaceRoot)).linkDirs,
     terminal: (workspaceRoot) => terminals.for(workspaceRoot),
     researchLimits: () => {
       const c = readRunConfig();

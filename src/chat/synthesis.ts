@@ -147,6 +147,8 @@ export interface RunSummaryInput {
   tasks: RunTaskReport[];
   /** Drafts of the run by status. Pending drafts are not written yet. */
   drafts: { pending: string[]; accepted: string[]; rejected: string[] };
+  /** How the coordinator verified the request, when it did. `evidence` is built from facts, the rest by a model. */
+  verification?: { verified: boolean; evidence: string; summary: string; missing: string[] };
 }
 
 const RUN_SYSTEM = `You are the coordinator of a team of coding sub-agents. They have just finished working on the user's request, and you write your final reply to the user.
@@ -154,6 +156,7 @@ const RUN_SYSTEM = `You are the coordinator of a team of coding sub-agents. They
 - Then list what each part achieved, grouped by topic, in short lines starting with "- ". Name files where the reports do.
 - Say plainly what failed or did not start, and why, if the reports say.
 - Drafts: a pending draft is NOT written to the project yet; never call it written, created, saved or modified. Say that the user reviews the drafts under Drafts and that nothing is written until they press Accept. Accepted drafts are written to the project.
+- If "How the work was verified" is given, say in one or two sentences what was verified and how (which checks ran, what you compared). If it is not verified, say so plainly and list what is still left. Never call unverified work verified.
 - End with the next step for the user in one line.
 - Use only what the reports say. Write plain text. No JSON, no code blocks, no # headings. Do not promise more work.
 
@@ -168,6 +171,13 @@ export function buildRunSummaryMessages(input: RunSummaryInput, contextWindow: n
     `The work you asked the sub-agents to do:\n${input.request.trim()}`,
     `Drafts waiting for the user's review (not written yet): ${list(input.drafts.pending)}\nDrafts the user accepted (written): ${list(input.drafts.accepted)}\nDrafts rejected: ${list(input.drafts.rejected)}`,
   ];
+  const v = input.verification;
+  if (v) {
+    // The evidence line is built from facts; the coordinator's own words on it came from reading untrusted drafts, so they are fenced.
+    head.push(
+      `How the work was verified: ${v.verified ? "VERIFIED, the request is done." : "NOT VERIFIED."} ${v.evidence}\n${dataBlock("your verification notes", [v.summary, ...v.missing.map((m) => `Still left: ${m}`)].filter(Boolean).join("\n") || "(none)")}`,
+    );
+  }
   const fixed = `${RUN_SYSTEM}\n\n${head.join("\n\n")}`;
   const budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(fixed) - 100;
   const each = Math.max(MIN_REPORT_TOKENS, Math.floor(budget / Math.max(1, input.tasks.length)));

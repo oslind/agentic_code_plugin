@@ -220,6 +220,9 @@ describe("ChatController", () => {
     reviewRounds?: number;
     /** Most model calls per run. 0 or unset: no limit. */
     maxModelCallsPerRun?: number;
+    /** Verification of the whole request, and its fix-up rounds. Off unless a test turns it on. */
+    verify?: boolean;
+    verifyRounds?: number;
   }
 
   function setup(replies: string[], mode: ChatMode, opts: SetupOptions = {}) {
@@ -253,7 +256,7 @@ describe("ChatController", () => {
       log: () => {},
       openFolder: async () => path.join(dir, "ws"),
       researchLimits: () => ({ maxTurns: 10, maxParallel: 1 }),
-      delegationLimits: () => ({ maxTasks: 12, maxResearchers: 5, maxResearchRounds: opts.maxResearchRounds, progressEvery: opts.progressEvery ?? 0, reviewRounds: opts.reviewRounds ?? 0, maxModelCallsPerRun: opts.maxModelCallsPerRun }),
+      delegationLimits: () => ({ maxTasks: 12, maxResearchers: 5, maxResearchRounds: opts.maxResearchRounds, progressEvery: opts.progressEvery ?? 0, reviewRounds: opts.reviewRounds ?? 0, maxModelCallsPerRun: opts.maxModelCallsPerRun, verify: opts.verify, verifyRounds: opts.verifyRounds }),
       checksFor: async () => ({ saved, defaults: [], detected: opts.detected ?? [] }),
       saveChecks: async (_root, checks) => {
         saved = checks;
@@ -406,6 +409,165 @@ describe("ChatController", () => {
     expect(prompt).toMatch(/Task 1: Add model[\s\S]*Task 2: Add API/);
     expect(prompt).toMatch(/pending draft is NOT written/);
     expect(state.done).toMatchObject({ status: "finished" });
+  });
+
+  describe("verifying the request before calling it done", () => {
+    const verdict = (v: "done" | "not_done", verified: string, missing: string[] = []) => JSON.stringify({ thought: "Looked.", verdict: v, verified, missing });
+    const fixPlan = JSON.stringify({
+      tasks: [{ id: "add-api", title: "Finish API", instructions: "Add the GET route to src/api.ts.", dependsOn: [], fileScope: ["src/api.ts"], changes: true }],
+    });
+    /** The fake run marks every pending task done, like a real run would, and drafts a file per task. */
+    const finishAll = async (_hooks: RunHooks, runId: string, store: TaskStore) => {
+      const run = await store.load(runId);
+      for (const t of run.tasks.filter((x) => x.status === "pending")) {
+        await store.setStatus(runId, t.id, "running");
+        await store.updateTask(runId, t.id, { summary: `Did ${t.title}.` });
+        await store.addChanges(runId, [{ path: t.fileScope[0]!, taskId: t.id, original: null, proposed: `// ${t.id}\n`, status: "pending" }]);
+        await store.setStatus(runId, t.id, "done");
+      }
+    };
+
+    it("sends sub-agents back for what verification found missing, then verifies again", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const { controller, started, tasks, provider } = setup(
+        [
+          ...planReplies(),
+          verdict("not_done", "The model is drafted, but src/api.ts has no route.", ["Add GET /users/:id to src/api.ts."]),
+          fixPlan,
+          verdict("done", "src/api.ts now has the route."),
+          finalReply,
+        ],
+        "act",
+        { workspace: ws, saved: [], verify: true, verifyRounds: 2, during: finishAll },
+      );
+      await controller.send("add users");
+      expect(started).toHaveLength(2);
+      const run = await tasks.load(started[0]!);
+      expect(run.tasks.map((t) => t.id)).toEqual(["add-model", "add-api", "fix1-add-api"]);
+      expect(run.tasks.every((t) => t.status === "done")).toBe(true);
+      const state = await controller.state();
+      const tags = state.current!.entries.map((e) => e.tag).filter(Boolean);
+      expect(tags).toEqual(expect.arrayContaining(["verifying", "not verified", "fix-up 1 of 2", "verified", "final reply"]));
+      expect(state.done).toMatchObject({ status: "finished", text: expect.stringMatching(/^Finished and verified/) });
+      // The fix-up planner is told what is missing (fenced, since a model wrote it), and that the drafts are the start.
+      const fixPrompt = provider.requests[3]!.messages.map((m) => m.content).join("\n");
+      expect(fixPrompt).toMatch(/fix-up round 1/);
+      expect(fixPrompt).toMatch(/<untrusted_data[^>]*>[\s\S]*Add GET \/users\/:id to src\/api.ts/);
+      // The final reply hears how the work was verified.
+      const last = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
+      expect(last).toMatch(/How the work was verified: VERIFIED/);
+    });
+
+    it("stops after the round cap and says the work is not verified", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const { controller, started } = setup(
+        [...planReplies(), verdict("not_done", "No route.", ["Add the route to src/api.ts."]), fixPlan, verdict("not_done", "Still no route.", ["Add the route to src/api.ts."]), finalReply],
+        "act",
+        { workspace: ws, saved: [], verify: true, verifyRounds: 1, during: finishAll },
+      );
+      await controller.send("add users");
+      expect(started).toHaveLength(2);
+      const state = await controller.state();
+      expect(state.current!.entries.some((e) => e.tag === "not verified" && /sent sub-agents back 1 time/.test(e.text))).toBe(true);
+      expect(state.done).toMatchObject({ status: "partial", text: expect.stringMatching(/not verified: 1 thing/) });
+    });
+
+    it("runs the checks on all drafts together and counts a failed check as not done, whatever the model says", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      // Passes only when both files are in the copy: each task's own checks would never see both.
+      await fs.writeFile(path.join(ws, "both.js"), "const fs = require('fs'); process.exit(fs.existsSync('src/model.ts') && fs.existsSync('src/api.ts') ? 0 : 1);\n");
+      const check = { name: "both", command: "node both.js" };
+      let round = 0;
+      const { controller, started } = setup(
+        [...planReplies(), verdict("done", "Looks complete."), fixPlan, verdict("done", "Both files are there."), finalReply],
+        "act",
+        {
+          workspace: ws,
+          saved: [check],
+          permissions: { commands: true },
+          verify: true,
+          verifyRounds: 2,
+          during: async (hooks, runId, store) => {
+            // The first round only drafts the model; the fix-up round drafts the API.
+            const run = await store.load(runId);
+            for (const t of run.tasks.filter((x) => x.status === "pending")) {
+              await store.setStatus(runId, t.id, "running");
+              if (round === 0 ? t.id === "add-model" : true) await store.addChanges(runId, [{ path: t.fileScope[0]!, taskId: t.id, original: null, proposed: "x\n", status: "pending" }]);
+              await store.updateTask(runId, t.id, { summary: "Done." });
+              await store.setStatus(runId, t.id, "done");
+            }
+            round++;
+          },
+        },
+      );
+      await controller.send("add users");
+      expect(started).toHaveLength(2);
+      const entries = (await controller.state()).current!.entries;
+      const checks = entries.filter((e) => e.kind === "command" && e.tag === "check both");
+      expect(checks.map((e) => e.tone)).toEqual(["warning", "success"]);
+      expect(entries.find((e) => e.tag === "not verified")!.text).toMatch(/both failed[\s\S]*Make the "both" check pass/);
+      // The user's files were never touched: the checks ran in a copy.
+      await expect(fs.access(path.join(ws, "src", "api.ts"))).rejects.toThrow();
+      await expect(fs.access(path.join(ws, ".agentic", "scratch", `verify-${started[0]!.slice(0, 8)}`))).rejects.toThrow();
+    });
+
+    it("asks before running a verification check when Run commands is off, and says when one was skipped", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const { controller } = setup([...planReplies(), verdict("done", "Looks complete."), finalReply], "act", {
+        workspace: ws,
+        saved: [{ name: "test", command: "node -v" }],
+        permissions: { commands: false },
+        verify: true,
+        verifyRounds: 0,
+        during: finishAll,
+      });
+      const sending = controller.send("add users");
+      let card: ChatEntry | undefined;
+      for (let i = 0; i < WAIT_MS / 20 && !card; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+        card = (await controller.state()).current?.entries.find((e) => e.kind === "approval" && e.author === "coordinator" && !e.decided);
+      }
+      expect(card!.text).toMatch(/node -v.*verify the work/);
+      await controller.decide(card!.id, { kind: "deny" });
+      await sending;
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.find((e) => e.tag === "verified")!.text).toMatch(/test skipped \(not approved\)/);
+    });
+  });
+
+  it("checks a research answer against the question and researches what is still open before answering", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    await fs.writeFile(path.join(dir, "ws", "README.md"), "# Flight sim\n");
+    const worker = (summary: string) => JSON.stringify({ thought: "Done.", call: { tool: "finish", summary } });
+    const { controller, provider } = setup(
+      [
+        JSON.stringify({ reply: "I'll have a sub-agent read the project.", action: "research", request: "", questions: ["What does this project do and how is it built?"] }),
+        worker("It is a flight simulator, described in README.md."),
+        turn("It is a flight simulator."),
+        "This project is a flight simulator. How it is built was not found.",
+        JSON.stringify({ answered: "no", missing: ["How is the project built? Look at package.json and Makefile."] }),
+        worker("It is built with make, see the Makefile."),
+        "This project is a flight simulator, built with make (see the Makefile).",
+        JSON.stringify({ answered: "yes", missing: [] }),
+      ],
+      "plan",
+      { verify: true },
+    );
+    await controller.send("What does this project do and how is it built?");
+    const entries = (await controller.state()).current!.entries;
+    // One answer only, written after the second round, with the check shown before it.
+    expect(entries.filter((e) => e.kind === "answer")).toHaveLength(1);
+    expect(entries.at(-1)).toMatchObject({ kind: "answer", text: "This project is a flight simulator, built with make (see the Makefile)." });
+    expect(entries.at(-2)).toMatchObject({ tag: "verified", text: expect.stringMatching(/covers every part/) });
+    expect(entries.some((e) => e.tag === "not verified" && /How is the project built/.test(e.text))).toBe(true);
+    expect(entries.filter((e) => e.kind === "research")).toHaveLength(2);
+    // The answer being checked is fenced: a model wrote it from project files.
+    const checkPrompt = provider.requests[4]!.messages.map((m) => m.content).join("\n");
+    expect(checkPrompt).toMatch(/<untrusted_data[^>]*>[\s\S]*How it is built was not found/);
   });
 
   it("keeps the outcome as the reply when the final reply comes back empty", async () => {

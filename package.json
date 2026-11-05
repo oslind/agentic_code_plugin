@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -320,6 +320,20 @@
           "maximum": 100000,
           "description": "Most model calls one run may make: every step of its sub-agents plus the coordinator's check-ins, progress looks, result reviews and answers to sub-agents. When a run reaches it, its sub-agents are stopped as if you pressed Stop, and their drafts are kept for your review (never written automatically). 0 means no limit. Only your user settings count: a project cannot raise this.",
           "scope": "machine"
+        },
+        "agentic.delegation.verify": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "description": "Before the coordinator calls a request done, it verifies it. After a change, it runs the approved checks once more on a copy of the project with all drafts together (your files are not touched; commands still need your approval unless \"Run commands\" is on) and reads the drafts against your request. After research, it checks that the answer covers your question. If something is left, it sends sub-agents back for it (see agentic.delegation.verifyRounds). The final reply says what was verified and how. Read from user settings only."
+        },
+        "agentic.delegation.verifyRounds": {
+          "type": "number",
+          "scope": "machine",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 5,
+          "description": "When verification finds work left (a failed check, a task that did not finish, a missing part of the request, or an open part of a research question), the coordinator plans fix-up tasks for exactly that and runs them, then verifies again, at most this many times per request. Fix-up tasks build on the drafts already made, and you still review every change. 0 verifies and reports without sending anyone back. Read from user settings only, so a project cannot make more model calls or rounds happen."
         },
         "agentic.delegation.maxResearchRounds": {
           "type": "number",
