@@ -176,3 +176,46 @@ export function baseUrlFrom(section: InspectableSection): string {
 export function legacyApiKeyFrom(section: InspectableSection): string | undefined {
   return userValue(section, "apiKey", "", isString).trim() || undefined;
 }
+
+/** Keys under "agentic.scratch" that decide what is copied and how much disk the copies may use. */
+export const USER_ONLY_SCRATCH_KEYS = ["linkDirs", "maxFiles", "maxMegabytes", "maxTotalMegabytes", "exclude"] as const;
+
+/** Keys under "agentic.commands": how every command is started. */
+export const USER_ONLY_COMMAND_KEYS = ["isolation"] as const;
+
+const MB = 1024 * 1024;
+
+function positive(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0;
+}
+
+function stringList(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+/**
+ * The scratch copy's budget, from user settings only: a project could
+ * otherwise lift the limits, or exclude files so its checks pass.
+ */
+export function scratchLimitsFrom(section: InspectableSection): { maxFiles: number; maxBytes: number; maxTotalBytes: number; exclude: string[] } {
+  const maxBytes = Math.floor(userValue(section, "maxMegabytes", 1024, positive) * MB);
+  return {
+    maxFiles: Math.floor(userValue(section, "maxFiles", 50_000, positive)),
+    maxBytes,
+    maxTotalBytes: Math.max(maxBytes, Math.floor(userValue(section, "maxTotalMegabytes", 4096, positive) * MB)),
+    // Plain relative globs only: nothing absolute, no "..".
+    exclude: userValue(section, "exclude", [] as string[], stringList).filter((g) => g.trim() && !g.startsWith("/") && !/^[A-Za-z]:/.test(g) && !g.split(/[\\/]/).includes("..")),
+  };
+}
+
+/**
+ * The command that every command is wrapped in (agentic.commands.isolation),
+ * from user settings only. An argument list such as
+ * ["docker", "run", "--rm", "-v", "${folder}:/work", "-w", "/work", "node:22", "sh", "-c", "${command}"].
+ * Unset, empty, or without ${command} anywhere: undefined (commands run directly).
+ */
+export function commandIsolationFrom(section: InspectableSection): string[] | undefined {
+  const argv = userValue(section, "isolation", [] as string[], stringList);
+  if (!argv.length || !argv[0]!.trim() || !argv.some((a) => a.includes("${command}"))) return undefined;
+  return argv;
+}

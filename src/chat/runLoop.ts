@@ -1,8 +1,6 @@
-import { promises as fs } from "fs";
 import { planRequest } from "../coordinator/planner";
-import * as path from "path";
-import { AGENT_DIR, RunOutcome } from "../coordinator/orchestrator";
-import { ScratchCopy } from "../changes/scratch";
+import { RunOutcome } from "../coordinator/orchestrator";
+import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
 import { Run } from "../state/types";
 import { ConversationStore } from "./conversationStore";
@@ -369,7 +367,7 @@ export class RunLoop {
         await this.tasks.setStatus(run.id, task.id, "running");
         let worker: Worker | undefined;
         // Nothing is copied until the first command runs.
-        const scratch = new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `research-${run.id.slice(0, 8)}`, task.id), ["node_modules"]);
+        const scratch = new ScratchCopy(root, [`research-${run.id.slice(0, 8)}`, task.id], ["node_modules"]);
         scratches.push(scratch);
         try {
           worker = new Worker({
@@ -407,7 +405,7 @@ export class RunLoop {
     await Promise.all(Array.from({ length: Math.max(1, Math.min(maxParallel, added.length)) }, workerLoop)).finally(async () => {
       this.oversight.endSupervision(run.id);
       for (const scratch of scratches) await scratch.remove().catch(() => undefined);
-      await fs.rmdir(path.join(root, AGENT_DIR, "scratch", `research-${run.id.slice(0, 8)}`)).catch(() => undefined);
+      await removeScratchFolder(root, `research-${run.id.slice(0, 8)}`).catch(() => undefined);
     });
     // Let queued sub-agent messages land before the summary.
     await this.s.settle();

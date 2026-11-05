@@ -338,7 +338,46 @@
           "default": [
             "node_modules"
           ],
-          "description": "Dependency folders linked, not copied, into the scratch copy inside .agentic where checks run against pending changes, so they need no reinstall. Only node_modules, bower_components, .venv, venv, vendor, .tox, .gradle and target can be linked, and only from your user settings; a folder with secret files at its top level is not linked. Everything else is copied, without files that may hold secrets (.env, keys, credentials).",
+          "description": "Dependency folders linked, not copied, into the scratch copy (kept in the extension's own storage, outside the project) where checks run against pending changes, so they need no reinstall. Only node_modules, bower_components, .venv, venv, vendor, .tox, .gradle and target can be linked, and only from your user settings; a folder with secret files at its top level is not linked. Everything else is copied, without files that may hold secrets (.env, keys, credentials).",
+          "scope": "machine"
+        },
+        "agentic.scratch.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Files and folders never copied into the scratch copy where commands run, as globs relative to the project (for example `dist`, `build/**` or `**/*.log`). A folder name leaves out everything in it. Use it for large build output that checks do not need. User settings only.",
+          "scope": "machine"
+        },
+        "agentic.scratch.maxFiles": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 1,
+          "description": "Most files copied into one scratch copy. A larger project is refused with a message instead of filling the disk; linked dependency folders do not count. User settings only.",
+          "scope": "machine"
+        },
+        "agentic.scratch.maxMegabytes": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "description": "Most megabytes copied into one scratch copy. User settings only.",
+          "scope": "machine"
+        },
+        "agentic.scratch.maxTotalMegabytes": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 1,
+          "description": "Most megabytes in all scratch copies that exist at the same time (each running sub-agent that runs commands has one). User settings only.",
+          "scope": "machine"
+        },
+        "agentic.commands.isolation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Optional: a command that every check and sub-agent command runs inside, such as a container or a sandbox tool, as a list of arguments. `${command}` is the command line (one argument), `${folder}` the folder it runs in (the scratch copy) and `${project}` the real project folder. Example: `[\"docker\", \"run\", \"--rm\", \"--network=none\", \"-v\", \"${folder}:/work\", \"-v\", \"${project}/node_modules:${project}/node_modules:ro\", \"-w\", \"/work\", \"node:22\", \"sh\", \"-c\", \"${command}\"]`. Empty (the default): commands run directly as you. Approval still applies. User settings only. See docs/security.md.",
           "scope": "machine"
         },
         "agentic.protectedFiles": {
@@ -347,7 +386,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "More files that may hold secrets, as globs relative to the project (for example `**/my-tokens.yml`). They are treated like the built-in list (`.env`, keys, `.npmrc`, cloud credentials and more): sub-agents cannot read, search or change them, and they are left out of the scratch copy. Patterns from your user settings and the project's settings are combined, so a project can add patterns but not remove yours."
+          "markdownDescription": "More files that may hold secrets, as globs relative to the project (for example `**/my-tokens.yml`). They are treated like the built-in list (`.env`, keys, `.npmrc`, cloud credentials and more): sub-agents cannot read, search or change them, and they are left out of the scratch copy. Patterns from your user settings and the project's settings are combined, so a project can add patterns but not remove yours. Protection goes by file name only: a secret in an ordinary-looking file (such as `config/local-development.json`) is readable unless a pattern matches it. See docs/security.md."
         }
       }
     },

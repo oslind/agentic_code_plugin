@@ -73,3 +73,14 @@ const INJECTION = [
 export function looksLikeInjection(text: string): boolean {
   return INJECTION.some((re) => re.test(text));
 }
+
+/**
+ * A file name as it may appear in a prompt or a listing: control characters
+ * (line breaks, tabs, escape), Unicode format characters (right-to-left
+ * overrides, zero-width characters) and line/paragraph separators are shown
+ * as \u{...} escapes. Some file systems allow a line break in a file name, and
+ * a name that starts new lines could otherwise pass as instructions.
+ */
+export function safeFileName(name: string): string {
+  return name.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+}

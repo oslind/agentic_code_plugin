@@ -1,3 +1,4 @@
+import { scratchBase } from "../src/changes/scratch";
 import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
@@ -96,7 +97,7 @@ describe("run_command", () => {
     expect(asked).toEqual([`Run \`${print}\`: check my draft`]);
     // Shown in the terminal, run inside the scratch copy, never in the project itself.
     expect(terminal.shown[0]).toMatchObject({ command: print, end: { code: 0 } });
-    expect(terminal.shown[0]!.cwd).toMatch(/\.agentic[\\/]scratch/);
+    expect(terminal.shown[0]!.cwd.startsWith(await scratchBase())).toBe(true);
     expect(terminal.shown[0]!.output).toMatch(/drafted/);
     // The model gets the output back.
     expect(seen[2]!.messages.at(-1)!.content).toMatch(/exit code 0[\s\S]*drafted/);

@@ -5,7 +5,9 @@ import { relativeInside } from "./tools/paths";
 import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, setSecretApiKey } from "./config";
+import { removeStaleScratch, setScratchBase, setScratchLimits } from "./changes/scratch";
+import { setCommandIsolation } from "./checks/runner";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, readScratchLimits, readCommandIsolation, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, setSecretApiKey } from "./config";
 import { legacyApiKeyFrom, OVERSIGHT_LEVELS } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
@@ -124,6 +126,11 @@ export function activate(context: vscode.ExtensionContext): void {
   void loadApiKey(context, output).catch((err) => output.warn(`Could not read the API key from secret storage: ${(err as Error).message}`));
   context.subscriptions.push(warnAboutProjectSettings(output));
   setExtraSecretPatterns(readProtectedFiles());
+  // Scratch copies live in the extension's own storage, never in the project, so a link planted in the project cannot move them.
+  setScratchBase(path.join(context.globalStorageUri.fsPath, "scratch"));
+  setScratchLimits(readScratchLimits());
+  setCommandIsolation(readCommandIsolation());
+  void removeStaleScratch().catch((err) => output.warn(`Could not clean up old scratch copies: ${(err as Error).message}`));
   const store = new TaskStore(context.globalStorageUri.fsPath);
   const tree = new TaskTreeProvider(store);
 
@@ -243,6 +250,8 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => chat.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("agentic.protectedFiles")) setExtraSecretPatterns(readProtectedFiles());
+      if (e.affectsConfiguration("agentic.scratch")) setScratchLimits(readScratchLimits());
+      if (e.affectsConfiguration("agentic.commands")) setCommandIsolation(readCommandIsolation());
       if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.delegation.oversight")) chat.settingsChanged();
       if (!e.affectsConfiguration("agentic.model")) return;
       // The user may have switched model or server; try the configured format again.

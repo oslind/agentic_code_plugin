@@ -1,3 +1,4 @@
+import { scratchBase, scratchPathFor } from "../src/changes/scratch";
 import { existsSync, readFileSync, realpathSync } from "fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
@@ -99,7 +100,8 @@ describe("Orchestrator without git", () => {
     expect(existsSync(path.join(repo, "src"))).toBe(false);
     // No git, and the scratch copies are gone.
     expect(existsSync(path.join(repo, ".git"))).toBe(false);
-    expect(existsSync(path.join(repo, ".agentic", "scratch", runId.slice(0, 8)))).toBe(false);
+    expect(existsSync(await scratchPathFor(repo, runId.slice(0, 8)))).toBe(false);
+    expect(existsSync(path.join(repo, ".agentic"))).toBe(false);
     // Each sub-agent's conversation is saved, so the user can reopen it later; the system prompt is rebuilt then.
     const history = (await store.loadHistory(runId, "c"))!;
     expect(history[0]).toMatchObject({ role: "user" });
@@ -172,7 +174,9 @@ describe("Orchestrator without git", () => {
     const real = realpathSync(repo);
     for (const s of shown) {
       expect(s.command).toBe(checks[0].command);
-      expect(s.cwd.startsWith(path.join(real, ".agentic", "scratch"))).toBe(true);
+      // In the extension's own scratch folder, never inside the project.
+      expect(s.cwd.startsWith(await scratchBase())).toBe(true);
+      expect(s.cwd.startsWith(real)).toBe(false);
       expect(s.out.trim()).toBe(s.cwd);
     }
   });
