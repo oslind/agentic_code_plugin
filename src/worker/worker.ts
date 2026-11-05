@@ -190,6 +190,7 @@ ${withSkills ? `${SKILL_TOOL}\n` : ""}- {"tool":"finish","summary":"what you cha
 Rules:
 - You may only change files matching: ${task.fileScope.join(", ")}
 - Read a file before changing it. Prefer replace_in_file for small edits.
+- Write code the way the project already does: keep its module style (require/module.exports or import/export), naming and formatting. "Import" in a request means to use something from another file, not to switch module styles.
 - Paths are relative to the project root.
 - ${COMMAND_RULES}
 ${withSkills ? `${skillRules()}\n` : ""}- After changing code, run the tests or a build with run_command or run_check before you finish, when the project has them.

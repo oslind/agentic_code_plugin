@@ -271,7 +271,9 @@ export const SCENARIOS: Scenario[] = [
       const failures: string[] = [];
       const t = (await r.read("src/thermostat.js")) ?? "";
       if ((await r.read("src/config.js")) === undefined) failures.push("src/config.js was not created");
-      if (!/require\(['"]\.\/config['"]\)|from ['"]\.\/config['"]/.test(t)) failures.push("src/thermostat.js does not use ./config");
+      if (!/require\(['"]\.\/config(\.js)?['"]\)|from ['"]\.\/config(\.js)?['"]/.test(t)) failures.push("src/thermostat.js does not use ./config");
+      // Run 3: the sub-agent wrote an ESM import in this CommonJS project, then converted the whole file to ESM to make it load.
+      if (/^\s*(import|export)\s/m.test(t)) failures.push("src/thermostat.js was switched from CommonJS (require/module.exports) to ES modules");
       const run = await r.sh("node", ["test.js"]);
       if (!/4 passed, 1 failed/.test(run.output)) failures.push(`behaviour changed: ${run.output.slice(-200)}`);
       return failures;
