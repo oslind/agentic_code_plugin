@@ -146,6 +146,7 @@ export function registerRunCommands(
       }),
       askUser: hooks?.askUser,
       askCoordinator: hooks?.askCoordinator,
+      reviewResult: hooks?.reviewResult,
       inbox: hooks?.inbox,
       onChange: () => tree.refresh(),
     });

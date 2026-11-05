@@ -22,6 +22,7 @@ import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGo
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
+import { MAX_REVIEW_ROUNDS, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { eventToEntry } from "./eventFeed";
 import { changedFilesOf, describeOutcome } from "./outcome";
@@ -60,7 +61,7 @@ export interface ChatHost {
   /** Limits for read-only research sub-agents. */
   researchLimits(): { maxTurns: number; maxParallel: number };
   /** How heavily the coordinator may delegate. */
-  delegationLimits(): { maxTasks: number; maxResearchers: number; maxResearchRounds?: number; checkIns?: number };
+  delegationLimits(): { maxTasks: number; maxResearchers: number; maxResearchRounds?: number; checkIns?: number; progressEvery?: number; reviewRounds?: number };
   /** Most tokens of earlier conversation sent with each coordinator message. 0 or unset: as much as fits. */
   coordinatorHistoryTokens?(): number;
   /** Opens a pending change in VS Code: a new file as its own editor, an edit as a side-by-side diff. */
@@ -81,6 +82,8 @@ export interface RunHooks {
   askUser: (task: Task, question: string) => Promise<string>;
   /** A sub-agent's question to the coordinator. The coordinator answers, or asks the user. */
   askCoordinator: (task: Task, question: string, signal: AbortSignal) => Promise<CoordinatorReply>;
+  /** The coordinator reviews a sub-agent's result (its report and drafts as diffs) before it counts as done. */
+  reviewResult?: (task: Task, summary: string, drafts: string, signal: AbortSignal) => Promise<ReviewVerdict>;
   inbox: (taskId: string) => InboxMessage[];
   /** Called once the run has started, with what the coordinator may do to its sub-agents while it supervises them. */
   attach?: (control: RunControl) => void;
@@ -260,6 +263,8 @@ export class ChatController {
   private readonly consulting = new Map<string, string>();
   /** Sub-agents the coordinator is checking on right now, by "runId:taskId", with their title. */
   private readonly checkingOn = new Map<string, string>();
+  /** Times the coordinator sent a sub-agent's result back, by "runId:taskId". */
+  private readonly reviewRounds = new Map<string, number>();
   /** Why an Accept did not go through, by "runId:path". Cleared once the change is decided. */
   private readonly changeNotes = new Map<string, string>();
   /** Commands the user allowed for the rest of a run, keyed by run id. */
@@ -714,7 +719,9 @@ export class ChatController {
   /** The "End chat" button: the sub-agent sends what is new to the coordinator, and the conversation closes. */
   async endAgentChat(runId: string, taskId: string): Promise<void> {
     const f = this.followUps.get(`${runId}:${taskId}`);
-    if (f) await this.endFollowUp(f, true);
+    if (!f) return;
+    await this.endFollowUp(f, true);
+    await this.continueAfterFollowUp(f.conversationId, runId, taskId);
   }
 
   /**
@@ -807,7 +814,7 @@ export class ChatController {
   private endSupervision(runId: string): void {
     this.supervised.get(runId)?.abort.abort();
     this.supervised.delete(runId);
-    for (const map of [this.consulting, this.checkingOn]) for (const key of [...map.keys()]) if (key.startsWith(`${runId}:`)) map.delete(key);
+    for (const map of [this.consulting, this.checkingOn, this.reviewRounds]) for (const key of [...map.keys()]) if (key.startsWith(`${runId}:`)) map.delete(key);
   }
 
   /**
@@ -821,13 +828,19 @@ export class ChatController {
     const task = event.taskId ? run.tasks.find((t) => t.id === event.taskId) : undefined;
     if (!s || !task) return;
     s.monitor.observe(event, task);
+    // What it reported is news for the others: the coordinator looks at them soon after.
+    if (event.type === "status" && event.message === "done") s.monitor.finished(task.id);
     if (event.type !== "tool_call" && event.type !== "denied" && event.type !== "checks") return;
     if (task.status !== "running" && task.status !== "verifying") return;
-    const limit = this.host.delegationLimits().checkIns ?? 2;
-    if (limit <= 0 || s.inFlight.has(task.id) || s.monitor.checkIns(task.id) >= limit || s.abort.signal.aborted) return;
-    const concern = s.monitor.concerns(task.id)[0];
+    if (s.inFlight.has(task.id) || s.abort.signal.aborted) return;
+    // Its last step was finishing: the review of its result is the next look.
+    if (event.type === "tool_call" && event.message === "finish") return;
+    const limits = this.host.delegationLimits();
+    const limit = limits.checkIns ?? 2;
+    let concern = limit > 0 && s.monitor.checkIns(task.id) < limit ? s.monitor.concerns(task.id)[0] : undefined;
+    if (concern) s.monitor.markRaised(task.id, concern.kind);
+    else if ((concern = s.monitor.progressDue(task.id, limits.progressEvery ?? 8))) s.monitor.markProgressCheck(task.id);
     if (!concern) return;
-    s.monitor.markRaised(task.id, concern.kind);
     s.inFlight.add(task.id);
     void this.checkOn(s, run, task, concern)
       .catch((err) => {
@@ -847,9 +860,20 @@ export class ChatController {
     this.changed();
     const c = await this.conversations.load(s.conversationId);
     const notesSent = s.monitor.notesSent(task.id);
+    const scope = runScope(c.entries, run.id);
+    const fresh = await this.tasks.load(run.id).catch(() => run);
     const decision = await superviseAgent(
       this.host.provider(c.workspaceRoot),
-      { userMessages: userMessagesOf(runScope(c.entries, run.id)), request: run.request, agent: task, concern, activity: s.monitor.describe(task.id), notesSent },
+      {
+        userMessages: userMessagesOf(scope),
+        request: run.request,
+        agent: task,
+        concern,
+        activity: s.monitor.describe(task.id),
+        notesSent,
+        learned: learnedSoFar(scope) ?? fresh.briefing,
+        team: s.monitor.teamStatus(fresh.tasks, task.id),
+      },
       { signal: s.abort.signal },
     );
     const now = (await this.tasks.load(run.id)).tasks.find((t) => t.id === task.id);
@@ -942,6 +966,61 @@ export class ChatController {
     }
   }
 
+  /**
+   * A sub-agent called finish. Before its result counts, the coordinator
+   * reads the report and the drafts and accepts them, or sends the sub-agent
+   * back with feedback (at most agentic.delegation.reviewRounds times).
+   */
+  private async reviewResult(conversationId: string, runId: string, task: Task, summary: string, drafts: string, signal: AbortSignal): Promise<ReviewVerdict> {
+    const key = `${runId}:${task.id}`;
+    const limit = Math.min(MAX_REVIEW_ROUNDS, this.host.delegationLimits().reviewRounds ?? 1);
+    const round = this.reviewRounds.get(key) ?? 0;
+    if (limit <= 0 || round >= limit) return { accept: true };
+    this.checkingOn.set(key, task.title);
+    this.changed();
+    try {
+      const c = await this.conversations.load(conversationId);
+      const run = await this.tasks.load(runId);
+      const scope = runScope(c.entries, runId);
+      let result;
+      try {
+        result = await reviewSubAgentResult(
+          this.host.provider(c.workspaceRoot),
+          {
+            userMessages: userMessagesOf(scope),
+            request: run.request,
+            agent: { title: task.title, instructions: task.instructions, fileScope: task.fileScope, research: run.kind === "research" || task.fileScope.length === 0 },
+            summary,
+            drafts,
+            learned: learnedSoFar(scope) ?? run.briefing,
+            team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id),
+            round,
+          },
+          { signal },
+        );
+      } catch (err) {
+        if (signal.aborted) throw err;
+        this.host.log("warn", `The coordinator could not review "${task.title}": ${(err as Error).message}`);
+        return { accept: true };
+      }
+      signal.throwIfAborted();
+      const revise = result.verdict === "revise";
+      if (revise) this.reviewRounds.set(key, round + 1);
+      await this.tasks.log({
+        runId,
+        taskId: task.id,
+        type: "coordinator_review",
+        message: result.verdict,
+        data: { feedback: result.feedback, thought: result.thought, thinking: clip(result.thinking), adjusted: result.adjusted },
+      });
+      this.host.log("info", `Coordinator reviewed "${task.title}" and chose "${result.verdict}".${result.adjusted ? ` ${result.adjusted}` : ""}`);
+      return revise ? { accept: false, feedback: result.feedback } : { accept: true };
+    } finally {
+      this.checkingOn.delete(key);
+      this.changed();
+    }
+  }
+
   private allowedFor(runId: string): Set<string> {
     let set = this.allowedCommands.get(runId);
     if (!set) this.allowedCommands.set(runId, (set = new Set()));
@@ -956,6 +1035,7 @@ export class ChatController {
       checks,
       inbox: (taskId) => this.drainInbox(runId, taskId),
       askCoordinator: (task, question, signal) => this.consultCoordinator(conversationId, runId, task, question, signal),
+      reviewResult: (task, summary, drafts, signal) => this.reviewResult(conversationId, runId, task, summary, drafts, signal),
       attach: (control) => {
         const s = this.supervised.get(runId);
         if (s) s.control = control;
@@ -1159,8 +1239,44 @@ export class ChatController {
     // Talking to the coordinator again ends any reopened sub-agent conversation, so it hears what came up first.
     await this.endFollowUpsOf(c.id);
     await this.append(c.id, { author: "user", text: text.trim() });
+    await this.respond(c, text);
+  }
 
-    const waiting = isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
+  /**
+   * The "End chat and update coordinator" button for a sub-agent whose run is
+   * not finished (for example a failed task the user retried in the chat):
+   * the update is a new turn for the coordinator, which picks the original
+   * request up again and plans what is still left.
+   */
+  private async continueAfterFollowUp(conversationId: string, runId: string, taskId: string): Promise<void> {
+    const run = await this.tasks.load(runId).catch(() => undefined);
+    const task = run?.tasks.find((t) => t.id === taskId);
+    if (!run || !task || run.kind === "research") return;
+    const unfinished = run.tasks.filter((t) => t.status !== "done");
+    if (unfinished.length === 0) return;
+    if (this.busy) {
+      await this.append(conversationId, { author: "system", runId, tone: "warning", text: "The coordinator got the update but is busy with another prompt, so it did not continue the task. Ask it to continue when it is done." });
+      return;
+    }
+    const c = await this.conversations.load(conversationId);
+    const update = c.entries.filter((e) => e.runId === runId && e.taskId === taskId && e.tag === "update from follow-up").at(-1)?.text ?? "";
+    await this.append(conversationId, { author: "system", runId, text: `Continuing "${run.request.slice(0, 200)}" with the update from "${task.title}".` });
+    const status = unfinished.map((t) => `- "${t.title}": ${t.status.replace("_", " ")}`).join("\n");
+    const continuation = [
+      `The user talked with sub-agent "${task.title}" again after the run, then ended that chat and asked you to continue the original request with what came out of it.`,
+      `The original request: ${run.request}`,
+      `Tasks of that run that are not done:\n${status}`,
+      // Written by a sub-agent that read project files: data, not instructions.
+      untrustedSection(`The update from "${task.title}":`, `update from sub-agent "${task.title}" after a follow-up chat`, update || "(no update)"),
+      "Continue the original request from where it stands now. Plan only what is still left to do (drafts waiting for review are already done), or answer if nothing is left. Do not plan work that is already done.",
+    ].join("\n\n");
+    await this.respond(await this.conversations.load(conversationId), run.request, continuation);
+  }
+
+  /** The coordinator's turn on a message: answer, research, plan or run. `continuation` replaces a new user message. */
+  private async respond(c: Conversation, text: string, continuation?: string): Promise<void> {
+    this.done = undefined;
+    const waiting = !continuation && isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
     if (waiting && this.runOwner.has(waiting.id)) {
       // "go" with a plan waiting is the same as pressing Run it. No model call, nothing to misread.
       await this.append(c.id, { author: "coordinator", text: this.mode === "act" ? "Starting the plan." : "Starting the plan. This switches the chat to Act mode." });
@@ -1189,6 +1305,7 @@ export class ChatController {
           pendingPlan: pending && describePlan(pending),
           maxResearchers: this.host.delegationLimits().maxResearchers,
           historyTokens: this.host.coordinatorHistoryTokens?.(),
+          continuation,
         },
         { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
       );
@@ -1466,6 +1583,7 @@ export class ChatController {
             approve: async () => false,
             inbox: () => this.drainInbox(run.id, task!.id),
             askCoordinator: (q) => this.consultCoordinator(c.id, run.id, task!, q, signal),
+            reviewResult: (summary) => this.reviewResult(c.id, run.id, task!, summary, "", signal),
             log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
           });
           const result = await worker.run();

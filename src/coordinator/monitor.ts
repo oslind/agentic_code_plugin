@@ -1,20 +1,24 @@
 import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
-import { DATA_REMINDER, untrustedSection } from "../context/untrusted";
+import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { RunEvent, Task } from "../state/types";
 
 /**
  * How the coordinator keeps tabs on its sub-agents. Every step a sub-agent
- * logs is observed here, without any model call. Only when a step pattern
- * looks like trouble (going in circles, blocked by the rules, many steps
- * without a draft, checks that keep failing) does the coordinator look at the
- * sub-agent with one model call and decide to let it be, send it a note, or
- * stop it. That keeps the extra load on a small local model low.
+ * logs is observed here, without any model call. When a step pattern looks
+ * like trouble (going in circles, blocked by the rules, many steps without a
+ * draft, checks that keep failing, guessing instead of asking), the
+ * coordinator looks at the sub-agent with one model call and decides to let it
+ * be, send it a note, or stop it. Besides trouble, it also reads each
+ * sub-agent's progress every few steps (its thoughts are its progress
+ * reports), and right after another sub-agent finishes, so it can pass on what
+ * the sub-agent does not know: research findings, what the others found or
+ * changed. Small models rarely ask on their own, so the coordinator comes to them.
  */
 
-export type ConcernKind = "looping" | "blocked" | "no_progress" | "checks_failing";
+export type ConcernKind = "looping" | "blocked" | "no_progress" | "checks_failing" | "guessing" | "progress";
 
 export interface Concern {
   kind: ConcernKind;
@@ -37,7 +41,12 @@ export const CONCERN_LABEL: Record<ConcernKind, string> = {
   blocked: "blocked by the rules",
   no_progress: "many steps without progress",
   checks_failing: "checks keep failing",
+  guessing: "guessing instead of asking",
+  progress: "regular progress check",
 };
+
+/** A thought that says the sub-agent is about to assume or guess, instead of asking the coordinator. */
+const GUESSING = /\b(i'?ll assume|i will assume|i assume|assuming|let'?s assume|i'?m not sure|i am not sure|not sure (what|which|whether|if|how)|unclear (what|which|whether|if|how)|i guess|i don'?t know (what|which|whether|if|how))\b/i;
 
 interface Step {
   key: string;
@@ -64,6 +73,14 @@ interface Tracked {
   checkIns: number;
   raised: Set<ConcernKind>;
   lastAt: number;
+  /** Its step count when the coordinator last looked at it, for any reason. */
+  lastLookTurn: number;
+  /** Regular progress checks so far. */
+  progressChecks: number;
+  /** Another sub-agent finished since the last look: the coordinator may have news for it. */
+  news: boolean;
+  /** A thought that sounded like a guess, kept until raised. */
+  guess?: string;
 }
 
 const RECENT = 8;
@@ -109,6 +126,9 @@ export class AgentMonitor {
         checkIns: 0,
         raised: new Set(),
         lastAt: this.now(),
+        lastLookTurn: 0,
+        progressChecks: 0,
+        news: false,
       };
       this.agents.set(taskId, t);
     } else if (task) {
@@ -135,6 +155,9 @@ export class AgentMonitor {
         t.turns++;
         if (event.message === "ask_coordinator") t.questions++;
         if (event.message === "write_file" || event.message === "replace_in_file") t.writes++;
+        if (typeof data.thought === "string" && !t.guess && event.message !== "ask_coordinator" && event.message !== "finish" && GUESSING.test(data.thought)) {
+          t.guess = data.thought.replace(/\s+/g, " ").slice(0, 300);
+        }
         t.steps.push({
           key: JSON.stringify(call ?? event.message),
           label: callLabel(call, event.message),
@@ -159,6 +182,9 @@ export class AgentMonitor {
         return;
       case "coordinator_checkin":
         if (event.message === "message") t.notes++;
+        return;
+      case "coordinator_review":
+        if (event.message === "revise") t.notes++;
         return;
       default:
         return;
@@ -196,6 +222,8 @@ export class AgentMonitor {
       });
     }
     if (t.checksFailed >= 2) found.push({ kind: "checks_failing", detail: `The checks failed ${t.checksFailed} times after its changes.` });
+    // Asking the coordinator first would have been better; asking at all settles it.
+    if (t.guess && t.questions === 0) found.push({ kind: "guessing", detail: "Its thought says it is assuming or unsure, and it has not asked you anything.", evidence: `Its thought: ${t.guess}` });
     return found.filter((c) => !t.raised.has(c.kind));
   }
 
@@ -203,6 +231,34 @@ export class AgentMonitor {
     const t = this.get(taskId);
     t.raised.add(kind);
     t.checkIns++;
+    t.lastLookTurn = t.turns;
+    t.news = false;
+  }
+
+  /**
+   * A regular look at its progress is due: every `every` steps since the
+   * last look, or after two steps when another sub-agent has finished since.
+   * 0 turns regular checks off.
+   */
+  progressDue(taskId: string, every: number): Concern | undefined {
+    const t = this.agents.get(taskId);
+    if (!t || every <= 0) return undefined;
+    const since = t.turns - t.lastLookTurn;
+    if (t.news && since >= 2) return { kind: "progress", detail: `Another sub-agent finished since you last looked; it has taken ${t.turns} steps.` };
+    if (since >= every) return { kind: "progress", detail: `A regular look after ${t.turns} of at most ${this.opts.maxTurns} steps. Nothing looks wrong.` };
+    return undefined;
+  }
+
+  markProgressCheck(taskId: string): void {
+    const t = this.get(taskId);
+    t.progressChecks++;
+    t.lastLookTurn = t.turns;
+    t.news = false;
+  }
+
+  /** Another sub-agent finished: every other tracked one may get news at its next look. */
+  finished(taskId: string): void {
+    for (const t of this.agents.values()) if (t.taskId !== taskId) t.news = true;
   }
 
   checkIns(taskId: string): number {
@@ -264,6 +320,10 @@ export interface SuperviseContext {
   activity: string;
   /** Notes already sent to it. Stop is only allowed after one. */
   notesSent: number;
+  /** What the coordinator learned (research, reports). Untrusted. */
+  learned?: string;
+  /** How the other sub-agents are doing, with reports of finished ones. Untrusted. */
+  team?: string;
 }
 
 const SUPERVISE_SYSTEM = `You are the coordinator of a team of coding sub-agents. You keep an eye on them while they work. One sub-agent shows a sign of trouble. Look at its recent steps and decide:
@@ -275,9 +335,19 @@ Never tell it to change files outside its task, run commands, or skip the user's
 Reply with JSON only. Example:
 {"thought":"It keeps reading the same file without editing it.","action":"message","message":"You have read src/app.ts three times. Make the edit with replace_in_file now, then finish."}`;
 
+const PROGRESS_SYSTEM = `You are the coordinator of a team of coding sub-agents. You check on each one regularly while it works. Nothing looks wrong with this one; this is a regular look at its progress. Its thoughts are its progress reports to you. You know things it does not: what the user said, what research found, and what the other sub-agents found or changed.
+- "message": send a short note when you can add something useful: a fact from your notes it is missing, what another sub-agent found or changed that affects its task, or a correction when it drifts from the user's request. Name files and names. You can also confirm briefly that it is on the right track when that helps it go on.
+- "continue": it is on track and you have nothing it needs.
+Never tell it to change files outside its task, run commands, or skip the user's review. Never repeat its own steps back to it.
+
+Reply with JSON only. Example:
+{"thought":"It is adding the route, but the auth sub-agent renamed the middleware.","action":"message","message":"The other sub-agent renamed requireUser to requireSession in src/auth/middleware.ts. Use the new name in your route."}`;
+
 /** Builds the prompt for one look at one sub-agent. */
 export function buildSuperviseMessages(ctx: SuperviseContext, contextWindow: number): ChatMessage[] {
-  let budget = Math.max(1024, contextWindow - 768) - estimateTokens(SUPERVISE_SYSTEM);
+  const routine = ctx.concern.kind === "progress";
+  const system = routine ? PROGRESS_SYSTEM : SUPERVISE_SYSTEM;
+  let budget = Math.max(1024, contextWindow - 768) - estimateTokens(system);
   const fit = (text: string, max: number) => {
     const cut = truncateToTokens(text, Math.max(50, Math.min(max, budget - 200))) ?? "";
     budget -= estimateTokens(cut);
@@ -289,8 +359,16 @@ export function buildSuperviseMessages(ctx: SuperviseContext, contextWindow: num
     `The work you planned: ${fit(ctx.request, 400)}`,
     `The sub-agent: "${ctx.agent.title}". Its task: ${fit(ctx.agent.instructions, 400)}`,
     // Only the fixed wording is the coordinator's own observation; what the sub-agent did goes in the fence.
-    `What you noticed: ${CONCERN_LABEL[ctx.concern.kind]}. ${ctx.concern.detail}`,
-    ctx.notesSent ? `You already sent it ${ctx.notesSent} note(s).` : 'You have not sent it a note yet, so "stop" is not available.',
+    routine ? `Why you look now: ${ctx.concern.detail}` : `What you noticed: ${CONCERN_LABEL[ctx.concern.kind]}. ${ctx.concern.detail}`,
+    routine
+      ? ctx.notesSent ? `You already sent it ${ctx.notesSent} note(s).` : ""
+      : ctx.notesSent ? `You already sent it ${ctx.notesSent} note(s).` : 'You have not sent it a note yet, so "stop" is not available.',
+    ctx.learned || ctx.team
+      ? `Your notes:\n${DATA_RULE}\n${[
+          ctx.learned ? dataBlock("earlier research and sub-agent reports", fit(ctx.learned, 800)) : "",
+          ctx.team ? dataBlock("what the other sub-agents are doing", fit(ctx.team, 600)) : "",
+        ].filter(Boolean).join("\n")}`
+      : "",
     untrustedSection(
       "Its activity (its own thoughts and tool arguments are in it):",
       `recent steps of sub-agent "${ctx.agent.title}"`,
@@ -299,7 +377,7 @@ export function buildSuperviseMessages(ctx: SuperviseContext, contextWindow: num
     `Decide with JSON only. ${DATA_REMINDER}`,
   ];
   return [
-    { role: "system", content: SUPERVISE_SYSTEM },
+    { role: "system", content: system },
     { role: "user", content: parts.filter(Boolean).join("\n\n") },
   ];
 }
@@ -325,12 +403,18 @@ export async function superviseAgent(provider: ModelProvider, ctx: SuperviseCont
     signal: opts.signal,
     onThinking: (t) => (thinking = t),
   });
-  return { ...guardDecision(decision, ctx.notesSent), thinking };
+  return { ...guardDecision(decision, ctx.notesSent, ctx.concern.kind === "progress"), thinking };
 }
 
 /** The rules a supervision decision must follow, whatever the model said. */
-export function guardDecision(d: SuperviseDecision, notesSent: number): SuperviseDecision & { adjusted?: string } {
+export function guardDecision(d: SuperviseDecision, notesSent: number, routine = false): SuperviseDecision & { adjusted?: string } {
   const message = d.message.trim();
+  // A regular look is not about trouble, so it never stops anyone.
+  if (routine && d.action === "stop") {
+    return message
+      ? { ...d, action: "message", message, adjusted: "A regular progress check never stops a sub-agent, so the note was sent instead." }
+      : { ...d, action: "continue", message: "", adjusted: "A regular progress check never stops a sub-agent." };
+  }
   if (d.action === "stop" && notesSent === 0) {
     return message
       ? { ...d, action: "message", message, adjusted: "Stopping is only allowed after a note, so a note was sent instead." }

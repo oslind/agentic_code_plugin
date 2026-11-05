@@ -98,6 +98,12 @@ export interface CoordinatorContext {
    * can take long enough for a proxy to give up. Unset or 0: as much as fits.
    */
   historyTokens?: number;
+  /**
+   * A turn the coordinator takes without a new user message, such as
+   * continuing the original request after a follow-up chat with a sub-agent.
+   * Sent as the last message. Model-written parts in it must already be fenced.
+   */
+  continuation?: string;
 }
 
 const REPLY_RESERVE = 2048;
@@ -110,6 +116,8 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
   // What is left after the history goes to the notes below (plan and project files).
   const room = budget;
   if (ctx.historyTokens && ctx.historyTokens > 0) budget = Math.min(budget, ctx.historyTokens);
+  const continuation: ChatMessage | undefined = ctx.continuation?.trim() ? { role: "user", content: ctx.continuation.trim() } : undefined;
+  if (continuation) budget -= estimateTokens(continuation.content) + 4;
 
   const history: ChatMessage[] = [];
   // Sub-agent starts, answers to sub-agents' questions and check-ins are shown to the user but would only
@@ -129,6 +137,7 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
   }
   // Chat models expect the conversation to start with the user.
   while (history[0]?.role === "assistant") history.shift();
+  if (continuation) history.push(continuation);
   budget = room - history.reduce((n, m) => n + estimateTokens(m.content) + 4, 0);
 
   const notes: string[] = [];

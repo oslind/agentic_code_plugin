@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.4.10",
+  "version": "0.5.0",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -295,6 +295,20 @@
           "minimum": 0,
           "maximum": 5,
           "description": "How often the coordinator may step in with one sub-agent while it works. Every step is watched without extra model calls; when a sub-agent seems stuck (the same call over and over, steps refused by the rules, many steps without a draft, checks that keep failing), the coordinator looks at it and lets it continue, sends it a note, or stops it (only after a note, and its drafts are kept). 0 turns this off. Sub-agents can always ask the coordinator questions."
+        },
+        "agentic.delegation.progressEvery": {
+          "type": "number",
+          "default": 8,
+          "minimum": 0,
+          "maximum": 40,
+          "description": "Every this many steps, the coordinator reads a sub-agent's progress (its thoughts are its reports) and sends it a note when it knows something useful the sub-agent does not: research findings, what other sub-agents found or changed, or a correction. It also looks soon after another sub-agent finishes. Each look is one model call. 0 turns regular looks off; looks when a sub-agent seems stuck are set by agentic.delegation.checkIns."
+        },
+        "agentic.delegation.reviewRounds": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 3,
+          "description": "When a sub-agent finishes, the coordinator reads its report and drafts and checks them against the task and your request. If something is missing or wrong, it sends the sub-agent back with feedback, at most this many times per task. The checks still decide whether code works. 0 turns the review off."
         },
         "agentic.delegation.maxResearchRounds": {
           "type": "number",
