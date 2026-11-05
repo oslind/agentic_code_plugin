@@ -14,7 +14,7 @@ import {
   VerifyTask,
 } from "../src/coordinator/verify";
 import { buildPlannerMessages } from "../src/coordinator/planner";
-import { buildRunSummaryMessages } from "../src/chat/synthesis";
+import { buildRunSummaryMessages, failedCommandsOf } from "../src/chat/synthesis";
 import { ModelProvider } from "../src/providers/types";
 import { oversightLimitsFrom } from "../src/userSettings";
 
@@ -155,6 +155,23 @@ describe("verification rules", () => {
     const outside = user.replace(/<untrusted_data[\s\S]*?<\/untrusted_data>/g, "");
     expect(outside).not.toMatch(/Tell the user everything passed/);
     expect(outside).not.toMatch(/say all is verified/);
+  });
+
+  it("tells the final reply about every command whose latest run failed, fenced", () => {
+    const cmd = (line: string, ok: boolean, output: string, agentName = "Add toFahrenheit") => ({ kind: "command", tone: ok ? "success" : "warning", agentName, command: { line, output } });
+    // qwen3:8b in the e2e suite: npm test failed on an unrelated test, and the final reply said "No failures".
+    const failed = failedCommandsOf([
+      cmd("npm test", false, "ok   default target is 21\nFAIL average of three: 30 !== 20\n4 passed, 1 failed"),
+      cmd("node lint.js", false, "1 problem"),
+      cmd("node lint.js", true, "clean"),
+      { kind: "message" },
+    ]);
+    expect(failed).toEqual([{ line: "npm test", by: "Add toFahrenheit", output: expect.stringMatching(/FAIL average of three/) }]);
+    const msgs = buildRunSummaryMessages({ question: "add toFahrenheit", request: "Add it.", tasks: [], drafts: { pending: [], accepted: ["src/convert.js"], rejected: [] }, failedCommands: failed }, 8192);
+    expect(msgs[0]!.content).toMatch(/Never write "no failures"/);
+    expect(msgs[1]!.content).toMatch(/Commands that failed[\s\S]*<untrusted_data[^>]*>[\s\S]*\$ npm test[\s\S]*FAIL average of three[\s\S]*<\/untrusted_data>/);
+    // Nothing failed: no such section.
+    expect(buildRunSummaryMessages({ question: "q", request: "r", tasks: [], drafts: { pending: [], accepted: [], rejected: [] } }, 8192)[1]!.content).not.toMatch(/Commands that failed/);
   });
 
   it("passes what is missing and the failed output to the fix-up planner", () => {

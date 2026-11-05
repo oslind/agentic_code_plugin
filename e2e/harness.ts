@@ -13,6 +13,7 @@ import { ConversationStore } from "../src/chat/conversationStore";
 import { ChatEntry, ChatMode } from "../src/chat/types";
 import { CommandSink } from "../src/checks/commandTerminal";
 import { CheckConfig } from "../src/checks/runner";
+import { failedCommandsOf } from "../src/chat/synthesis";
 import { fileTree } from "../src/context/budget";
 import { Orchestrator } from "../src/coordinator/orchestrator";
 import { ModelProvider } from "../src/providers/types";
@@ -316,6 +317,11 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
       if (!done) failures.push("no Finished bar: the prompt never counted as dealt with");
       else if (!allowed.includes(done.status)) failures.push(`ended as "${done.status}" (${done.text}), expected ${allowed.join(" or ")}`);
       for (const e of entries.filter((x) => x.kind === "error")) failures.push(`error in the chat: ${e.text.slice(0, 300)}`);
+      // A command that failed the last time it ran must not be hidden from the user (qwen once said "No failures").
+      const failedCommands = failedCommandsOf(entries);
+      if (lastCoordinator?.kind === "answer" && failedCommands.length && !/fail|error|did not pass|not pass/i.test(lastCoordinator.text)) {
+        failures.push(`the last answer does not mention that ${failedCommands.map((c) => `\`${c.line}\``).join(", ")} failed: ${lastCoordinator.text.slice(0, 300)}`);
+      }
       if (scenario.endsWithAnswer !== false && lastCoordinator?.kind !== "answer") {
         failures.push(`the coordinator's last message is not an answer or final reply: [${lastCoordinator?.kind ?? "none"}] ${lastCoordinator?.text.slice(0, 200) ?? ""}`);
       }

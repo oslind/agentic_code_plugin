@@ -57,7 +57,7 @@ AGENTIC_E2E_MODEL=qwen3-8b-16k npm run e2e
 
 ## Scenarios
 
-All in `e2e/scenarios.ts`, on a small thermostat project in plain Node (its `node test.js` has one failing test). Every scenario must end: no stall, no timeout, nothing still waiting for the user, no error in the chat, a Finished bar, and the coordinator's last message must be an answer or final reply. On top of that:
+All in `e2e/scenarios.ts`, on a small thermostat project in plain Node (its `node test.js` has one failing test). Every scenario must end: no stall, no timeout, nothing still waiting for the user, no error in the chat, a Finished bar, and the coordinator's last message must be an answer or final reply. If a command's latest run failed, that answer must say so. On top of that:
 
 | Scenario | Mode | Checks |
 | --- | --- | --- |
