@@ -165,6 +165,20 @@ export function activate(context: vscode.ExtensionContext): void {
     openFolder: async (root) => (await confinedFolder({ workspaceRoot: root }).catch(() => undefined))?.uri.fsPath,
     showChange: (runId, filePath) => views.show(runId, filePath),
     closeChange: (runId, filePath) => views.close(runId, filePath),
+    afterAccept: async (root, filePaths, open) => {
+      const warnings: string[] = [];
+      for (const rel of filePaths) {
+        const uri = vscode.Uri.joinPath(vscode.Uri.file(root), ...rel.split("/"));
+        const doc = vscode.workspace.textDocuments.find((d) => d.uri.scheme === "file" && d.uri.fsPath === uri.fsPath);
+        // VS Code reloads an open file that has no unsaved edits; one with unsaved edits keeps showing them.
+        if (doc?.isDirty) warnings.push(`${rel} has unsaved edits in an editor, so that editor still shows your text, not the accepted draft. The draft is on disk: use "File: Revert File" to see it, or save to keep your version.`);
+      }
+      if (open && filePaths[0]) {
+        const uri = vscode.Uri.joinPath(vscode.Uri.file(root), ...filePaths[0].split("/"));
+        await vscode.window.showTextDocument(uri, { preview: true, preserveFocus: true }).then(undefined, (err) => output.warn(`Could not open ${filePaths[0]}: ${(err as Error).message}`));
+      }
+      return warnings;
+    },
     delegationLimits: () => {
       const c = vscode.workspace.getConfiguration("agentic.delegation");
       return {

@@ -17,6 +17,8 @@
   let filesBy = saved.filesBy === "agent" ? "agent" : "file";
   // Which collapsible parts are open, so re-rendering does not close them.
   const open = new Set(Array.isArray(saved.open) ? saved.open : []);
+  /** Model calls in flight, by "coordinator" or "runId:taskId". Updated many times a second while a model streams. */
+  let live = {};
 
   function persist() {
     vscode.setState({ draft, attachments, tab, agentView, filesBy, open: [...open].slice(-80) });
@@ -69,13 +71,86 @@
     return `${n} ${n === 1 ? one : many || one + "s"}`;
   }
 
+  /** Views that read like a chat: they open at the latest message. */
+  function followsLatest() {
+    return tab === "overview" || (tab === "agents" && !!agentView);
+  }
+
   function setTab(t) {
     tab = t;
     persist();
     render();
     const main = document.getElementById("main");
-    if (main) main.scrollTop = 0;
+    if (main) main.scrollTop = followsLatest() ? main.scrollHeight : 0;
   }
+
+  // ---- live model output ----
+
+  const LIVE_PHASE = {
+    queued: "Waiting for the model server",
+    waiting: "Model is reading the prompt",
+    thinking: "Thinking",
+    writing: "Writing its reply",
+  };
+
+  function duration(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    return m < 60 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+  }
+
+  function liveMeta(item) {
+    const now = Date.now();
+    const parts = [duration(now - item.startedAt)];
+    if (item.tokens) parts.push(`~${item.tokens} tokens`);
+    // Tokens stopped coming: say so, so a stalled server is told apart from a slow one.
+    const quiet = now - item.updatedAt;
+    if (item.tokens && quiet >= 15000) parts.push(`nothing new for ${duration(quiet)}`);
+    return parts.join(" · ");
+  }
+
+  function fillLive(box, item) {
+    if (!item) {
+      box.hidden = true;
+      box.replaceChildren();
+      return;
+    }
+    box.hidden = false;
+    const tail = item.tail ? el("pre", { class: "live-tail" + (item.phase === "thinking" ? " is-thinking" : "") }, item.tail) : null;
+    box.replaceChildren(
+      el(
+        "div",
+        { class: "live-head" },
+        el("span", { class: "spinner" }),
+        el("span", { class: "live-phase" }, LIVE_PHASE[item.phase] || "Working"),
+        el("span", { class: "spacer" }),
+        el("span", { class: "live-meta" }, liveMeta(item)),
+      ),
+      tail,
+    );
+    if (tail) tail.scrollTop = tail.scrollHeight;
+  }
+
+  /** Where a model call shows live: what it is doing, for how long, and the end of its train of thought. */
+  function liveBox(key) {
+    const box = el("div", { class: "live", "data-live": key, "aria-live": "off" });
+    fillLive(box, live[key]);
+    return box;
+  }
+
+  function patchLive() {
+    for (const box of document.querySelectorAll("[data-live]")) fillLive(box, live[box.getAttribute("data-live")]);
+  }
+
+  // The clock keeps moving between tokens, so a long wait still shows it is alive.
+  setInterval(() => {
+    for (const box of document.querySelectorAll("[data-live]")) {
+      const item = live[box.getAttribute("data-live")];
+      const meta = item && box.querySelector(".live-meta");
+      if (meta) meta.textContent = liveMeta(item);
+    }
+  }, 1000);
 
   function details(key, label, body, cls) {
     const d = el("details", { class: cls || "fold", open: open.has(key) }, el("summary", {}, label), body);
@@ -267,6 +342,7 @@
         busy ? stopAll() : null,
       ),
       el("div", { class: "coord-activity" }, ["thinking", "supervising"].includes(d.coordinator.state) ? el("span", { class: "spinner" }) : null, d.coordinator.activity),
+      liveBox("coordinator"),
     );
   }
 
@@ -360,7 +436,18 @@
   function outcomeActions(entry) {
     const cmd = (command, label, title) => el("button", { class: "ghost", title, onclick: () => post({ type: "runCommand", command, runId: entry.runId }) }, label);
     const o = entry.outcome || { changedFiles: [null], failed: 1 };
-    return el("div", { class: "row" }, o.failed ? cmd("retryFailed", "Retry failed tasks", "Start the failed tasks again; they are told why they failed") : null, cmd("showTaskLog", "Details", "Every step the sub-agents took"));
+    // The text above is how things stood when the run ended; this line is how its drafts stand now.
+    const changes = ((state.plans[entry.runId] || {}).changes || []);
+    const n = (st) => changes.filter((c) => c.state === st).length;
+    const now = changes.length
+      ? [n("draft") ? `${n("draft")} awaiting review` : "", n("applied") ? `${n("applied")} accepted and written` : "", n("discarded") ? `${n("discarded")} rejected` : ""].filter(Boolean).join(" · ")
+      : "";
+    return el(
+      "div",
+      {},
+      now ? el("div", { class: "muted small drafts-now" }, el("span", {}, "Drafts now: " + now), n("draft") ? el("button", { class: "linkish", onclick: () => setTab("drafts") }, " Review") : null) : null,
+      el("div", { class: "row" }, o.failed ? cmd("retryFailed", "Retry failed tasks", "Start the failed tasks again; they are told why they failed") : null, cmd("showTaskLog", "Details", "Every step the sub-agents took")),
+    );
   }
 
   // ---- markdown ----
@@ -550,6 +637,7 @@
       el("div", { class: "card-head" }, el("span", { class: "card-title" }, "Coordinator"), el("span", { class: "spacer" }), pill(COORD_TONE[c.state], c.label)),
       el("div", { class: "muted small" }, "Plans, delegates and reviews results. It can add tasks while sub-agents run."),
       el("div", { class: "activity" }, ["thinking", "supervising"].includes(c.state) ? el("span", { class: "spinner" }) : null, c.activity),
+      liveBox("coordinator"),
       oversightLine(c.oversight),
       c.thinking ? details("ct", "Latest thinking", el("pre", { class: "thinking-text" }, c.thinking)) : null,
       el("div", { class: "row end" }, el("button", { class: "ghost", onclick: () => setTab("overview") }, "Open conversation")),
@@ -614,6 +702,7 @@
         pill(AGENT_TONE[a.state], a.label),
       ),
       el("div", { class: "activity" }, a.activity),
+      liveBox(agentKey(a)),
       exchangeLine(a),
       el(
         "div",
@@ -720,6 +809,7 @@
         { class: "card agent-card state-" + a.state },
         el("div", { class: "card-head" }, stateIcon(a.state), el("span", { class: "card-title" }, a.title), el("span", { class: "spacer" }), pill(AGENT_TONE[a.state], a.label)),
         el("div", { class: "activity" }, a.activity),
+        liveBox(agentKey(a)),
         el("div", { class: "muted small", title: a.fileScope.join(", ") }, a.fileScope.length ? "May change: " + a.fileScope.join(", ") : "Read-only: it may not change any files."),
       ),
       el(
@@ -805,7 +895,8 @@
         el(
           "span",
           { class: "row" },
-          el("button", { class: "ghost", onclick: () => review(c, "show") }, isNew ? "Review file" : "Review diff"),
+          c.state === "applied" ? el("button", { class: "ghost", title: "Open the file in your project, with the accepted draft", onclick: () => review(c, "open") }, "Open file") : null,
+          el("button", { class: "ghost", onclick: () => review(c, "show") }, c.state === "applied" ? (isNew ? "Draft" : "Diff") : isNew ? "Review file" : "Review diff"),
           pending ? el("button", { class: "ghost danger", title: "Discard this draft. Nothing is written.", onclick: () => review(c, "reject") }, "Reject") : null,
           pending ? el("button", { class: "primary", title: "Write this draft to your project", onclick: () => review(c, "accept") }, c.note ? "Accept anyway" : "Accept") : null,
         ),
@@ -816,7 +907,8 @@
   function draftsTab() {
     const changes = allChanges();
     const pending = changes.filter((c) => c.state === "draft");
-    const decided = changes.filter((c) => c.state !== "draft");
+    const accepted = changes.filter((c) => c.state === "applied");
+    const rejected = changes.filter((c) => c.state === "discarded");
     const seg = (by, label) => el("button", { class: "seg-btn" + (filesBy === by ? " on" : ""), "aria-pressed": filesBy === by ? "true" : "false", onclick: () => { filesBy = by; persist(); render(); } }, label);
     const list = (items) => {
       if (filesBy === "file") return items.map((c) => draftCard(c, true));
@@ -842,7 +934,16 @@
       changes.length ? el("div", { class: "segmented" }, seg("file", "All files"), seg("agent", "By agent")) : null,
       changes.length === 0 ? el("div", { class: "empty" }, "No drafts yet. When a sub-agent drafts a change, it shows here for review.") : null,
       list(pending),
-      decided.length ? details("decided", `Decided · ${decided.length}`, el("div", {}, list(decided)), "fold decided-group") : null,
+      // Accepted drafts stay in sight, so it is clear they were written and not lost.
+      accepted.length
+        ? el(
+            "div",
+            { class: "accepted-group" },
+            el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Accepted · written to your project"), pill("success", String(accepted.length))),
+            list(accepted),
+          )
+        : null,
+      rejected.length ? details("decided", `Rejected · ${rejected.length}`, el("div", {}, list(rejected)), "fold decided-group") : null,
       pending.length
         ? el(
             "div",
@@ -1180,6 +1281,8 @@
     // The activity feed and agent conversations follow new messages; other tabs keep their place.
     const follow = (tab === "overview" || (tab === "agents" && agentView)) && nearBottom;
     if (oldTab === main.dataset.tab) main.scrollTop = follow ? main.scrollHeight : oldScroll;
+    // A new view (or the page just loaded): a chat-like view opens at its latest message.
+    else if (followsLatest()) main.scrollTop = main.scrollHeight;
     const again = focusedId && document.getElementById(focusedId);
     if (again && !again.disabled) {
       again.focus();
@@ -1200,6 +1303,7 @@
     if (msg && msg.type === "state") {
       const before = state && state.current ? state.current.id : null;
       state = msg.state;
+      live = (state && state.live) || {};
       // Another conversation: start on its Overview.
       if (before && (!state.current || state.current.id !== before)) {
         tab = "overview";
@@ -1207,6 +1311,9 @@
         persist();
       }
       render();
+    } else if (msg && msg.type === "live") {
+      live = msg.live && typeof msg.live === "object" ? msg.live : {};
+      patchLive();
     } else if (msg && msg.type === "focusInput") {
       document.getElementById("input")?.focus();
     } else if (msg && msg.type === "attached" && Array.isArray(msg.paths)) {

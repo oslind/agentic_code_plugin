@@ -1,4 +1,21 @@
-import { ChatRequest, ChatResponse, ModelProvider, StructuredOutputMode } from "./types";
+import { ChatPhase, ChatProgress, ChatRequest, ChatResponse, ModelProvider, StructuredOutputMode } from "./types";
+
+/** Reports a request's phase to its listener, if it has one. Display only, so a listener's error is ignored. */
+function report(request: ChatRequest, phase: ChatPhase): void {
+  try {
+    request.onProgress?.({ phase, reasoning: "", content: "" });
+  } catch {
+    // Only for display.
+  }
+}
+
+/** Whether reply text has started outside a <think> block, i.e. the model is writing its answer, not thinking. */
+export function liveContent(content: string): boolean {
+  const open = content.lastIndexOf("<think>");
+  if (open === -1) return content.trim().length > 0;
+  const close = content.indexOf("</think>", open);
+  return close !== -1 && content.slice(close + 8).trim().length > 0;
+}
 
 export interface OpenAICompatibleConfig {
   baseUrl: string;
@@ -122,8 +139,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const order = OpenAICompatibleProvider.FALLBACK;
     for (let mode = this.structuredOutput; ; ) {
       try {
+        report(request, "queued");
         const release = await this.queue.acquire(request.signal);
         try {
+          report(request, "waiting");
           return await this.send(request, mode);
         } finally {
           release();
@@ -228,7 +247,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     // A server that ignores "stream" answers with plain JSON, which is read as before.
     if ((res.headers.get("content-type") ?? "").includes("text/event-stream") && res.body) {
       try {
-        return await readStream(res.body, res.status, timeout.touch);
+        return await readStream(res.body, res.status, timeout.touch, request.onProgress);
       } catch (err) {
         if (err instanceof ProviderError) throw err;
         throw this.networkError(err, request.signal, timeout);
@@ -341,6 +360,18 @@ class StreamResult {
   sawContent = false;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 
+  constructor(private readonly onProgress?: (p: ChatProgress) => void) {}
+
+  /** Tells the listener what has arrived. A listener that throws never breaks the reply. */
+  progress(): void {
+    if (!this.onProgress || (!this.content && !this.reasoning)) return;
+    try {
+      this.onProgress({ phase: liveContent(this.content) ? "writing" : "thinking", reasoning: this.reasoning, content: this.content });
+    } catch {
+      // Only for display.
+    }
+  }
+
   finish(status: number): ChatResponse {
     if (!this.sawContent) throw new ProviderError("Model server returned no message content", status, true);
     return {
@@ -383,10 +414,15 @@ function parseEvents(lines: string[], out: StreamResult, status: number): Stream
 }
 
 /** Reads a streamed reply as it arrives. */
-async function readStream(body: ReadableStream<Uint8Array>, status: number, onData: () => void = () => undefined): Promise<ChatResponse> {
+async function readStream(
+  body: ReadableStream<Uint8Array>,
+  status: number,
+  onData: () => void = () => undefined,
+  onProgress?: (p: ChatProgress) => void,
+): Promise<ChatResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  const out = new StreamResult();
+  const out = new StreamResult(onProgress);
   let buffer = "";
   let bytes = 0;
   // Size of the event being received: all its lines up to the blank line that ends it.
@@ -408,6 +444,7 @@ async function readStream(body: ReadableStream<Uint8Array>, status: number, onDa
       }
       if (eventChars + buffer.length > MAX_EVENT_CHARS) throw eventTooLarge(status);
       parseEvents(lines, out, status);
+      out.progress();
       if (done) return out.finish(status);
     }
   } catch (err) {
