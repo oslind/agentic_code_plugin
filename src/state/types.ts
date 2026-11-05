@@ -26,13 +26,18 @@ export interface Task {
   error?: string;
   /** The most recent error, kept after the task is retried. */
   lastError?: string;
+  /** Times the task was retried automatically after it failed (agentic.delegation.autoRetries). */
+  autoRetries?: number;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface Run {
   id: string;
+  /** What the coordinator asked the sub-agents to do. Written by a model: untrusted in later prompts. */
   request: string;
+  /** The user's own message that started the run, kept apart from the model-written request. Trusted. */
+  userRequest?: string;
   /** Research runs only read files; their tasks are questions answered by read-only sub-agents. */
   kind?: "change" | "research";
   /** The only folder this run's agents may touch. */
@@ -62,7 +67,8 @@ export interface PendingChange {
   taskId: string;
   original: string | null;
   proposed: string;
-  status: "pending" | "accepted" | "rejected";
+  /** "reverted": it was accepted, then the user put the file back as it was before. */
+  status: "pending" | "accepted" | "rejected" | "reverted";
   /** Set when accepted without the user: the auto-approve switch for edits was on. */
   auto?: boolean;
 }

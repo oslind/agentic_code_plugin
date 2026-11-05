@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import * as vscode from "vscode";
 import { resumeState } from "../state/resume";
 import { CheckConfig } from "../checks/runner";
-import { createProvider, readPermissions, readRunConfig } from "../config";
+import { createProvider, readAutoRetries, readPermissions, readRunConfig } from "../config";
 import { acceptChange, rejectChange } from "../changes/review";
 import { Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
@@ -136,6 +136,8 @@ export function registerRunCommands(
       maxParallel: config.maxParallel,
       maxTurns: config.maxTurns,
       maxFixRounds: config.maxFixRounds,
+      // Each retry is more model calls, which the run's budget (maxModelCallsPerRun) still caps.
+      autoRetries: readAutoRetries(),
       linkDirs: config.linkDirs,
       signal: abort.signal,
       terminal: terminals.for(folder.uri.fsPath),

@@ -211,6 +211,15 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       return agent({ text: "Finished without changing any files.", tag: "done" });
     case "transient_failure":
       return agent({ text: `Model server trouble, retrying: ${short(event.message)}`, tag: "retry", tone: "warning" });
+    case "auto_retry": {
+      const n = typeof data.retry === "number" ? data.retry : 1;
+      const of = typeof data.of === "number" ? data.of : n;
+      return agent({
+        text: `Failed: ${short(event.message)}\nRetrying automatically (retry ${n} of ${of}). The new attempt is told what went wrong and sees what I had written.`,
+        tag: "auto-retry",
+        tone: "warning",
+      });
+    }
     case "task_failed":
       return agent({ text: `Failed: ${short(event.message)}`, tag: "failed", tone: "error" });
     case "cancelled": {
@@ -225,6 +234,13 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
     }
     case "change_accepted":
       return { author: "system", text: `Accepted the draft of ${event.message} and wrote it to your project.`, tone: "success" };
+    case "change_reverted":
+      return {
+        author: "system",
+        text: data.deleted
+          ? `Reverted the accept of ${event.message}: the sub-agent had created it, so it was deleted from your project.`
+          : `Reverted the accept of ${event.message}: the file is back to how it was before.`,
+      };
     case "change_rejected":
       return { author: "system", text: `Rejected the draft of ${event.message}. Nothing was written.` };
     case "resumed": {

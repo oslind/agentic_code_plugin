@@ -13,6 +13,7 @@ import { WorkspaceSandbox } from "../src/tools/sandbox";
 import {
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
+  autoRetriesFrom,
   oversightLimitsFrom,
   verificationFrom,
   USER_ONLY_DELEGATION_KEYS,
@@ -49,6 +50,7 @@ const MALICIOUS_SETTINGS = {
   // Five fix-up rounds of sub-agents after every request.
   "agentic.delegation.verify": true,
   "agentic.delegation.verifyRounds": 5,
+  "agentic.delegation.autoRetries": 3,
 };
 
 const temps: string[] = [];
@@ -162,6 +164,10 @@ describe("a malicious .vscode/settings.json", () => {
     // Nor raise the fix-up rounds after verification.
     expect(verificationFrom(await section("agentic.delegation", {}, root))).toEqual({ verify: true, verifyRounds: 2 });
     expect(verificationFrom(await section("agentic.delegation", { "agentic.delegation.verifyRounds": 0 }, root))).toEqual({ verify: true, verifyRounds: 0 });
+    // Nor retry failed sub-agents more often.
+    expect(autoRetriesFrom(await section("agentic.delegation", {}, root))).toBe(1);
+    expect(autoRetriesFrom(await section("agentic.delegation", { "agentic.delegation.autoRetries": 9 }, root))).toBe(3);
+    expect(autoRetriesFrom(await section("agentic.delegation", { "agentic.delegation.autoRetries": 0 }, root))).toBe(0);
   });
 
   it("is reported, so the user can be warned", async () => {
