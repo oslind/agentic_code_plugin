@@ -13,6 +13,7 @@ type FromView =
   | { type: "send"; text: string; attachments?: unknown }
   | { type: "attach" }
   | { type: "newTask" }
+  | { type: "compact" }
   | { type: "setMode"; mode: "plan" | "act" }
   | { type: "open"; id: string }
   | { type: "delete"; id: string }
@@ -115,6 +116,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "newTask":
           return this.controller.newTask();
+        case "compact":
+          return this.controller.compact();
         case "setMode":
           if (m.mode === "plan" || m.mode === "act") await this.controller.setMode(m.mode);
           return;

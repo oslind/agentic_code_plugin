@@ -6,7 +6,8 @@ import { Run } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
 import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
-import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
+import { compactConversation, compactionNote, planCompaction } from "./compaction";
+import { coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { AnswerCheck, Verification, verifyRoundLimit } from "../coordinator/verify";
@@ -82,14 +83,48 @@ export class RunLoop {
       untrustedSection(`The update from "${task.title}":`, `update from sub-agent "${task.title}" after a follow-up chat`, update || "(no update)"),
       "Continue the original request from where it stands now. Plan only what is still left to do (drafts waiting for review are already done), or answer if nothing is left. Do not plan work that is already done.",
     ].join("\n\n");
-    await this.respond(await this.conversations.load(conversationId), userRequest ?? run.request, continuation, userRequest);
+    await this.respond(await this.conversations.load(conversationId), userRequest ?? run.request, continuation, userRequest, runId);
+  }
+
+  /**
+   * Compacts the conversation when it needs it (or always, with `force`):
+   * the older messages become a summary the coordinator gets instead. Returns
+   * the conversation as it is afterwards, and why nothing was compacted when
+   * nothing was. A failed summary changes nothing; only a stop is passed on.
+   * `runId` counts the call against that run's model-call budget.
+   */
+  async compact(c: Conversation, signal: AbortSignal, opts: { force?: boolean; runId?: string } = {}): Promise<{ conversation: Conversation; skipped?: string }> {
+    const provider = this.s.coordinatorProvider(c.workspaceRoot, opts.runId);
+    const budget = coordinatorHistoryBudget(
+      { mode: this.s.mode, maxResearchers: this.host.delegationLimits().maxResearchers, historyTokens: this.host.coordinatorHistoryTokens?.() },
+      provider.contextWindow,
+    );
+    const plan = planCompaction(c.entries, budget, opts.force);
+    if (!plan) return { conversation: c, skipped: "There is not enough earlier conversation to compact yet." };
+    const before = this.s.busy;
+    this.s.busy = "Compacting the conversation…";
+    this.s.changed();
+    try {
+      const result = await compactConversation(provider, plan, budget, signal);
+      this.host.log("info", `Compacted ${result.messages} message(s) into a summary of about ${Math.ceil(result.summary.length / 3.5)} tokens (room for the conversation: ${budget} tokens).`);
+      await this.s.append(c.id, compactionNote(result, !opts.force));
+      return { conversation: await this.conversations.load(c.id) };
+    } catch (err) {
+      if (signal.aborted) throw err;
+      const why = `Could not compact the conversation: ${(err as Error).message}. Nothing was changed; the coordinator gets as many recent messages as fit.`;
+      this.host.log("warn", why);
+      return { conversation: c, skipped: why };
+    } finally {
+      if (this.s.busy === "Compacting the conversation…") this.s.busy = before;
+      this.s.changed();
+    }
   }
 
   /**
    * The coordinator's turn on a message: answer, research, plan or run. `continuation` replaces a new user message.
    * `userRequest` is the user's own words a run started here keeps apart from the model's request; for a new message it is `text`.
    */
-  async respond(c: Conversation, text: string, continuation?: string, userRequest: string | undefined = continuation ? undefined : text): Promise<void> {
+  async respond(c: Conversation, text: string, continuation?: string, userRequest: string | undefined = continuation ? undefined : text, runId?: string): Promise<void> {
     this.s.done = undefined;
     const waiting = !continuation && isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
     if (waiting && this.s.runOwner.has(waiting.id)) {
@@ -113,6 +148,12 @@ export class RunLoop {
     let limitReached = false;
     try {
       c = await this.conversations.load(c.id);
+      // A long conversation is compacted before the coordinator reads it, so it keeps fitting a small context.
+      if (this.host.autoCompact?.() ?? true) {
+        c = (await this.compact(c, abort.signal, { runId })).conversation;
+        this.s.busy = "Coordinator is thinking…";
+        this.s.changed();
+      }
       const provider = this.s.coordinatorProvider(c.workspaceRoot);
       this.host.log("info", `Coordinator using ${this.host.modelLabel(c.workspaceRoot)}`);
       const fileTree = await this.host.fileTree(c.workspaceRoot, abort.signal).catch(() => undefined);

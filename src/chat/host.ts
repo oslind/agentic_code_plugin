@@ -64,6 +64,8 @@ export interface ChatHost {
   scratchLinkDirs?(workspaceRoot: string): string[];
   /** Most tokens of earlier conversation sent with each coordinator message. 0 or unset: as much as fits. */
   coordinatorHistoryTokens?(): number;
+  /** Whether the conversation is compacted on its own when it nears the context limit. Unset: on. */
+  autoCompact?(): boolean;
   /** Opens a pending change in VS Code: a new file as its own editor, an edit as a side-by-side diff. */
   showChange(runId: string, filePath: string): Promise<void>;
   /** Closes the editors showing a change once it is decided. */

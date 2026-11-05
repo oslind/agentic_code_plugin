@@ -38,7 +38,7 @@ export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 export const USER_ONLY_MODEL_KEYS = ["baseUrl", "apiKey", "maxConcurrentRequests", "maxOutputTokens"] as const;
 
 /** Keys under "agentic.chat" that limit how much of your conversation is sent to the model. */
-export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens"] as const;
+export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens", "autoCompact"] as const;
 
 /**
  * Keys under "agentic.delegation" that decide how many extra model calls the
@@ -112,6 +112,15 @@ export function maxOutputTokensFrom(section: InspectableSection): number {
 /** Most tokens of earlier conversation sent with each coordinator message, from user settings only. 0 means as much as fits. */
 export function coordinatorHistoryTokensFrom(section: InspectableSection): number {
   return Math.max(0, Math.floor(userValue(section, "coordinatorHistoryTokens", 12000, isNumber)));
+}
+
+/**
+ * Whether the conversation is compacted on its own when it nears the room it
+ * has in the coordinator's prompt. Default on. From user settings only: each
+ * compaction is a model call.
+ */
+export function autoCompactFrom(section: InspectableSection): boolean {
+  return userValue(section, "autoCompact", true, isBoolean);
 }
 
 /** How closely the coordinator watches and checks its sub-agents. One setting instead of five overlapping ones. */

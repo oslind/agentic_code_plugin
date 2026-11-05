@@ -5,6 +5,7 @@ import { untrustedSection } from "../context/untrusted";
 import { endsInLeadIn, replyReserve } from "../llm/unfinished";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { ChatEntry, ChatMode } from "./types";
+import { compactionOf, liveEntries } from "./compactState";
 
 /**
  * The coordinator has no tools. It can hand a request to the planner ("plan"),
@@ -118,23 +119,60 @@ export interface CoordinatorContext {
   continuation?: string;
 }
 
+function systemPrompt(ctx: Pick<CoordinatorContext, "mode" | "maxResearchers" | "answerFromResearch" | "researchRoundsLeft">): string {
+  return [base(researcherLimit(ctx.maxResearchers)), MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? answerRule(Math.max(0, ctx.researchRoundsLeft ?? 0), researcherLimit(ctx.maxResearchers)) : ""].filter(Boolean).join("\n\n");
+}
+
+/**
+ * The entries the coordinator sees as the conversation: the user's messages
+ * and its own replies. Sub-agent starts, answers to sub-agents' questions and
+ * check-ins are shown to the user but would only crowd the coordinator's
+ * context; what the user decided reaches it through learnedSoFar.
+ */
+export function conversationTurns(entries: ChatEntry[]): ChatEntry[] {
+  return entries.filter(
+    (e) => (e.author === "user" || e.author === "coordinator") && e.kind !== "spawn" && e.kind !== "consult" && e.kind !== "checkin" && e.tag !== "for a sub-agent",
+  );
+}
+
+/**
+ * Tokens the conversation may use in a coordinator prompt: the context window
+ * less the reply's room and the rules, and at most agentic.chat.coordinatorHistoryTokens.
+ * Compaction (compaction.ts) aims to keep the conversation well inside this.
+ */
+export function coordinatorHistoryBudget(ctx: Pick<CoordinatorContext, "mode" | "maxResearchers" | "historyTokens">, contextWindow: number): number {
+  const room = Math.max(1024, contextWindow - replyReserve(contextWindow)) - estimateTokens(systemPrompt(ctx));
+  return ctx.historyTokens && ctx.historyTokens > 0 ? Math.min(room, ctx.historyTokens) : room;
+}
+
+/** The summary of the conversation before its latest compaction, as the coordinator gets it. */
+export function summarySection(summary: string): string {
+  // Written by a model, partly from research reports that read project files, so it is data and never instructions.
+  return untrustedSection(
+    "Summary of the earlier part of this conversation (written when it was compacted to fit the context; the messages after it follow below):",
+    "summary of the earlier conversation",
+    summary,
+  );
+}
+
 /** Builds the coordinator prompt: rules, project files, then as much recent conversation as fits. */
 export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow: number): ChatMessage[] {
-  const system = [base(researcherLimit(ctx.maxResearchers)), MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? answerRule(Math.max(0, ctx.researchRoundsLeft ?? 0), researcherLimit(ctx.maxResearchers)) : ""].filter(Boolean).join("\n\n");
+  const system = systemPrompt(ctx);
   let budget = Math.max(1024, contextWindow - replyReserve(contextWindow)) - estimateTokens(system);
+
+  // Once compacted, the coordinator gets the summary in place of the messages before the kept ones.
+  const compacted = compactionOf(ctx.entries);
+  const summary = compacted ? summarySection(compacted.summary) : undefined;
+  if (summary) budget -= estimateTokens(summary);
 
   // What is left after the history goes to the notes below (plan and project files).
   const room = budget;
-  if (ctx.historyTokens && ctx.historyTokens > 0) budget = Math.min(budget, ctx.historyTokens);
+  if (ctx.historyTokens && ctx.historyTokens > 0) budget = Math.min(budget, ctx.historyTokens - (summary ? estimateTokens(summary) : 0));
   const continuation: ChatMessage | undefined = ctx.continuation?.trim() ? { role: "user", content: ctx.continuation.trim() } : undefined;
   if (continuation) budget -= estimateTokens(continuation.content) + 4;
 
   const history: ChatMessage[] = [];
-  // Sub-agent starts, answers to sub-agents' questions and check-ins are shown to the user but would only
-  // crowd the coordinator's context; what the user decided reaches it through learnedSoFar.
-  const turns = ctx.entries.filter(
-    (e) => (e.author === "user" || e.author === "coordinator") && e.kind !== "spawn" && e.kind !== "consult" && e.kind !== "checkin" && e.tag !== "for a sub-agent",
-  );
+  const turns = conversationTurns(compacted ? liveEntries(ctx.entries, compacted) : ctx.entries);
   for (let i = turns.length - 1; i >= 0; i--) {
     const e = turns[i]!;
     const msg: ChatMessage = e.author === "user" ? { role: "user", content: e.text } : { role: "assistant", content: e.text };
@@ -151,6 +189,7 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
   budget = room - history.reduce((n, m) => n + estimateTokens(m.content) + 4, 0);
 
   const notes: string[] = [];
+  if (summary) notes.push(summary);
   if (ctx.pendingPlan) notes.push(`A plan is proposed and waiting to run:\n${ctx.pendingPlan}`);
   // File names come from the project, so they are fenced: a planted name is data, never an instruction.
   const filesSection = (tree: string) => untrustedSection("Project files (names only, from the project):", "workspace file listing", tree);

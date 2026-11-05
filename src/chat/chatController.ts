@@ -245,10 +245,38 @@ export class ChatController {
     return this.host.pickFiles(root);
   }
 
+  /**
+   * The Compact button (or "/compact"): the older part of the current
+   * conversation becomes a summary the coordinator gets instead, whatever its
+   * length. Stop ends it like any other model call.
+   */
+  async compact(): Promise<void> {
+    if (this.s.busy || !this.s.currentId) return;
+    await this.ready;
+    const c = await this.conversations.load(this.s.currentId);
+    const abort = new AbortController();
+    this.s.abort = abort;
+    try {
+      const { skipped } = await this.runLoop.compact(c, abort.signal, { force: true });
+      if (skipped) await this.s.append(c.id, { author: "system", tone: "warning", text: skipped });
+    } catch (err) {
+      await this.s.append(c.id, { author: "system", tone: "warning", text: abort.signal.aborted ? "Compacting was stopped. Nothing was changed." : (err as Error).message });
+    } finally {
+      this.s.abort = undefined;
+      this.s.busy = undefined;
+      this.s.stopping = false;
+      this.s.changed();
+    }
+  }
+
   /** Handles one message from the user: the coordinator answers, and may plan or run. */
   async send(text: string, attachments: string[] = []): Promise<void> {
     if (!text.trim() || this.s.busy) return;
     await this.ready;
+    if (/^\s*\/compact\s*$/i.test(text) && !attachments.length) {
+      if (this.s.currentId) return this.compact();
+      return;
+    }
     if (attachments.length) text = `${text.trim()}\n\nAttached files: ${[...new Set(attachments)].join(", ")}`;
     let c: Conversation;
     if (this.s.currentId) {
