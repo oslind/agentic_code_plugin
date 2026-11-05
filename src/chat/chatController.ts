@@ -1,3 +1,4 @@
+import { promises as fs } from "fs";
 import { planRequest } from "../coordinator/planner";
 import { parallelWaves } from "../coordinator/plan";
 import * as path from "path";
@@ -633,7 +634,8 @@ export class ChatController {
     const disk = await WorkspaceSandbox.create(root);
     // Like during its task: the project as on disk, plus the drafts still waiting for review.
     const overlay = research ? undefined : new OverlayFiles(disk, pendingBase(run.changes));
-    const scratch = overlay ? new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `followup-${run.id.slice(0, 8)}`, task.id), ["node_modules"]) : undefined;
+    // Commands run in a copy, never in the project itself; a researcher's copy just has no drafts.
+    const scratch = new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `followup-${run.id.slice(0, 8)}`, task.id), ["node_modules"]);
     const checks = research ? [] : ((await this.host.checksFor(workspaceRoot)).saved ?? []);
     const hooks = this.hooksFor(conversationId, run.id, checks, workspaceRoot);
     const history = await this.tasks.loadHistory(run.id, task.id);
@@ -643,7 +645,7 @@ export class ChatController {
     f.worker = new Worker({
       provider: this.live.wrap(this.host.provider(workspaceRoot), key),
       sandbox: overlay ?? disk,
-      checkDir: overlay && scratch ? () => scratch.sync(overlay.allChanges()) : undefined,
+      checkDir: () => scratch.sync(overlay ? overlay.allChanges() : new Map()),
       terminal: this.host.terminal?.(workspaceRoot),
       task,
       checks,
@@ -655,7 +657,8 @@ export class ChatController {
       // Without a saved conversation (older runs), it gets what the chat shows of its work.
       context: history?.length ? undefined : earlierWork(task, conversation.entries, run.id),
       // Never auto-approved: its history may hold injected text from files it read, so the user decides every write and command.
-      approve: research ? async () => false : (reason, call, preview) => this.askFollowUpApproval(conversationId, run.id, task, reason, call, preview),
+      // A researcher cannot write (its file scope is empty), so for it this only covers commands.
+      approve: (reason, call, preview) => this.askFollowUpApproval(conversationId, run.id, task, reason, call, preview),
       // Also never auto-approved, and never remembered: each command run is one card for this sub-agent only.
       approveCommand: research
         ? undefined
@@ -718,7 +721,9 @@ export class ChatController {
       agentName: task.title,
       preview,
       text:
-        call.tool === "request_check"
+        call.tool === "run_command"
+          ? `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} In a reopened conversation every command needs your approval, even with Run commands on. Allowing it covers this one run by me only. It runs in a copy of the project, but like any command it runs as you, so only allow it if you trust it.`
+          : call.tool === "request_check"
           ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} In a reopened conversation every command needs your approval, even with Run commands on. Allowing it covers this one run by me only. It runs as you, so only allow it if you trust it.`
           : call.tool === "run_check"
             ? `${reason}. In a reopened conversation every command needs your approval, even a saved check with Run commands on. Allowing it covers this one run by me only. It runs as you, so only allow it if you trust it.`
@@ -997,6 +1002,29 @@ export class ChatController {
     return set;
   }
 
+  /**
+   * A command a sub-agent wants to run with run_command. With "Run commands"
+   * on it runs at once (the chat says so); otherwise a card shows the command
+   * and nothing runs until the user allows it. "Allow for the rest of this
+   * run" covers the same command again, by any sub-agent of this run.
+   */
+  private async approveAgentCommand(conversationId: string, runId: string, task: Task, call: Extract<ToolCall, { tool: "run_command" }>): Promise<boolean> {
+    if (isAutoApproved(call, this.host.permissions()) || this.allowedFor(runId).has(call.command)) return true;
+    const { decision } = await this.waitFor(conversationId, {
+      author: "agent",
+      kind: "approval",
+      runId,
+      taskId: task.id,
+      agentName: task.title,
+      rememberable: true,
+      rememberLabel: "Allow for the rest of this run",
+      text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+    });
+    if (decision?.kind !== "allow") return false;
+    if (decision.remember) this.allowedFor(runId).add(call.command);
+    return true;
+  }
+
   private hooksFor(conversationId: string, runId: string, checks: CheckConfig[], workspaceRoot: string): RunHooks {
     // The checks the user approved for this run (saved for the folder, or chosen in the checks form).
     // Only these, and commands approved during the run, may run without asking; the same rule as outside the chat.
@@ -1023,6 +1051,7 @@ export class ChatController {
         return decision?.kind === "answer" ? decision.text : "The user did not answer. Make a reasonable choice and say which in your summary.";
       },
       approveTool: async (task, reason, call, preview) => {
+        if (call.tool === "run_command") return this.approveAgentCommand(conversationId, runId, task, call);
         if (isAutoApproved(call, this.host.permissions())) {
           // "Run commands" is on: the user has given this authority for commands sub-agents request.
           if (call.tool === "request_check") this.allowedFor(runId).add(call.command);
@@ -1504,7 +1533,7 @@ export class ChatController {
       author: "coordinator",
       kind: "research",
       runId: run.id,
-      text: `Sending ${added.length} read-only sub-agent(s) to look into the project. They can read files but not change anything.`,
+      text: `Sending ${added.length} read-only sub-agent(s) to look into the project. They can read files and run commands in a copy of the project, but not change anything.`,
     });
     this.busy = `${added.length} read-only sub-agent(s) are researching…`;
     this.runningRunId = run.id;
@@ -1512,6 +1541,9 @@ export class ChatController {
 
     const sandbox = await WorkspaceSandbox.create(root);
     const { maxTurns, maxParallel } = this.host.researchLimits();
+    const terminal = this.host.terminal?.(c.workspaceRoot);
+    // Researchers' commands run in their own copy of the project, made when the first one runs.
+    const scratches: ScratchCopy[] = [];
     const provider = this.host.provider(c.workspaceRoot);
     const queue = [...added];
     this.supervise(run.id, c.id, maxTurns);
@@ -1523,6 +1555,9 @@ export class ChatController {
         }
         await this.tasks.setStatus(run.id, task.id, "running");
         let worker: Worker | undefined;
+        // Nothing is copied until the first command runs.
+        const scratch = new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `research-${run.id.slice(0, 8)}`, task.id), ["node_modules"]);
+        scratches.push(scratch);
         try {
           worker = new Worker({
             provider: this.live.wrap(provider, `${run.id}:${task.id}`),
@@ -1532,8 +1567,11 @@ export class ChatController {
             maxTurns,
             signal,
             readOnly: true,
+            terminal,
+            checkDir: () => scratch.sync(new Map()),
             context: learned ? untrustedSection("What earlier researchers found (build on it, do not repeat it):", "earlier research and sub-agent reports", learned) : undefined,
-            approve: async () => false,
+            // Only commands reach this: a researcher's empty file scope refuses every write.
+            approve: async (_reason, call) => call.tool === "run_command" && (await this.approveAgentCommand(c.id, run.id, task!, call)),
             inbox: () => this.drainInbox(run.id, task!.id),
             askCoordinator: (q) => this.consultCoordinator(c.id, run.id, task!, q, signal),
             log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
@@ -1552,7 +1590,11 @@ export class ChatController {
         if (worker) await this.tasks.saveHistory(run.id, task.id, worker.history()).catch(() => undefined);
       }
     };
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(maxParallel, added.length)) }, workerLoop)).finally(() => this.endSupervision(run.id));
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(maxParallel, added.length)) }, workerLoop)).finally(async () => {
+      this.endSupervision(run.id);
+      for (const scratch of scratches) await scratch.remove().catch(() => undefined);
+      await fs.rmdir(path.join(root, AGENT_DIR, "scratch", `research-${run.id.slice(0, 8)}`)).catch(() => undefined);
+    });
     // Let queued sub-agent messages land before the summary.
     await this.eventQueue.run(async () => {});
     signal.throwIfAborted();
@@ -1797,4 +1839,12 @@ export function earlierWork(task: Task, entries: ChatEntry[], runId: string, max
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+/** A model-written reason as a sentence of its own: capital first letter, full stop at the end. */
+function asSentence(text: string): string {
+  const t = text.trim();
+  if (!t) return t;
+  const s = t[0]!.toUpperCase() + t.slice(1);
+  return /[.!?]$/.test(s) ? s : `${s}.`;
 }

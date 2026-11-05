@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.4.11",
+  "version": "0.5.1",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -272,7 +272,7 @@
         "agentic.autoApprove.commands": {
           "type": "boolean",
           "default": false,
-          "description": "Check commands (tests, lint, and ones a sub-agent requests) run without asking. When off, each command is shown first and nothing runs until you allow it. Commands start in the project folder, but they run as you: a command or the script it starts can read files elsewhere and use the network, so only turn this on for projects you trust. Only your user settings count: a project cannot turn this on.",
+          "description": "Commands run without asking: checks (tests, lint, and ones a sub-agent requests) and the commands sub-agents run in the Agentic Code terminal. When off, each command is shown first and nothing runs until you allow it. Commands start in the project folder, but they run as you: a command or the script it starts can read files elsewhere and use the network, so only turn this on for projects you trust. Only your user settings count: a project cannot turn this on.",
           "scope": "machine"
         },
         "agentic.delegation.maxTasks": {

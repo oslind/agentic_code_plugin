@@ -17,6 +17,9 @@ export interface CheckResult {
   durationMs: number;
   /** Not run, because the user did not approve it. */
   skipped?: boolean;
+  /** The exit code, when the command ran to the end. */
+  code?: number | null;
+  timedOut?: boolean;
 }
 
 /** Names of environment variables that usually hold credentials. */
@@ -100,6 +103,8 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
     return {
       name: check.name,
       passed: res.code === 0 && !res.timedOut,
+      code: res.code,
+      timedOut: res.timedOut || undefined,
       output: res.timedOut ? `Timed out.\n${tail(combined, maxChars)}` : tail(combined, maxChars),
       durationMs: Date.now() - started,
     };

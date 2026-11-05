@@ -220,3 +220,18 @@ export function toTerminalText(text: string): string {
   const s = new TerminalSanitizer();
   return s.write(text) + s.end();
 }
+
+/**
+ * Command output for the chat, which shows plain text only: the same filter
+ * as for the terminal, then styles removed and carriage-return redraws
+ * (progress bars) collapsed to what the line ended up showing.
+ */
+export function toPlainText(text: string): string {
+  const collapsed = text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.split("\r").filter(Boolean).pop() ?? "")
+    .join("\n");
+  // eslint-disable-next-line no-control-regex -- removing the styles the filter above kept
+  return toTerminalText(collapsed).replace(/\x1b\[[0-9;]*m/g, "").replace(/\r/g, "");
+}

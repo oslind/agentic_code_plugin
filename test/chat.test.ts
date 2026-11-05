@@ -1,4 +1,4 @@
-import { promises as fs } from "fs";
+import { existsSync, promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -941,6 +941,48 @@ describe("ChatController", () => {
     await sending;
     expect(allowed).toBe(true);
     expect(savedChecks.at(-1)).toEqual([{ name: "pytest", command: "pytest -q" }]);
+  });
+
+  it("lets a researcher run a command after the user allows it, in a copy of the project, with the output in the chat", async () => {
+    const ws = path.join(dir, "ws");
+    await fs.mkdir(ws, { recursive: true });
+    await fs.writeFile(path.join(ws, "README.md"), "# Flight sim\n");
+    const command = `node -e ${JSON.stringify("require('fs').writeFileSync('made.txt','x'); console.log('tests: 3 passed')")}`;
+    const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+    const { controller } = setup(
+      [
+        JSON.stringify({ reply: "I'll have a sub-agent run the tests.", action: "research", request: "", questions: ["Do the tests pass?"] }),
+        worker("Run the tests.", { tool: "run_command", command, reason: "see whether the tests pass" }),
+        worker("Done.", { tool: "finish", summary: "3 tests pass." }),
+        JSON.stringify({ reply: "Done.", action: "none", request: "" }),
+        "The 3 tests pass.",
+      ],
+      "act",
+      { workspace: ws },
+    );
+    const sending = controller.send("do the tests pass?");
+    const card = await waitForCard(controller, "approval");
+    expect(card).toMatchObject({ rememberable: true, rememberLabel: "Allow for the rest of this run" });
+    expect(card.text).toContain(command);
+    await controller.decide(card.id, { kind: "allow" });
+    await sending;
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.find((e) => e.kind === "command")).toMatchObject({ author: "agent", tone: "success", command: { line: command, output: "tests: 3 passed" } });
+    // It ran in a copy: nothing appeared in the project, and the copy is gone.
+    expect(existsSync(path.join(ws, "made.txt"))).toBe(false);
+    expect(existsSync(path.join(ws, ".agentic", "scratch", "research-" + entries.find((e) => e.kind === "research")!.runId!.slice(0, 8)))).toBe(false);
+  });
+
+  it("runs a sub-agent's command without asking when Run commands is on", async () => {
+    let allowed: boolean | undefined;
+    const { controller } = setup(planReplies(), "act", {
+      permissions: { commands: true },
+      during: async (hooks) => {
+        allowed = await hooks.approveTool({ id: "add-model", title: "Add model" } as never, "x", { tool: "run_command", command: "npm test" });
+      },
+    });
+    await controller.send("add users");
+    expect(allowed).toBe(true);
   });
 
   it("auto-approves commands when that switch is on", async () => {

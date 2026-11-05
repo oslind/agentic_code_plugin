@@ -27,6 +27,11 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
     command: z.string().min(1).max(500).describe("Shell command run from the project root"),
     reason: z.string().max(300).describe("Why this check verifies your task"),
   }),
+  z.object({
+    tool: z.literal("run_command"),
+    command: z.string().min(1).max(500).describe("One shell command, run from the project root, e.g. npm test or ls src"),
+    reason: z.string().max(300).optional().describe("Why you run it"),
+  }),
   z.object({ tool: z.literal("ask_user"), question: z.string().min(5).max(1000) }),
   z.object({ tool: z.literal("ask_coordinator"), question: z.string().min(5).max(1000) }),
   z.object({ tool: z.literal("finish"), summary: z.string().min(1) }),

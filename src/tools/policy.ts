@@ -5,7 +5,7 @@ import { commandLeavesProject } from "./commandGuard";
 export interface PolicyContext {
   /** Globs the task may write, from its plan entry. */
   fileScope: string[];
-  /** Names of checks configured by the user. Workers cannot run arbitrary commands. */
+  /** Names of checks configured by the user. Other commands (run_command) always go to the user or the "Run commands" switch. */
   allowedChecks: string[];
   /** Commands of the allowed checks by name, so a known check can be requested again without asking. */
   knownCommands?: Map<string, string>;
@@ -253,6 +253,12 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
         ? { verdict: "allow" }
         : { verdict: "ask", reason: `Run the command \`${call.command}\` as check "${call.name}": ${call.reason}` };
     }
+    case "run_command": {
+      const outside = commandLeavesProject(call.command);
+      if (outside) return { verdict: "deny", reason: `The command \`${call.command}\` is not allowed. ${outside} Commands run in the project folder.` };
+      // Every command is shown first; only the user's "Run commands" switch, or the user's own approval, lets it run.
+      return { verdict: "ask", reason: `Run \`${call.command}\`${call.reason ? `: ${call.reason}` : ""}` };
+    }
     case "run_check":
       if (!ctx.allowedChecks.includes(call.name)) {
         return { verdict: "deny", reason: `Unknown check '${call.name}'. Available: ${ctx.allowedChecks.join(", ") || "none"}` };
@@ -326,7 +332,7 @@ export function isChangeAutoAccepted(path: string, auto: AutoApprove): boolean {
 
 /** Whether the user's auto-approve switches already allow a call the policy flagged. */
 export function isAutoApproved(call: ToolCall, auto: AutoApprove): boolean {
-  if (call.tool === "request_check") return auto.commands;
+  if (call.tool === "request_check" || call.tool === "run_command") return auto.commands;
   if (call.tool === "write_file" || call.tool === "replace_in_file") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
   return false;
 }

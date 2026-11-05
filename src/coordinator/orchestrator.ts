@@ -11,7 +11,7 @@ import { readyTasks, TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
 import { ToolCall } from "../tools/protocol";
 import { WorkspaceSandbox } from "../tools/sandbox";
-import { CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
+import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 
 export const AGENT_DIR = ".agentic";
 
@@ -220,6 +220,11 @@ export class Orchestrator {
         // A worker saying it is done is not enough: the checks decide. They run on a scratch copy.
         const checks: CheckResult[] = await runAllChecks(w.checks, await checkDir(), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)), this.o.terminal);
         signal.throwIfAborted();
+        // Each check that ran is shown in the chat with its output, like a command a sub-agent ran.
+        for (const c of checks) {
+          const command = w.checks.find((k) => k.name === c.name)?.command;
+          if (!c.skipped && command) await this.log("command", command, task.id, { ...commandEventData(command, c), check: c.name });
+        }
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed, skipped: c.skipped })) });
         if (failed.length === 0) break;
