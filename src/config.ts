@@ -10,6 +10,8 @@ import {
   legacyApiKeyFrom,
   maxConcurrentRequestsFrom,
   maxOutputTokensFrom,
+  OversightLimits,
+  oversightLimitsFrom,
   PERMISSION_KEYS,
   permissionsFrom,
   USER_ONLY_CHAT_KEYS,
@@ -170,4 +172,12 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
 /** Most tokens of earlier conversation sent with each coordinator message. User settings only, so a project cannot raise it. */
 export function readCoordinatorHistoryTokens(): number {
   return coordinatorHistoryTokensFrom(vscode.workspace.getConfiguration("agentic.chat"));
+}
+
+/**
+ * Check-ins, progress looks, result reviews and the per-run model-call cap.
+ * User settings only, so a project cannot make a run call the model more.
+ */
+export function readOversightLimits(): OversightLimits {
+  return oversightLimitsFrom(vscode.workspace.getConfiguration("agentic.delegation"));
 }

@@ -24,8 +24,9 @@ import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGo
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
-import { draftsForReview, MAX_REVIEW_ROUNDS, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { draftsForReview, isUnreviewed, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, Verification, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
+import { CallBudget } from "./callBudget";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { eventToEntry } from "./eventFeed";
 import { changedFilesOf, describeOutcome } from "./outcome";
@@ -71,6 +72,8 @@ export interface ChatHost {
     checkIns?: number;
     progressEvery?: number;
     reviewRounds?: number;
+    /** Most model calls one run may make (sub-agents and the coordinator's calls about them). 0 or unset: no limit. */
+    maxModelCallsPerRun?: number;
     /** Whether the coordinator verifies a request before it calls it done. Unset: off. */
     verify?: boolean;
     /** Most fix-up rounds when verification finds work left (agentic.delegation.verifyRounds). */
@@ -105,7 +108,7 @@ export interface RunHooks {
   /** A sub-agent's question to the coordinator. The coordinator answers, or asks the user. */
   askCoordinator: (task: Task, question: string, signal: AbortSignal) => Promise<CoordinatorReply>;
   /** The coordinator reviews a sub-agent's result (its report and drafts as diffs) before it counts as done. */
-  reviewResult?: (task: Task, summary: string, drafts: string, signal: AbortSignal) => Promise<ReviewVerdict>;
+  reviewResult?: (task: Task, summary: string, drafts: string, signal: AbortSignal, skip?: ReviewSkip) => Promise<ReviewVerdict>;
   inbox: (taskId: string) => InboxMessage[];
   /** Called once the run has started, with what the coordinator may do to its sub-agents while it supervises them. */
   attach?: (control: RunControl) => void;
@@ -291,6 +294,13 @@ export class ChatController {
   private readonly checkingOn = new Map<string, string>();
   /** Times the coordinator sent a sub-agent's result back, by "runId:taskId". */
   private readonly reviewRounds = new Map<string, number>();
+  /** How each sub-agent's latest result came out of review, by "runId:taskId". An unreviewed result is never auto-accepted. */
+  private readonly reviewOutcomes = new Map<string, ReviewOutcome>();
+  /** Model calls per run: sub-agents' steps and the coordinator's calls about them. */
+  private readonly budget = new CallBudget(
+    () => this.host.delegationLimits().maxModelCallsPerRun ?? 0,
+    (runId, limit) => this.budgetReached(runId, limit),
+  );
   /** Why an Accept did not go through, by "runId:path". Cleared once the change is decided. */
   private readonly changeNotes = new Map<string, string>();
   /** Commands the user allowed for the rest of a run, keyed by run id. */
@@ -333,9 +343,38 @@ export class ChatController {
     for (const l of this.listeners) l();
   }
 
-  /** The model for the coordinator's own calls, shown live under "coordinator". */
-  private coordinatorProvider(workspaceRoot: string): ModelProvider {
-    return this.live.wrap(this.host.provider(workspaceRoot), "coordinator");
+  /**
+   * The model for the coordinator's own calls, shown live under "coordinator".
+   * With a run id, the call is about that run's sub-agents and counts against its budget.
+   */
+  private coordinatorProvider(workspaceRoot: string, runId?: string): ModelProvider {
+    const provider = this.live.wrap(this.host.provider(workspaceRoot), "coordinator");
+    return runId ? this.budget.wrap(provider, runId) : provider;
+  }
+
+  /** A sub-agent's model, shown live and counted against its run's budget. */
+  private agentProvider(provider: ModelProvider, runId: string, taskId: string): ModelProvider {
+    return this.budget.wrap(this.live.wrap(provider, `${runId}:${taskId}`), runId);
+  }
+
+  /**
+   * A run used its model-call budget. Its sub-agents are stopped as with
+   * Stop (drafts kept for review, never written automatically), and the
+   * coordinator stops looking at them. Research sub-agents fail on their next
+   * step, and the answer is written from the reports so far.
+   */
+  private budgetReached(runId: string, limit: number): void {
+    this.host.log("warn", `Run ${runId} reached its limit of ${limit} model calls (agentic.delegation.maxModelCallsPerRun).`);
+    this.supervised.get(runId)?.abort.abort();
+    if (this.runningRunId === runId) this.host.cancelRun(runId);
+    const conversationId = this.runOwner.get(runId);
+    if (!conversationId) return;
+    void this.append(conversationId, {
+      author: "system",
+      runId,
+      tone: "warning",
+      text: `This run reached its limit of ${limit} model calls (agentic.delegation.maxModelCallsPerRun in your user settings), so its sub-agents were stopped. Their drafts are kept under Drafts for your review and are not written automatically. Raise the limit and retry the tasks to continue.`,
+    }).catch((err) => this.host.log("warn", (err as Error).message));
   }
 
   private async indexRuns(): Promise<void> {
@@ -882,7 +921,8 @@ export class ChatController {
   private endSupervision(runId: string): void {
     this.supervised.get(runId)?.abort.abort();
     this.supervised.delete(runId);
-    for (const map of [this.consulting, this.checkingOn, this.reviewRounds]) for (const key of [...map.keys()]) if (key.startsWith(`${runId}:`)) map.delete(key);
+    this.budget.clear(runId);
+    for (const map of [this.consulting, this.checkingOn, this.reviewRounds, this.reviewOutcomes]) for (const key of [...map.keys()]) if (key.startsWith(`${runId}:`)) map.delete(key);
   }
 
   /**
@@ -900,7 +940,7 @@ export class ChatController {
     if (event.type === "status" && event.message === "done") s.monitor.finished(task.id);
     if (event.type !== "tool_call" && event.type !== "denied" && event.type !== "checks") return;
     if (task.status !== "running" && task.status !== "verifying") return;
-    if (s.inFlight.has(task.id) || s.abort.signal.aborted) return;
+    if (s.inFlight.has(task.id) || s.abort.signal.aborted || this.budget.exhausted(run.id)) return;
     // Its last step was finishing: the review of its result is the next look.
     if (event.type === "tool_call" && event.message === "finish") return;
     const limits = this.host.delegationLimits();
@@ -931,7 +971,7 @@ export class ChatController {
     const scope = runScope(c.entries, run.id);
     const fresh = await this.tasks.load(run.id).catch(() => run);
     const decision = await superviseAgent(
-      this.coordinatorProvider(c.workspaceRoot),
+      this.coordinatorProvider(c.workspaceRoot, run.id),
       {
         userMessages: userMessagesOf(scope),
         request: run.request,
@@ -986,7 +1026,7 @@ export class ChatController {
       let result;
       try {
         result = await answerSubAgent(
-          this.coordinatorProvider(c.workspaceRoot),
+          this.coordinatorProvider(c.workspaceRoot, runId),
           {
             userMessages: userMessagesOf(scope),
             request: run.request,
@@ -1038,12 +1078,31 @@ export class ChatController {
    * A sub-agent called finish. Before its result counts, the coordinator
    * reads the report and the drafts and accepts them, or sends the sub-agent
    * back with feedback (at most agentic.delegation.reviewRounds times).
+   *
+   * When it cannot be sent back (too few steps left, or sent back as often as
+   * allowed), the result is still reviewed, and a "revise" goes to the user.
+   * A review that cannot happen (the model call fails, the run used its
+   * model-call budget) never counts as a pass. Either way the chat says so,
+   * and the drafts wait for the user even when auto-approve is on.
    */
-  private async reviewResult(conversationId: string, runId: string, task: Task, summary: string, drafts: string, signal: AbortSignal): Promise<ReviewVerdict> {
+  private async reviewResult(conversationId: string, runId: string, task: Task, summary: string, drafts: string, signal: AbortSignal, skip?: ReviewSkip): Promise<ReviewVerdict> {
     const key = `${runId}:${task.id}`;
     const limit = Math.min(MAX_REVIEW_ROUNDS, this.host.delegationLimits().reviewRounds ?? 1);
     const round = this.reviewRounds.get(key) ?? 0;
-    if (limit <= 0 || round >= limit) return { accept: true };
+    const final: ReviewSkip | undefined = skip ?? (round >= limit ? "limit_reached" : undefined);
+    const research = task.fileScope.length === 0;
+    const unreviewed = async (reason: ReviewOutcome, extra: Record<string, unknown> = {}): Promise<ReviewVerdict> => {
+      this.reviewOutcomes.set(key, reason);
+      await this.tasks.log({ runId, taskId: task.id, type: "coordinator_review", message: "unavailable", data: { reason, research, ...extra } });
+      this.host.log("warn", `The coordinator did not review "${task.title}" (${reason}). Its drafts wait for the user.`);
+      return { accept: true, outcome: reason };
+    };
+    if (limit <= 0) {
+      // The user turned review off in their own settings: nothing to flag.
+      this.reviewOutcomes.set(key, "off");
+      return { accept: true, outcome: "off" };
+    }
+    if (this.budget.exhausted(runId)) return unreviewed("over_budget");
     this.checkingOn.set(key, task.title);
     this.changed();
     try {
@@ -1053,36 +1112,41 @@ export class ChatController {
       let result;
       try {
         result = await reviewSubAgentResult(
-          this.coordinatorProvider(c.workspaceRoot),
+          this.coordinatorProvider(c.workspaceRoot, runId),
           {
             userMessages: userMessagesOf(scope),
             request: run.request,
-            agent: { title: task.title, instructions: task.instructions, fileScope: task.fileScope, research: run.kind === "research" || task.fileScope.length === 0 },
+            agent: { title: task.title, instructions: task.instructions, fileScope: task.fileScope, research: run.kind === "research" || research },
             summary,
             drafts,
             learned: learnedSoFar(scope) ?? run.briefing,
             team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id),
             round,
+            final,
           },
           { signal },
         );
       } catch (err) {
         if (signal.aborted) throw err;
         this.host.log("warn", `The coordinator could not review "${task.title}": ${(err as Error).message}`);
-        return { accept: true };
+        return await unreviewed(this.budget.exhausted(runId) ? "over_budget" : "failed");
       }
       signal.throwIfAborted();
+      // It asked for changes without saying which: that is no review at all, so the user decides.
+      if (result.adjusted) return await unreviewed("unclear", { thought: result.thought, thinking: clip(result.thinking) });
       const revise = result.verdict === "revise";
-      if (revise) this.reviewRounds.set(key, round + 1);
+      const outcome: ReviewOutcome = !revise ? "accepted" : final ? "not_accepted" : "sent_back";
+      if (outcome === "sent_back") this.reviewRounds.set(key, round + 1);
+      this.reviewOutcomes.set(key, outcome);
       await this.tasks.log({
         runId,
         taskId: task.id,
         type: "coordinator_review",
-        message: result.verdict,
-        data: { feedback: result.feedback, thought: result.thought, thinking: clip(result.thinking), adjusted: result.adjusted },
+        message: outcome === "not_accepted" ? "not_accepted" : result.verdict,
+        data: { feedback: result.feedback, thought: result.thought, thinking: clip(result.thinking), final, research },
       });
-      this.host.log("info", `Coordinator reviewed "${task.title}" and chose "${result.verdict}".${result.adjusted ? ` ${result.adjusted}` : ""}`);
-      return revise ? { accept: false, feedback: result.feedback } : { accept: true };
+      this.host.log("info", `Coordinator reviewed "${task.title}": ${outcome}.`);
+      return outcome === "sent_back" ? { accept: false, feedback: result.feedback, outcome } : { accept: true, outcome };
     } finally {
       this.checkingOn.delete(key);
       this.changed();
@@ -1124,10 +1188,10 @@ export class ChatController {
     const trusted = new Set(checks.map((c) => c.command));
     return {
       checks,
-      wrapProvider: (task, provider) => this.live.wrap(provider, `${runId}:${task.id}`),
+      wrapProvider: (task, provider) => this.agentProvider(provider, runId, task.id),
       inbox: (taskId) => this.drainInbox(runId, taskId),
       askCoordinator: (task, question, signal) => this.consultCoordinator(conversationId, runId, task, question, signal),
-      reviewResult: (task, summary, drafts, signal) => this.reviewResult(conversationId, runId, task, summary, drafts, signal),
+      reviewResult: (task, summary, drafts, signal, skip) => this.reviewResult(conversationId, runId, task, summary, drafts, signal, skip),
       attach: (control) => {
         const s = this.supervised.get(runId);
         if (s) s.control = control;
@@ -1182,9 +1246,12 @@ export class ChatController {
       },
       onChanges: async (task, changes) => {
         const auto = this.host.permissions();
+        // Nobody checked this result although a review was due: the user decides, whatever the switches say.
+        const outcome = this.reviewOutcomes.get(`${runId}:${task.id}`);
+        const held = isUnreviewed(outcome) ? changes.filter((ch) => isChangeAutoAccepted(ch.path, auto)).length : 0;
         const written: string[] = [];
         for (const ch of changes) {
-          if (!isChangeAutoAccepted(ch.path, auto)) continue;
+          if (held || !isChangeAutoAccepted(ch.path, auto)) continue;
           const res = await acceptChange(this.tasks, runId, ch.path, workspaceRoot, { auto: true });
           if (res.ok) written.push(ch.path);
           else this.changeNotes.set(`${runId}:${ch.path}`, res.message);
@@ -1198,7 +1265,7 @@ export class ChatController {
           agentName: task.title,
           tone: waiting.length ? "warning" : "success",
           text: waiting.length
-            ? `I have ${waiting.length} draft change(s) for you to review under Drafts. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}`
+            ? `I have ${waiting.length} draft change(s) for you to review under Drafts. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}${held ? " My result did not pass the coordinator's review, so they were not written automatically even though an auto-approve switch is on." : ""}`
             : `My ${written.length} change(s) were written to your project, because an auto-approve switch is on.`,
         });
         // Open what waits for review, so the user sees it right away.
@@ -1720,7 +1787,7 @@ export class ChatController {
         scratches.push(scratch);
         try {
           worker = new Worker({
-            provider: this.live.wrap(provider, `${run.id}:${task.id}`),
+            provider: this.agentProvider(provider, run.id, task.id),
             sandbox,
             task,
             checks: [],
@@ -1734,7 +1801,7 @@ export class ChatController {
             approve: async (_reason, call) => call.tool === "run_command" && (await this.approveAgentCommand(c.id, run.id, task!, call)),
             inbox: () => this.drainInbox(run.id, task!.id),
             askCoordinator: (q) => this.consultCoordinator(c.id, run.id, task!, q, signal),
-            reviewResult: (summary) => this.reviewResult(c.id, run.id, task!, summary, "", signal),
+            reviewResult: (summary, skip) => this.reviewResult(c.id, run.id, task!, summary, "", signal, skip),
             log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
           });
           const result = await worker.run();
@@ -1943,6 +2010,16 @@ export class ChatController {
           return { outcome, verification };
         }
         if (verification.missing.length === 0) return { outcome, verification };
+        if (this.budget.exhausted(runId)) {
+          await this.append(conversationId, {
+            author: "coordinator",
+            runId,
+            tone: "warning",
+            tag: "not verified",
+            text: "This run used its model-call limit (agentic.delegation.maxModelCallsPerRun), so I did not send sub-agents back for what is left. Raise the limit or tell me how to go on.",
+          });
+          return { outcome, verification };
+        }
         const added = await this.planFixUp(conversationId, workspaceRoot, runId, verification, round + 1, abort.signal);
         if (added.length === 0) return { outcome, verification };
         latest = new Set(added.map((t) => t.id));
@@ -2012,7 +2089,8 @@ export class ChatController {
     };
     let v: Verification;
     try {
-      v = await verifyRun(this.coordinatorProvider(workspaceRoot), ctx, { signal });
+      // Counted against the run's model-call budget, like every other coordinator call about its sub-agents.
+      v = await verifyRun(this.coordinatorProvider(workspaceRoot, runId), ctx, { signal });
     } catch (err) {
       if (signal.aborted) throw err;
       this.host.log("warn", `The coordinator could not verify the run: ${(err as Error).message}`);
@@ -2094,7 +2172,7 @@ export class ChatController {
     let result;
     try {
       result = await planRequest(
-        this.coordinatorProvider(workspaceRoot),
+        this.coordinatorProvider(workspaceRoot, runId),
         { request: fixUpRequest(run.request, round), fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks) },
         { signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Fix-up plan retry ${n}: ${err}`) },
       );

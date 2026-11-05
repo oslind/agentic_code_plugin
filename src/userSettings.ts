@@ -40,8 +40,14 @@ export const USER_ONLY_MODEL_KEYS = ["baseUrl", "apiKey", "maxConcurrentRequests
 /** Keys under "agentic.chat" that limit how much of your conversation is sent to the model. */
 export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens"] as const;
 
-/** Keys under "agentic.delegation" that decide how many extra model calls and sub-agent rounds one request may cause. */
-export const USER_ONLY_DELEGATION_KEYS = ["verify", "verifyRounds"] as const;
+/**
+ * Keys under "agentic.delegation" that decide how many extra model calls the
+ * coordinator makes on its own (progress checks, check-ins, result reviews,
+ * verification and its fix-up rounds), and the per-run cap on all model
+ * calls. A project could otherwise turn a run into many more requests to
+ * your model server.
+ */
+export const USER_ONLY_DELEGATION_KEYS = ["checkIns", "progressEvery", "reviewRounds", "maxModelCallsPerRun", "verify", "verifyRounds"] as const;
 
 /** Whether the coordinator verifies a request, and its most fix-up rounds (0 to 5), from user settings only. */
 export function verificationFrom(section: InspectableSection): { verify: boolean; verifyRounds: number } {
@@ -96,6 +102,29 @@ export function maxOutputTokensFrom(section: InspectableSection): number {
 /** Most tokens of earlier conversation sent with each coordinator message, from user settings only. 0 means as much as fits. */
 export function coordinatorHistoryTokensFrom(section: InspectableSection): number {
   return Math.max(0, Math.floor(userValue(section, "coordinatorHistoryTokens", 12000, isNumber)));
+}
+
+export interface OversightLimits {
+  /** Looks at a sub-agent that seems stuck, per sub-agent. 0 to 5, default 2. */
+  checkIns: number;
+  /** Steps between regular progress looks. 0 (off) to 40, default 8. */
+  progressEvery: number;
+  /** Times a result may be sent back, per task. 0 (no review) to 3, default 1. */
+  reviewRounds: number;
+  /** Most model calls one run may make, sub-agents and coordinator together. 0 means no limit. Default 500. */
+  maxModelCallsPerRun: number;
+}
+
+const clampInt = (v: number, min: number, max: number) => Math.max(min, Math.min(max, Math.floor(v)));
+
+/** How much the coordinator oversees sub-agents, and the per-run model-call cap, from user settings only. */
+export function oversightLimitsFrom(section: InspectableSection): OversightLimits {
+  return {
+    checkIns: clampInt(userValue(section, "checkIns", 2, isNumber), 0, 5),
+    progressEvery: clampInt(userValue(section, "progressEvery", 8, isNumber), 0, 40),
+    reviewRounds: clampInt(userValue(section, "reviewRounds", 1, isNumber), 0, 3),
+    maxModelCallsPerRun: clampInt(userValue(section, "maxModelCallsPerRun", 500, isNumber), 0, 100000),
+  };
 }
 
 /** The auto-approve switches, from user settings only. Anything but an explicit `true` there is off. */

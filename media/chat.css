@@ -635,6 +635,10 @@ code,
   overflow-wrap: anywhere;
 }
 
+.review-warning {
+  color: var(--warning);
+}
+
 .decided {
   color: var(--muted);
   font-size: 12px;

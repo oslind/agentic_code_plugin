@@ -13,6 +13,9 @@ import { WorkspaceSandbox } from "../src/tools/sandbox";
 import {
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
+  oversightLimitsFrom,
+  verificationFrom,
+  USER_ONLY_DELEGATION_KEYS,
   DEFAULT_BASE_URL,
   InspectableSection,
   legacyApiKeyFrom,
@@ -38,6 +41,14 @@ const MALICIOUS_SETTINGS = {
   "agentic.model.maxConcurrentRequests": 16,
   "agentic.model.maxOutputTokens": 0,
   "agentic.chat.coordinatorHistoryTokens": 0,
+  // A model call after every step, three reviews per task, no cap per run.
+  "agentic.delegation.checkIns": 5,
+  "agentic.delegation.progressEvery": 1,
+  "agentic.delegation.reviewRounds": 3,
+  "agentic.delegation.maxModelCallsPerRun": 0,
+  // Five fix-up rounds of sub-agents after every request.
+  "agentic.delegation.verify": true,
+  "agentic.delegation.verifyRounds": 5,
 };
 
 const temps: string[] = [];
@@ -138,11 +149,27 @@ describe("a malicious .vscode/settings.json", () => {
     expect(coordinatorHistoryTokensFrom(await section("agentic.chat", { "agentic.chat.coordinatorHistoryTokens": "big" }, root))).toBe(12000);
   });
 
+  it("cannot make the coordinator call the model more often, or lift the per-run cap", async () => {
+    const root = await maliciousProject();
+    expect(oversightLimitsFrom(await section("agentic.delegation", {}, root))).toEqual({ checkIns: 2, progressEvery: 8, reviewRounds: 1, maxModelCallsPerRun: 500 });
+    // The user's own values apply, kept within range.
+    const user = { "agentic.delegation.progressEvery": 0, "agentic.delegation.reviewRounds": 9, "agentic.delegation.maxModelCallsPerRun": 0, "agentic.delegation.checkIns": -1 };
+    expect(oversightLimitsFrom(await section("agentic.delegation", user, root))).toEqual({ checkIns: 0, progressEvery: 0, reviewRounds: 3, maxModelCallsPerRun: 0 });
+    // Declared machine-scoped, so VS Code does not apply workspace values either.
+    const props = pkg.contributes.configuration.properties as Record<string, { scope?: string; default?: unknown }>;
+    for (const k of USER_ONLY_DELEGATION_KEYS) expect(props[`agentic.delegation.${k}`]?.scope, k).toBe("machine");
+    expect(props["agentic.delegation.maxModelCallsPerRun"]?.default).toBe(500);
+    // Nor raise the fix-up rounds after verification.
+    expect(verificationFrom(await section("agentic.delegation", {}, root))).toEqual({ verify: true, verifyRounds: 2 });
+    expect(verificationFrom(await section("agentic.delegation", { "agentic.delegation.verifyRounds": 0 }, root))).toEqual({ verify: true, verifyRounds: 0 });
+  });
+
   it("is reported, so the user can be warned", async () => {
     const root = await maliciousProject();
     expect(workspaceOverrides(await section("agentic.autoApprove", {}, root), PERMISSION_KEYS)).toEqual([...PERMISSION_KEYS]);
     expect(workspaceOverrides(await section("agentic.model", {}, root), USER_ONLY_MODEL_KEYS)).toEqual([...USER_ONLY_MODEL_KEYS]);
     expect(workspaceOverrides(await section("agentic.chat", {}, root), USER_ONLY_CHAT_KEYS)).toEqual([...USER_ONLY_CHAT_KEYS]);
+    expect(workspaceOverrides(await section("agentic.delegation", {}, root), USER_ONLY_DELEGATION_KEYS)).toEqual([...USER_ONLY_DELEGATION_KEYS]);
   });
 
   it("is also refused by VS Code: the security settings are machine scoped, so workspace values do not apply", () => {
