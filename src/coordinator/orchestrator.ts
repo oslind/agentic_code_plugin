@@ -4,7 +4,7 @@ import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
 import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
-import { draftsForReview, ReviewVerdict } from "./review";
+import { draftsForReview, ReviewSkip, ReviewVerdict } from "./review";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
@@ -47,7 +47,7 @@ export interface OrchestratorOptions {
   /** Lets a sub-agent ask the coordinator a question. Without it, sub-agents are told the coordinator cannot be reached. */
   askCoordinator?: (task: Task, question: string, signal: AbortSignal) => Promise<CoordinatorReply>;
   /** The coordinator reviews a sub-agent's report and drafts when it finishes, and may send it back. */
-  reviewResult?: (task: Task, summary: string, drafts: string, signal: AbortSignal) => Promise<ReviewVerdict>;
+  reviewResult?: (task: Task, summary: string, drafts: string, signal: AbortSignal, skip?: ReviewSkip) => Promise<ReviewVerdict>;
   onChange?: () => void;
   /** The model a task's sub-agent uses. By default `provider`; the chat wraps it to show each call live. */
   wrapProvider?: (task: Task, provider: ModelProvider) => ModelProvider;
@@ -210,7 +210,7 @@ export class Orchestrator {
         approveCommand: this.o.approveCommand && ((check) => this.o.approveCommand!(task, check)),
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
         askCoordinator: this.o.askCoordinator && ((q) => this.o.askCoordinator!(task, q, signal)),
-        reviewResult: this.o.reviewResult && ((summary) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id)), signal)),
+        reviewResult: this.o.reviewResult && ((summary, skip) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id)), signal, skip)),
         // A question is usually about the drafts ("is this what you wanted?"), so show them first.
         beforeAsk: async () => void (await this.publishDrafts(task, overlay, published)),
         inbox: this.o.inbox && (() => this.o.inbox!(task.id)),

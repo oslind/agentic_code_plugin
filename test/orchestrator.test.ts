@@ -606,6 +606,18 @@ describe("the coordinator reviewing a result", () => {
     expect((await changesOf(runId)).map((c) => c.proposed)).toEqual(["export const a = 1;\nexport const b = 2;\n"]);
   });
 
+  it("with too few steps left, still asks for a review but does not send the sub-agent back", async () => {
+    const runId = await setup([task("a", ["a.txt"])]);
+    const skips: (string | undefined)[] = [];
+    const { o } = make(runId, scripted({ a: [finish] }), {
+      maxTurns: 2,
+      reviewResult: async (_t, _s, _d, _signal, skip) => (skips.push(skip), { accept: false, feedback: "Add more.", outcome: "sent_back" as const }),
+    });
+    expect((await o.run()).done).toEqual(["a"]);
+    // The coordinator is told why it cannot send it back, so a "revise" goes to the user instead of passing silently.
+    expect(skips).toEqual(["out_of_turns"]);
+  });
+
   it("takes the finish as is when there is no reviewer or it accepts", async () => {
     const runId = await setup([task("a", ["a.txt"])]);
     let n = 0;

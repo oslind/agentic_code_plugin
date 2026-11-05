@@ -661,13 +661,28 @@
   /** A sub-agent's exchanges with the coordinator, in one line. */
   function exchangeLine(a) {
     const x = a.coordinator;
-    if (!x || (!x.questions && !x.notes && !x.stopped)) return null;
+    if (!x || (!x.questions && !x.notes && !x.stopped && !x.review)) return null;
     const parts = [
       x.questions ? "asked the coordinator " + (x.questions === 1 ? "once" : x.questions + " times") : "",
       x.notes ? plural(x.notes, "note") + " from the coordinator" : "",
       x.stopped ? "stopped by the coordinator" : "",
+      x.review === "accepted" ? "result reviewed" : "",
     ].filter(Boolean);
-    return el("div", { class: "muted small exchange" }, "↔ " + parts.join(" · "));
+    const line = parts.length ? el("div", { class: "muted small exchange" }, "↔ " + parts.join(" · ")) : null;
+    const warning = reviewWarning(x.review);
+    if (!warning) return line;
+    return line ? el("div", {}, line, warning) : warning;
+  }
+
+  /** A result that did not pass review gets its own line: its drafts wait for the user, whatever auto-approve says. */
+  function reviewWarning(review) {
+    if (review === "unavailable") {
+      return el("div", { class: "small exchange review-warning", title: "The coordinator could not review this result. Nothing it drafted is written without you, even with auto-approve on." }, "⚠ Review unavailable: drafts wait for you");
+    }
+    if (review === "not_accepted") {
+      return el("div", { class: "small exchange review-warning", title: "The coordinator found something missing but could not send it back. Nothing it drafted is written without you, even with auto-approve on." }, "⚠ Not accepted by the coordinator's review: drafts wait for you");
+    }
+    return null;
   }
 
   function agentKey(a) {

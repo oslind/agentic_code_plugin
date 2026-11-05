@@ -4,7 +4,7 @@ import { relativeInside } from "./tools/paths";
 import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readPermissions, readRunConfig, setSecretApiKey } from "./config";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readOversightLimits, readPermissions, readRunConfig, setSecretApiKey } from "./config";
 import { legacyApiKeyFrom } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
@@ -75,7 +75,7 @@ function warnAboutProjectSettings(output: vscode.LogOutputChannel): vscode.Dispo
       const id = `${folder.uri.toString()}|${keys.join(",")}`;
       if (!keys.length || warned.has(id)) continue;
       warned.add(id);
-      const message = `The project "${folder.name}" tries to set ${keys.join(", ")} in its own settings. Agentic Code ignores this: these settings only count in your user settings, so a project cannot approve work for you, redirect model requests, or raise the limits on model load and on how much of your conversation is sent.`;
+      const message = `The project "${folder.name}" tries to set ${keys.join(", ")} in its own settings. Agentic Code ignores this: these settings only count in your user settings, so a project cannot approve work for you, redirect model requests, or raise the limits on model load, on how many model calls a run makes, and on how much of your conversation is sent.`;
       output.warn(message);
       void vscode.window.showWarningMessage(message);
     }
@@ -84,7 +84,7 @@ function warnAboutProjectSettings(output: vscode.LogOutputChannel): vscode.Dispo
   return vscode.Disposable.from(
     vscode.workspace.onDidChangeWorkspaceFolders(check),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.model")) check();
+      if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.model") || e.affectsConfiguration("agentic.chat") || e.affectsConfiguration("agentic.delegation")) check();
     }),
   );
 }
@@ -185,9 +185,8 @@ export function activate(context: vscode.ExtensionContext): void {
         maxTasks: c.get<number>("maxTasks", 12),
         maxResearchers: c.get<number>("maxResearchers", 8),
         maxResearchRounds: c.get<number>("maxResearchRounds", 3),
-        checkIns: c.get<number>("checkIns", 2),
-        progressEvery: c.get<number>("progressEvery", 8),
-        reviewRounds: c.get<number>("reviewRounds", 1),
+        // These add model calls on their own, so only user settings count (a project cannot raise them).
+        ...readOversightLimits(),
       };
     },
     terminal: (workspaceRoot) => terminals.for(workspaceRoot),

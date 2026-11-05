@@ -116,7 +116,9 @@ describe("supervising a sub-agent", () => {
     };
     const msgs = buildSuperviseMessages(ctx, 8192);
     expect(msgs[1]!.content).toMatch(/"stop" is not available/);
-    expect(msgs[1]!.content).toMatch(/<untrusted_data source="recent steps of sub-agent Add model">\n- read_file/);
+    expect(msgs[1]!.content).toMatch(/<untrusted_data source="the sub-agent's recent steps">\n- read_file/);
+    // The plan's title and task are model-written: fenced, not plain prompt text.
+    expect(msgs[1]!.content).toMatch(/<untrusted_data source="the plan for this sub-agent">\n[^]*Sub-agent: Add model/);
     expect(await superviseAgent(p, ctx)).toMatchObject({ action: "message", message: "Edit it now." });
   });
 
