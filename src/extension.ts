@@ -7,7 +7,7 @@ import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
 import { removeStaleScratch, setScratchBase, setScratchLimits } from "./changes/scratch";
 import { setCommandIsolation } from "./checks/runner";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, readScratchLimits, readCommandIsolation, PERMISSION_KEYS, readCoordinatorHistoryTokens, readAutoCompact, readCompactSubAgents, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, setSecretApiKey } from "./config";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, readScratchLimits, readCommandIsolation, PERMISSION_KEYS, readCoordinatorHistoryTokens, readAutoCompact, readCompactSubAgents, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, readSkillSettings, setSecretApiKey } from "./config";
 import { legacyApiKeyFrom, OVERSIGHT_LEVELS } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
@@ -26,6 +26,7 @@ import { ChatViewProvider } from "./ui/chatView";
 import { confinedFolder, offerResume, registerRunCommands } from "./ui/runCommands";
 import { ProjectTerminals } from "./ui/projectTerminal";
 import { TaskTreeProvider } from "./ui/taskTree";
+import { SkillService, TrustedFiles } from "./skills/service";
 
 const FILE_LIMIT = 2000;
 
@@ -114,11 +115,23 @@ function warnAboutProjectSettings(output: vscode.LogOutputChannel): vscode.Dispo
   return vscode.Disposable.from(
     vscode.workspace.onDidChangeWorkspaceFolders(check),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.model") || e.affectsConfiguration("agentic.chat") || e.affectsConfiguration("agentic.delegation")) check();
+      if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.model") || e.affectsConfiguration("agentic.chat") || e.affectsConfiguration("agentic.delegation") || e.affectsConfiguration("agentic.skills")) check();
       if (e.affectsConfiguration("agentic.delegation")) checkRetired();
     }),
   );
 }
+
+/** Written to the user's skills folder the first time it is opened, as a starting point. */
+const SKILL_EXAMPLE = `---
+name: my-skill
+description: One line that tells the planner when this skill fits
+for: coder, research
+---
+Short numbered steps for one kind of work. Name the tools to use
+(read_file, search, run_command, replace_in_file) and the commands of
+your projects. Keep it under about 400 words: small models follow short
+skills best. Save a copy as a .md file in this folder to use it.
+`;
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Agentic Code", { log: true });
@@ -137,7 +150,31 @@ export function activate(context: vscode.ExtensionContext): void {
   const views = ChangeViews.register(context, store);
   const terminals = new ProjectTerminals();
   context.subscriptions.push(terminals);
-  const runs = registerRunCommands(context, store, tree, output, views, terminals);
+  // The user's own skills live in the extension's storage, never in a project.
+  const userSkillsDir = path.join(context.globalStorageUri.fsPath, "skills");
+  const TRUST_KEY = "agentic.skills.trusted";
+  const skills = new SkillService(userSkillsDir, readSkillSettings, {
+    get: (root) => context.globalState.get<Record<string, TrustedFiles>>(TRUST_KEY)?.[root],
+    set: async (root, trusted) => {
+      const all = { ...(context.globalState.get<Record<string, TrustedFiles>>(TRUST_KEY) ?? {}) };
+      if (trusted) all[root] = trusted;
+      else delete all[root];
+      await context.globalState.update(TRUST_KEY, all);
+    },
+  });
+  // Only the folder open in VS Code: a closed folder's skills are never read.
+  const skillsFor = async (root: string) => {
+    const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
+    return skills.catalog(folder?.uri.fsPath);
+  };
+  const openSkillsFolder = async () => {
+    await fs.mkdir(userSkillsDir, { recursive: true });
+    const readme = path.join(userSkillsDir, "README.md.example");
+    await fs.writeFile(readme, SKILL_EXAMPLE, { flag: "wx" }).catch(() => undefined);
+    await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(readme)).then(undefined, () => undefined);
+    await vscode.window.showTextDocument(vscode.Uri.file(readme), { preview: true });
+  };
+  const runs = registerRunCommands(context, store, tree, output, views, terminals, skillsFor);
 
   const conversations = new ConversationStore(context.globalStorageUri.fsPath, () =>
     vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),
@@ -173,6 +210,35 @@ export function activate(context: vscode.ExtensionContext): void {
       return paths.length ? fileTree(paths) : undefined;
     },
     runPlan: (runId, hooks) => runs.start(runId, hooks),
+    skills: skillsFor,
+    skillsView: async (root) => {
+      const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
+      return (await skills.status(folder?.uri.fsPath)).view;
+    },
+    trustProjectSkills: async (root, trust) => {
+      const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
+      if (!folder) return;
+      if (!trust) {
+        await skills.untrustProject(folder.uri.fsPath);
+        output.info(`Stopped using the project skills of ${folder.uri.fsPath}`);
+        return;
+      }
+      const n = await skills.trustProject(folder.uri.fsPath);
+      output.info(`Trusted ${n} project skill file(s) in ${folder.uri.fsPath} as they are now`);
+    },
+    openSkill: async (root, name) => {
+      const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
+      const skill = await skills.find(folder?.uri.fsPath, name);
+      if (!skill) return;
+      if (skill.source === "builtin" || !skill.file) {
+        const doc = await vscode.workspace.openTextDocument({ language: "markdown", content: `---\nname: ${skill.name}\ndescription: ${skill.description}\nfor: ${skill.roles.join(", ")}\n---\n${skill.body}\n` });
+        await vscode.window.showTextDocument(doc, { preview: true });
+        return;
+      }
+      const uri = skill.source === "project" && folder ? vscode.Uri.joinPath(folder.uri, ...skill.file.split("/")) : vscode.Uri.file(skill.file);
+      await vscode.window.showTextDocument(uri, { preview: true });
+    },
+    openSkillsFolder,
     // Checks the user approved are kept per folder, so switching projects switches checks.
     checksFor: async (root) => {
       const folder = await confinedFolder({ workspaceRoot: root }).catch(() => undefined);
@@ -352,6 +418,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 request,
                 fileTree: paths.length ? fileTree(paths) : undefined,
                 maxTasks: vscode.workspace.getConfiguration("agentic.delegation").get<number>("maxTasks", 12),
+                skills: await skills.catalog(folder.uri.fsPath).catch(() => undefined),
               },
               { signal: abort.signal, onAttempt: (n, err) => n > 0 && output.warn(`Plan retry ${n}: ${err}`) },
             );
@@ -373,6 +440,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showErrorMessage(`Planning failed: ${(err as Error).message}`);
       }
     }),
+    vscode.commands.registerCommand("agentic.openSkillsFolder", openSkillsFolder),
     vscode.commands.registerCommand("agentic.showLog", async () => {
       const runs = await store.listRuns();
       output.info(`${runs.length} saved run(s) in ${context.globalStorageUri.fsPath}`);

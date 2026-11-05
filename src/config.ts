@@ -9,6 +9,8 @@ import {
   commandIsolationFrom,
   scratchLimitsFrom,
   USER_ONLY_COMMAND_KEYS,
+  USER_ONLY_SKILL_KEYS,
+  skillSettingsFrom,
   USER_ONLY_SCRATCH_KEYS,
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
@@ -186,7 +188,13 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.delegation", scope), USER_ONLY_DELEGATION_KEYS).map((k) => `agentic.delegation.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.scratch", scope), USER_ONLY_SCRATCH_KEYS).map((k) => `agentic.scratch.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.commands", scope), USER_ONLY_COMMAND_KEYS).map((k) => `agentic.commands.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.skills", scope), USER_ONLY_SKILL_KEYS).map((k) => `agentic.skills.${k}`),
   ];
+}
+
+/** Whether agents use skills, and how project skills are used. User settings only, so a project cannot turn on its own skills. */
+export function readSkillSettings(): { enabled: boolean; projectSkills: "ask" | "on" | "off" } {
+  return skillSettingsFrom(vscode.workspace.getConfiguration("agentic.skills"));
 }
 
 /** Most tokens of earlier conversation sent with each coordinator message. User settings only, so a project cannot raise it. */

@@ -10,6 +10,8 @@ import { AutoApprove } from "../tools/policy";
 import { CoordinatorReply, InboxMessage } from "../worker/worker";
 import { ReviewSkip, ReviewVerdict } from "../coordinator/review";
 import { ChatMode } from "./types";
+import { SkillCatalog } from "../skills/catalog";
+import { SkillsView } from "../skills/service";
 
 /** What the chat needs from VS Code. Kept small so the controller can be tested without it. */
 export interface ChatHost {
@@ -80,6 +82,16 @@ export interface ChatHost {
   afterAccept?(workspaceRoot: string, filePaths: string[], open: boolean): Promise<string[]>;
   /** Lets the user pick files to attach to a prompt. Returns paths relative to the folder, and only files inside it. */
   pickFiles?(workspaceRoot: string): Promise<string[]>;
+  /** The skills agents may use in a folder: built-in, the user's own, and the project's once trusted. */
+  skills?(workspaceRoot: string): Promise<SkillCatalog>;
+  /** What Settings shows about skills for a folder. */
+  skillsView?(workspaceRoot: string): Promise<SkillsView>;
+  /** Trusts (or stops trusting) the folder's own skill files as they are now. */
+  trustProjectSkills?(workspaceRoot: string, trust: boolean): Promise<void>;
+  /** Opens a skill's text in an editor. */
+  openSkill?(workspaceRoot: string, name: string): Promise<void>;
+  /** Opens the folder that holds the user's own skills. */
+  openSkillsFolder?(): Promise<void>;
 }
 
 /** How a run started from the chat talks back to the user. */
@@ -101,6 +113,8 @@ export interface RunHooks {
   onChanges: (task: Task, changes: PendingChange[]) => Promise<void>;
   /** The model a sub-agent uses, wrapped so the chat can show its calls live. */
   wrapProvider?: (task: Task, provider: ModelProvider) => ModelProvider;
+  /** Skills the sub-agents may use. */
+  skills?: SkillCatalog;
 }
 
 /** What the coordinator can do to a running sub-agent of a plan. */

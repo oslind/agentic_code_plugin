@@ -1,3 +1,4 @@
+import { SkillCatalog } from "../skills/catalog";
 import { promises as fs } from "fs";
 import * as vscode from "vscode";
 import { resumeState } from "../state/resume";
@@ -104,6 +105,8 @@ export function registerRunCommands(
   views: ChangeViews,
   // Commands are shown in the extension's own terminal, opened at the project folder.
   terminals: ProjectTerminals,
+  /** The skills for a project folder, for runs started outside the chat. */
+  skillsFor?: (workspaceRoot: string) => Promise<SkillCatalog>,
 ): RunControl {
   const active = new Map<string, { abort: AbortController; orchestrator: Orchestrator }>();
 
@@ -156,6 +159,7 @@ export function registerRunCommands(
       reviewResult: hooks?.reviewResult,
       inbox: hooks?.inbox,
       wrapProvider: hooks?.wrapProvider,
+      skills: hooks?.skills ?? (await skillsFor?.(folder.uri.fsPath).catch(() => undefined)),
       onChange: () => tree.refresh(),
     });
     active.set(run.id, { abort, orchestrator });

@@ -1596,3 +1596,46 @@ button.small, .ghost.small, .primary.small { padding: 2px 8px; font-size: 12px; 
 .level-help { color: var(--fg); }
 
 .segmented.wide { width: 100%; box-sizing: border-box; }
+
+/* ---- skills ---- */
+.skill-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+.skill-chip {
+  padding: 0 7px;
+  border: none;
+  border-radius: 10px;
+  font-size: 11px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: inherit;
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  cursor: pointer;
+}
+.skill-chip:hover {
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+}
+.skill-group {
+  margin-top: 8px;
+}
+.skill-group-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.skill-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.skill-list li {
+  margin: 3px 0;
+}
+.skill-waiting {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+}

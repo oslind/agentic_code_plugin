@@ -13,6 +13,8 @@ export interface AgentCard {
   activity: string;
   /** Files it may change. Empty for a read-only sub-agent. */
   fileScope: string[];
+  /** Skills it was given or loaded, by name. */
+  skills: string[];
   /** Its drafts waiting for review. */
   drafts: number;
   /** All its drafts, decided or not. */
@@ -185,6 +187,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         label: followUp && state !== "needs_you" ? FOLLOW_UP_LABEL[followUp] : AGENT_LABEL[state],
         activity,
         fileScope: t.fileScope,
+        skills: [...new Set([...(t.skills ?? []), ...mine.filter((e) => e.tag?.startsWith("skill ")).map((e) => e.tag!.slice(6))])],
         drafts: changes.filter((c) => c.status === "pending").length,
         draftFiles: changes.length,
         thinking: withThinking?.thinking,

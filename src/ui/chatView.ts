@@ -29,6 +29,10 @@ type FromView =
   | { type: "setPermission"; key: string; value: boolean }
   | { type: "setOversight"; level: string }
   | { type: "editChecks" }
+  | { type: "refreshSkills" }
+  | { type: "trustSkills"; value: boolean }
+  | { type: "openSkill"; name: string }
+  | { type: "openSkillsFolder" }
   | { type: "openLink"; url: string };
 
 const RUN_COMMANDS = new Set(["showTaskLog", "retryFailed"]);
@@ -156,6 +160,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         case "setOversight":
           if ((OVERSIGHT_LEVELS as readonly string[]).includes(m.level)) await this.controller.setOversight(m.level as OversightLevel);
+          return;
+        case "refreshSkills":
+          await this.controller.refreshSkills();
+          return;
+        case "trustSkills":
+          if (typeof m.value === "boolean") await this.controller.trustProjectSkills(m.value);
+          return;
+        case "openSkill":
+          if (typeof m.name === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(m.name)) await this.controller.openSkill(m.name);
+          return;
+        case "openSkillsFolder":
+          await this.controller.openSkillsFolder();
           return;
         case "editChecks":
           await this.controller.editChecks();

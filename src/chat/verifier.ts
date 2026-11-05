@@ -259,7 +259,7 @@ export class Verifier {
     try {
       result = await planRequest(
         this.s.coordinatorProvider(workspaceRoot, runId),
-        { request: fixUpRequest(userRequest, round), planned: run.request, fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks) },
+        { request: fixUpRequest(userRequest, round), planned: run.request, fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks), skills: await this.host.skills?.(workspaceRoot).catch(() => undefined) },
         { signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Fix-up plan retry ${n}: ${err}`) },
       );
     } catch (err) {

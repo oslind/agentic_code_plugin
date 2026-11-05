@@ -1,3 +1,4 @@
+import { SkillCatalog } from "../skills/catalog";
 import { promises as fs } from "fs";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
@@ -62,6 +63,8 @@ export interface OrchestratorOptions {
   onChange?: () => void;
   /** The model a task's sub-agent uses. By default `provider`; the chat wraps it to show each call live. */
   wrapProvider?: (task: Task, provider: ModelProvider) => ModelProvider;
+  /** Skills the sub-agents may use: each task's own skills, and load_skill for the rest. */
+  skills?: SkillCatalog;
 }
 
 export interface RunOutcome {
@@ -82,7 +85,7 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges" | "askCoordinator" | "reviewResult" | "terminal" | "wrapProvider";
+type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges" | "askCoordinator" | "reviewResult" | "terminal" | "wrapProvider" | "skills";
 
 /**
  * Runs a planned run to completion, without git. Each sub-agent works on the
@@ -235,6 +238,7 @@ export class Orchestrator {
         signal,
         approve: (reason, call, preview) => this.o.approveTool(task, reason, call, preview),
         approveCommand: this.o.approveCommand && ((check) => this.o.approveCommand!(task, check)),
+        skills: this.o.skills,
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
         askCoordinator: this.o.askCoordinator && ((q) => this.o.askCoordinator!(task, q, signal)),
         reviewResult: this.o.reviewResult && ((summary, skip) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id)), signal, skip)),

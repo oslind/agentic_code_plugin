@@ -1,3 +1,4 @@
+import type { SkillsView } from "../skills/service";
 import type { OversightLevel } from "../userSettings";
 import { PendingChange, Run, TaskStatus } from "../state/types";
 import { latestAccepted } from "../state/taskStore";
@@ -26,7 +27,7 @@ export type Decision =
 
 export interface PlanView {
   kind: "change" | "research";
-  tasks: { id: string; title: string; status: TaskStatus; fileScope: string[]; dependsOn: string[] }[];
+  tasks: { id: string; title: string; status: TaskStatus; fileScope: string[]; dependsOn: string[]; skills?: string[] }[];
   /** True once any task has started, so the plan can no longer be run from the chat. */
   started: boolean;
   waves: number;
@@ -82,6 +83,8 @@ export interface ChatViewState {
   permissions: AutoApprove;
   /** The oversight level, shown in the chat's Settings view. */
   oversight?: OversightLevel;
+  /** Skills for the current conversation's folder, shown in the chat's Settings view. */
+  skills?: SkillsView;
   /** Ids of cards still waiting for the user. */
   waiting: string[];
   /** How the last prompt in this conversation ended, shown as a bar at the bottom. Unset while a prompt runs. */
@@ -138,7 +141,7 @@ export async function buildViewState(
     const titleOf = (taskId: string) => run.tasks.find((t) => t.id === taskId)?.title ?? taskId;
     plans[runId] = {
       kind: run.kind ?? "change",
-      tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
+      tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn, ...(t.skills?.length ? { skills: t.skills } : {}) })),
       started: !isUnstarted(run),
       waves: parallelWaves(run.tasks).length,
       ...now.resumeView(run),
@@ -173,6 +176,7 @@ export async function buildViewState(
     runningRunId: s.runningRunId,
     permissions: s.host.permissions(),
     oversight: s.host.oversight?.(),
+    skills: current && s.skills?.workspaceRoot === current.workspaceRoot ? s.skills.view : undefined,
     waiting,
     done,
     dashboard: current
