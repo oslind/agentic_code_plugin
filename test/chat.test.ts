@@ -2331,6 +2331,24 @@ describe("routing follows the model's own structured choice", () => {
     expect(continueChange(asks, "change", "Fix it")).toBe(asks);
     expect(continueChange(claimed, "answer", "Why is it wrong?")).toBe(claimed);
     expect(continueChange(claimed, undefined, "Fix it")).toBe(claimed);
+    // The first turn gave no goal, but the turn after research says it is a change.
+    expect(continueChange({ ...claimed, goal: "change" }, undefined, "Fix it").action).toBe("plan");
+  });
+
+  it("asks for the decision after research in a user turn that repeats the user's request", () => {
+    // Run 3 of the e2e suite: the prompt ended with the research reports as the coordinator's own message, and
+    // qwen3:8b went on writing a made-up plan, fix and passing tests, then answered "none".
+    const entries: ChatEntry[] = [
+      { id: "1", time: "", author: "user", text: "Fix average() in src/stats.js" },
+      { id: "2", time: "", author: "coordinator", text: "I'll have sub-agents read it." },
+      { id: "3", time: "", author: "coordinator", text: "Research finished. Reports: it divides by 2." },
+    ];
+    const after = buildCoordinatorMessages({ mode: "act", entries, answerFromResearch: true }, 8192);
+    const last = after.at(-1)!;
+    expect(last.role).toBe("user");
+    expect(last.content).toMatch(/Fix average\(\) in src\/stats\.js[\s\S]*Nothing has been changed yet/);
+    // Before research, the user's own message is the last turn, as always.
+    expect(buildCoordinatorMessages({ mode: "act", entries: entries.slice(0, 1) }, 8192).at(-1)!.content).toBe("Fix average() in src/stats.js");
   });
 
   it("leaves plain answers alone, whatever the reply says", () => {

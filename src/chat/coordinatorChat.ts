@@ -186,6 +186,14 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
   // Chat models expect the conversation to start with the user.
   while (history[0]?.role === "assistant") history.shift();
   if (continuation) history.push(continuation);
+  // A prompt that ends with the coordinator's own messages (the research reports) has no turn to answer, and
+  // qwen3:8b then went on writing the conversation: a plan, a fix and passing tests it made up, ending in
+  // "none". So the decision is asked for as a user turn, with the user's own words again.
+  else if (ctx.answerFromResearch && history.at(-1)?.role === "assistant") {
+    const asked = [...turns].reverse().find((e) => e.author === "user")?.text.trim() ?? "";
+    const quoted = asked ? `My latest message was: ${truncateToTokens(asked, 400) ?? asked.slice(0, 1500)}\n\n` : "";
+    history.push({ role: "user", content: `${quoted}The research is done and the reports are above. Nothing has been changed yet. Decide your next step for my latest message and reply with the JSON only.` });
+  }
   budget = room - history.reduce((n, m) => n + estimateTokens(m.content) + 4, 0);
 
   const notes: string[] = [];
@@ -317,13 +325,13 @@ export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterR
 }
 
 /**
- * After research for a request the coordinator first judged a change (goal
- * "change"), a plain answer leaves the change undone: it becomes a plan for
+ * After research for a request the coordinator judged a change (goal
+ * "change", before or after the research), a plain answer leaves the change undone: it becomes a plan for
  * the request, unless the answer asks the user a question. Anything else is
  * left alone.
  */
 export function continueChange(answer: CoordinatorResult, firstGoal: CoordinatorTurn["goal"], userText: string): CoordinatorResult {
-  if (firstGoal !== "change" || answer.action !== "none" || answer.reply.includes("?") || !userText.trim()) return answer;
+  if ((firstGoal !== "change" && answer.goal !== "change") || answer.action !== "none" || answer.reply.includes("?") || !userText.trim()) return answer;
   const request = `${userText.trim()}\n\n${answer.reply.trim()}`.slice(0, 3000);
   return { ...answer, action: "plan", request: request.length >= 10 ? request : `${request} (as the user asked)`, overridden: undefined };
 }

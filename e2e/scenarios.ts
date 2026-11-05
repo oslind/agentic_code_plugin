@@ -191,6 +191,9 @@ export const SCENARIOS: Scenario[] = [
     // Small, so a few short answers fill it: at 1500 the second live run never got past
     // 70% of it, because qwen3:8b answered in a line or two. The extension's default is 12000.
     historyTokens: 600,
+    // "Remind me" is answered from the compacted summary, without research, so the last
+    // message is a plain reply and not a research answer. Run 3 failed only on that.
+    endsWithAnswer: false,
     prompts: [
       "What is the default heating target in this project?",
       "How much lower is the target in night mode, and where is that decided?",
