@@ -585,7 +585,7 @@ describe("ChatController", () => {
     await controller.send("add users");
     const runId = (await controller.state()).current!.entries.find((e) => e.kind === "plan")!.runId!;
     // Something else keeps the chat busy.
-    (controller as unknown as { busy?: string }).busy = "Coordinator is thinking…";
+    (controller as unknown as { s: { busy?: string } }).s.busy = "Coordinator is thinking…";
     await controller.runPlan(runId);
     release();
     await gate;
