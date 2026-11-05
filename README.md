@@ -100,3 +100,10 @@ Settings live under `agentic.model.*`. If your server rejects `json_schema` resp
 ```
 npm run check   # typecheck, lint and tests
 ```
+
+End-to-end runs against a real local model (opt-in, not part of CI), see [docs/e2e.md](docs/e2e.md):
+
+```
+AGENTIC_E2E_MODEL=qwen3:8b npm run e2e   # live, against Ollama at localhost:11434
+npm run e2e:replay                       # replay saved recordings, no model needed
+```

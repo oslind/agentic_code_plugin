@@ -5,3 +5,4 @@ dist/
 .vscode-test/
 .agentic/
 coverage/
+e2e/results/

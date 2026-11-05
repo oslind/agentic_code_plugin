@@ -465,9 +465,11 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "typecheck": "tsc -p . --noEmit",
-    "lint": "eslint src test",
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.e2e.json",
+    "lint": "eslint src test e2e",
     "test": "vitest run",
+    "e2e": "tsc -p tsconfig.e2e.json && vitest run --config vitest.e2e.config.mts",
+    "e2e:replay": "tsc -p tsconfig.e2e.json && AGENTIC_E2E_REPLAY=1 vitest run --config vitest.e2e.config.mts",
     "check": "npm run typecheck && npm run lint && npm test",
     "package": "vsce package --out agentic-code-plugin.vsix"
   },

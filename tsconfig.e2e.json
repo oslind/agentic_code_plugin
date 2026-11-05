@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "noEmit": true, "types": ["node"] },
+  "include": ["src", "e2e", "test/e2eHarness.test.ts"]
+}
