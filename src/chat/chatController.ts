@@ -20,7 +20,7 @@ import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
 import { LiveItem, LiveTracker } from "./live";
 import { ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
-import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions, researchRoundLimit } from "./coordinatorChat";
+import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
@@ -1477,7 +1477,7 @@ export class ChatController {
       );
       this.host.log(
         "info",
-        `Coordinator (${this.mode} mode) chose "${turn.modelAction ?? turn.action}"${turn.modelAction && turn.modelAction !== turn.action ? `, changed to "${turn.action}"` : ""}. Message looks read-only: ${isReadOnlyRequest(text) ? "yes" : "no"}.`,
+        `Coordinator (${this.mode} mode) chose "${turn.modelAction ?? turn.action}"${turn.modelAction && turn.modelAction !== turn.action ? `, changed to "${turn.action}"` : ""}. Goal: ${turn.goal ?? "not given"}, complete: ${turn.complete ?? "not given"}.`,
       );
       await this.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
@@ -1554,8 +1554,6 @@ export class ChatController {
             onThinking: (x) => (planThinking = x),
           },
         );
-        const editing = result.plan.tasks.map(editingReason).find((r) => r !== undefined);
-        if (editing) this.host.log("info", `Plan kept as a change plan because ${editing}.`);
         if (isReadOnlyPlan(result.plan.tasks)) {
           if (afterResearch && round >= maxRounds) {
             // Every research round for this message is used; reading again would only loop.

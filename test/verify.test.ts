@@ -11,7 +11,7 @@ import {
   VerifyTask,
 } from "../src/coordinator/verify";
 import { ModelProvider } from "../src/providers/types";
-import { verificationFrom } from "../src/userSettings";
+import { oversightLimitsFrom } from "../src/userSettings";
 
 const pass = (name: string): CheckResult => ({ name, passed: true, output: "ok", durationMs: 1 });
 const fail = (name: string, output = "1 failing"): CheckResult => ({ name, passed: false, code: 1, output, durationMs: 1 });
@@ -51,10 +51,11 @@ describe("verification rules", () => {
     expect(checkEvidence([pass("test"), fail("lint"), skip("types")])).toMatch(/all drafts together.*test passed, lint failed, types skipped \(not approved\)/);
   });
 
-  it("reads verify settings from user settings only", () => {
+  it("reads verification from the oversight level in user settings only", () => {
     const section = (v: Record<string, { globalValue?: unknown; workspaceValue?: unknown }>) => ({ inspect: <T>(k: string) => v[k] as { globalValue?: T } | undefined });
-    expect(verificationFrom(section({ verify: { workspaceValue: false }, verifyRounds: { workspaceValue: 5 } }))).toEqual({ verify: true, verifyRounds: 2 });
-    expect(verificationFrom(section({ verify: { globalValue: false }, verifyRounds: { globalValue: 9 } }))).toEqual({ verify: false, verifyRounds: 5 });
+    expect(oversightLimitsFrom(section({ oversight: { workspaceValue: "thorough" } }))).toMatchObject({ verify: true, verifyRounds: 2 });
+    expect(oversightLimitsFrom(section({ oversight: { globalValue: "off" } }))).toMatchObject({ verify: false, verifyRounds: 0 });
+    expect(oversightLimitsFrom(section({ oversight: { globalValue: "thorough" } }))).toMatchObject({ verify: true, verifyRounds: 4 });
   });
 
   it("does not call work verified when the model call failed and the checks passed", () => {
