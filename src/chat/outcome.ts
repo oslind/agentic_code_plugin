@@ -36,7 +36,7 @@ export function describeOutcome(run: Run, outcome: RunOutcome, stopped = false):
     ? [
         `Files with drafts: ${files.join(", ")}.`,
         waiting
-          ? `${waiting} draft(s) wait for your review under Drafts. Nothing is written to your project until you press Accept.${accepted ? ` ${accepted} already accepted and written.` : ""}`
+          ? `${waiting} draft(s) wait for your review under Changes. Nothing is written to your project until you press Accept.${accepted ? ` ${accepted} already accepted and written.` : ""}`
           : `${accepted} draft(s) accepted and written to your project.${rejected ? ` ${rejected} rejected.` : ""}`,
       ]
     : ["No files were drafted."];

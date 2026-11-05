@@ -161,7 +161,7 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       const research = data.research === true;
       if (event.message === "unavailable" || event.message === "not_accepted") {
         // Never shown as a pass: the user decides what happens to the drafts.
-        const yours = research ? "Its report is shown as it is; check it before relying on it." : "Its drafts wait for you under Drafts and are not written automatically, even with auto-approve on.";
+        const yours = research ? "Its report is shown as it is; check it before relying on it." : "Its drafts wait for you under Changes and are not written automatically, even with auto-approve on.";
         const feedback = typeof data.feedback === "string" ? data.feedback.trim() : "";
         const why =
           event.message === "not_accepted"
@@ -230,7 +230,7 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       const kept = Array.isArray(data.kept) ? (data.kept as string[]) : [];
       return agent({
         text: kept.length
-          ? `Stopped. Nothing was written to your project. My drafts of ${kept.join(", ")} are kept: review them under Drafts, and Accept or Reject as usual.`
+          ? `Stopped. Nothing was written to your project. My drafts of ${kept.join(", ")} are kept: review them under Changes, and Accept or Reject as usual.`
           : "Stopped. Nothing was written to your project.",
         tag: "stopped",
         tone: "warning",

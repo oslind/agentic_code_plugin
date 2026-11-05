@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
 import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, setSecretApiKey } from "./config";
-import { legacyApiKeyFrom } from "./userSettings";
+import { legacyApiKeyFrom, OVERSIGHT_LEVELS } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -182,6 +182,12 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!PERMISSION_KEYS.includes(key)) return;
       await vscode.workspace.getConfiguration("agentic.autoApprove").update(key, value, vscode.ConfigurationTarget.Global);
     },
+    oversight: () => readOversightLimits().level,
+    setOversight: async (level) => {
+      if (!OVERSIGHT_LEVELS.includes(level)) return;
+      // Saved in user settings: the level adds model calls, so only user settings count (see userSettings.ts).
+      await vscode.workspace.getConfiguration("agentic.delegation").update("oversight", level, vscode.ConfigurationTarget.Global);
+    },
     saveChecks: async (root, checks) => {
       await context.workspaceState.update(checksKey(root), checks);
       output.info(`Saved ${checks.length} check(s) for ${root}: ${checks.map((c) => `${c.name} = ${c.command}`).join("; ") || "none"}`);
@@ -237,7 +243,7 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => chat.dispose() },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("agentic.protectedFiles")) setExtraSecretPatterns(readProtectedFiles());
-      if (e.affectsConfiguration("agentic.autoApprove")) chat.settingsChanged();
+      if (e.affectsConfiguration("agentic.autoApprove") || e.affectsConfiguration("agentic.delegation.oversight")) chat.settingsChanged();
       if (!e.affectsConfiguration("agentic.model")) return;
       // The user may have switched model or server; try the configured format again.
       OpenAICompatibleProvider.resetFallbacks();

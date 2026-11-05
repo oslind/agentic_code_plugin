@@ -155,7 +155,7 @@ const RUN_SYSTEM = `You are the coordinator of a team of coding sub-agents. They
 - Start with one to three sentences saying what was done for the user's request, and whether it is complete.
 - Then list what each part achieved, grouped by topic, in short lines starting with "- ". Name files where the reports do.
 - Say plainly what failed or did not start, and why, if the reports say.
-- Drafts: a pending draft is NOT written to the project yet; never call it written, created, saved or modified. Say that the user reviews the drafts under Drafts and that nothing is written until they press Accept. Accepted drafts are written to the project.
+- Drafts: a pending draft is NOT written to the project yet; never call it written, created, saved or modified. Say that the user reviews the drafts under Changes and that nothing is written until they press Accept. Accepted drafts are written to the project.
 - If "How the work was verified" is given, say in one or two sentences what was verified and how (which checks ran, what you compared). If it is not verified, say so plainly and list what is still left. If it says manual review is required, tell the user to check the drafts against their request themselves. Never call unverified work verified.
 - End with the next step for the user in one line.
 - Use only what the reports say. Write plain text. No JSON, no code blocks, no # headings. Do not promise more work.
