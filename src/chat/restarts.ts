@@ -76,7 +76,7 @@ export class Restarts {
       tag: "interrupted",
       text: [
         `VS Code closed while this run was working${cut.length ? ` on ${plural(cut.length, "task")}` : ""}. ${done} of ${after.tasks.length} task(s) are done.`,
-        drafts ? `${plural(drafts, "draft")} are kept under Drafts for your review.` : "",
+        drafts ? `${plural(drafts, "draft")} are kept under Changes for your review.` : "",
         `Press "Resume" to continue where it stopped: sub-agents that were cut off pick up from their last step.`,
       ].filter(Boolean).join(" "),
     });

@@ -196,7 +196,7 @@ describe("eventToEntry", () => {
     const plain = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "cancelled", message: "Cancelled" }, tasks);
     expect(plain).toMatchObject({ tag: "stopped", text: "Stopped. Nothing was written to your project." });
     const kept = eventToEntry({ time: "", runId: "r", taskId: "t1", type: "cancelled", message: "Cancelled", data: { kept: ["src/a.ts"] } }, tasks);
-    expect(kept!.text).toMatch(/drafts of src\/a\.ts are kept.*Drafts/);
+    expect(kept!.text).toMatch(/drafts of src\/a\.ts are kept.*Changes/);
   });
 
   it("says a sub-agent picks up where a restart cut it off", () => {
@@ -1275,7 +1275,7 @@ describe("ChatController", () => {
 
   const planReplies = () => [turn("On it.", "plan", "Add a User model and an API that uses it."), plan];
   /** The coordinator's final reply after a change run. */
-  const finalReply = "Both tasks are done. The User model and the API are drafts waiting for your review under Drafts.";
+  const finalReply = "Both tasks are done. The User model and the API are drafts waiting for your review under Changes.";
 
   it("proposes detected checks before the first run in a folder, and remembers the choice", async () => {
     const { controller, usedChecks, savedChecks } = setup(planReplies(), "act", { detected: [{ name: "test", command: "npm test", source: "package.json script" }] });

@@ -624,7 +624,7 @@ export class RunLoop {
           text: [
             `Resuming "${clipLine(run.request, 200)}": ${plural(left.length, "task")} left, ${done} of ${current.tasks.length} already done.`,
             again.length ? `Sub-agents that were cut off continue from their last step with their own drafts.` : "",
-            drafts ? `${plural(drafts, "draft")} from before stay under Drafts for your review.` : "",
+            drafts ? `${plural(drafts, "draft")} from before stay under Changes for your review.` : "",
             "Each may only change its own files, and you review every change before it is written.",
           ].filter(Boolean).join(" "),
         });

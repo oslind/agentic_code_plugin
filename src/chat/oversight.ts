@@ -65,7 +65,7 @@ export class Oversight {
       author: "system",
       runId,
       tone: "warning",
-      text: `This run reached its limit of ${limit} model calls (agentic.delegation.maxModelCallsPerRun in your user settings), so its sub-agents were stopped. Their drafts are kept under Drafts for your review and are not written automatically. Raise the limit and retry the tasks to continue.`,
+      text: `This run reached its limit of ${limit} model calls (agentic.delegation.maxModelCallsPerRun in your user settings), so its sub-agents were stopped. Their drafts are kept under Changes for your review and are not written automatically. Raise the limit and retry the tasks to continue.`,
     }).catch((err) => this.host.log("warn", (err as Error).message));
   }
 

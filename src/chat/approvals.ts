@@ -138,7 +138,7 @@ export class Approvals {
           agentName: task.title,
           tone: waiting.length ? "warning" : "success",
           text: waiting.length
-            ? `I have ${waiting.length} draft change(s) for you to review under Drafts. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}${held ? " My result did not pass the coordinator's review, so they were not written automatically even though an auto-approve switch is on." : ""}`
+            ? `I have ${waiting.length} draft change(s) for you to review under Changes. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}${held ? " My result did not pass the coordinator's review, so they were not written automatically even though an auto-approve switch is on." : ""}`
             : `My ${written.length} change(s) were written to your project, because an auto-approve switch is on.`,
         });
         // Open what waits for review, so the user sees it right away.

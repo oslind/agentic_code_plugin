@@ -1,3 +1,4 @@
+import type { OversightLevel } from "../userSettings";
 import { RunOutcome } from "../coordinator/orchestrator";
 import { ModelProvider } from "../providers/types";
 import { PendingChange, Task } from "../state/types";
@@ -30,6 +31,10 @@ export interface ChatHost {
   /** The auto-approve switches. */
   permissions(): AutoApprove;
   setPermission(key: keyof AutoApprove, value: boolean): Promise<void>;
+  /** How closely the coordinator watches its sub-agents (agentic.delegation.oversight, user settings only). */
+  oversight?(): OversightLevel;
+  /** Saves the oversight level in the user's settings. */
+  setOversight?(level: OversightLevel): Promise<void>;
   cancelRun(runId: string): void;
   defaultMode(): ChatMode;
   setDefaultMode(mode: ChatMode): void;

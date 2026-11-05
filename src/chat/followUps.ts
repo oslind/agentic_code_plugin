@@ -233,7 +233,7 @@ export class FollowUps {
       taskId: task.id,
       agentName: task.title,
       tone: "warning",
-      text: `I have ${changes.length} draft change(s) for you to review under Drafts. Changes from a reopened conversation are never accepted automatically: nothing is written until you accept.`,
+      text: `I have ${changes.length} draft change(s) for you to review under Changes. Changes from a reopened conversation are never accepted automatically: nothing is written until you accept.`,
     });
     for (const ch of changes.slice(0, 3)) await this.host.showChange(runId, ch.path).catch((err) => this.host.log("warn", (err as Error).message));
   }

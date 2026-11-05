@@ -1,3 +1,4 @@
+import type { OversightLevel } from "../userSettings";
 import { PendingChange, Run, TaskStatus } from "../state/types";
 import { latestAccepted } from "../state/taskStore";
 import { CheckConfig } from "../checks/runner";
@@ -79,6 +80,8 @@ export interface ChatViewState {
   plans: Record<string, PlanView>;
   runningRunId?: string;
   permissions: AutoApprove;
+  /** The oversight level, shown in the chat's Settings view. */
+  oversight?: OversightLevel;
   /** Ids of cards still waiting for the user. */
   waiting: string[];
   /** How the last prompt in this conversation ended, shown as a bar at the bottom. Unset while a prompt runs. */
@@ -169,6 +172,7 @@ export async function buildViewState(
     plans,
     runningRunId: s.runningRunId,
     permissions: s.host.permissions(),
+    oversight: s.host.oversight?.(),
     waiting,
     done,
     dashboard: current

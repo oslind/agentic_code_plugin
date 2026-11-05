@@ -4,6 +4,7 @@ import { ChatController, Decision } from "../chat/chatController";
 import { checkLink } from "../chat/links";
 import { PERMISSION_KEYS } from "../config";
 import { TaskStore } from "../state/taskStore";
+import { OVERSIGHT_LEVELS, type OversightLevel } from "../userSettings";
 import { ConflictChoice } from "../state/types";
 
 /** Messages the webview may send. Anything else is ignored. */
@@ -25,6 +26,7 @@ type FromView =
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
   | { type: "endAgentChat"; runId: string; taskId: string }
   | { type: "setPermission"; key: string; value: boolean }
+  | { type: "setOversight"; level: string }
   | { type: "editChecks" }
   | { type: "openLink"; url: string };
 
@@ -148,6 +150,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if ((PERMISSION_KEYS as readonly string[]).includes(m.key) && typeof m.value === "boolean") {
             await this.controller.setPermission(m.key as (typeof PERMISSION_KEYS)[number], m.value);
           }
+          return;
+        case "setOversight":
+          if ((OVERSIGHT_LEVELS as readonly string[]).includes(m.level)) await this.controller.setOversight(m.level as OversightLevel);
           return;
         case "editChecks":
           await this.controller.editChecks();

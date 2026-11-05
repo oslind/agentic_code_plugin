@@ -1,3 +1,4 @@
+import { OVERSIGHT_LEVELS, type OversightLevel } from "../userSettings";
 import { TaskStore } from "../state/taskStore";
 import { ConflictChoice, RunEvent } from "../state/types";
 import { Restarts } from "./restarts";
@@ -128,6 +129,12 @@ export class ChatController {
 
   async setPermission(key: keyof AutoApprove, value: boolean): Promise<void> {
     await this.host.setPermission(key, value);
+    this.s.changed();
+  }
+
+  async setOversight(level: OversightLevel): Promise<void> {
+    if (!OVERSIGHT_LEVELS.includes(level) || !this.host.setOversight) return;
+    await this.host.setOversight(level);
     this.s.changed();
   }
 
