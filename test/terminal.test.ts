@@ -1,3 +1,4 @@
+import { ScratchCopy } from "../src/changes/scratch";
 import { mkdir, mkdtemp, realpath, rm } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
@@ -114,13 +115,18 @@ describe("project terminal", () => {
   });
 
   it("shows folders relative to the project and marks the scratch copy", async () => {
-    const scratch = path.join(root, ".agentic", "scratch", "abc", "t1");
-    await mkdir(scratch, { recursive: true });
+    const copy = new ScratchCopy(root, ["abc", "t1"], []);
+    const scratch = await copy.sync(new Map());
+    await mkdir(path.join(scratch, "sub"));
     expect(shownFolder(root, root)).toBe(path.basename(root));
-    expect(shownFolder(root, scratch)).toBe(`${path.basename(root)}/.agentic/scratch/abc/t1`);
+    expect(shownFolder(root, scratch)).toBe(`${path.basename(root)} (scratch copy)`);
+    expect(shownFolder(root, path.join(scratch, "sub"))).toBe(`${path.basename(root)} (scratch copy)/sub`);
     const { terminals, screens } = fakeTerminals(root);
     await runCheck({ name: "a", command: node("1") }, scratch, undefined, 4000, terminals);
     expect(screens[0].text).toContain("pending changes");
+    await copy.remove();
+    // A removed copy is no longer marked as one.
+    expect(shownFolder(root, scratch)).toBe(scratch);
     expect(toTerminalText("a\nb\r\nc")).toBe("a\r\nb\r\nc");
   });
 });

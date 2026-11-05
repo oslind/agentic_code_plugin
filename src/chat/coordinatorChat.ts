@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { callStructured } from "../llm/structured";
+import { untrustedSection } from "../context/untrusted";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { ChatEntry, ChatMode } from "./types";
 
@@ -152,9 +153,12 @@ export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow:
 
   const notes: string[] = [];
   if (ctx.pendingPlan) notes.push(`A plan is proposed and waiting to run:\n${ctx.pendingPlan}`);
-  if (ctx.fileTree && budget > 200) {
-    const tree = truncateToTokens(ctx.fileTree, Math.min(budget - 100, 3000));
-    if (tree) notes.push(`Project files:\n${tree}`);
+  // File names come from the project, so they are fenced: a planted name is data, never an instruction.
+  const filesSection = (tree: string) => untrustedSection("Project files (names only, from the project):", "workspace file listing", tree);
+  const fence = estimateTokens(filesSection(""));
+  if (ctx.fileTree && budget > 200 + fence) {
+    const tree = truncateToTokens(ctx.fileTree, Math.min(budget - 100 - fence, 3000));
+    if (tree) notes.push(filesSection(tree));
   }
   const systemFull = notes.length ? `${system}\n\n${notes.join("\n\n")}` : system;
   return [{ role: "system", content: systemFull }, ...history];

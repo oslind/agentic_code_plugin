@@ -1,7 +1,6 @@
 import { promises as fs } from "fs";
-import * as path from "path";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
-import { ScratchCopy } from "../changes/scratch";
+import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
 import { draftsForReview, ReviewSkip, ReviewVerdict } from "./review";
@@ -14,7 +13,6 @@ import { ToolCall } from "../tools/protocol";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 
-export const AGENT_DIR = ".agentic";
 
 /** Told to a sub-agent that continues from its checkpoint. */
 export const RESUME_NOTE =
@@ -109,10 +107,6 @@ export class Orchestrator {
     this.o.onChange?.();
   }
 
-  private scratchDir(taskId: string): string {
-    return path.join(this.root, AGENT_DIR, "scratch", shortId(this.o.runId), taskId);
-  }
-
   /** Stops one task. What it wrote so far is kept for a retry. */
   cancelTask(taskId: string): boolean {
     const controller = this.taskControllers.get(taskId);
@@ -155,7 +149,7 @@ export class Orchestrator {
         await this.setStatus(t, "cancelled", "Run cancelled");
       }
     }
-    await fs.rm(path.join(this.root, AGENT_DIR, "scratch", shortId(this.o.runId)), { recursive: true, force: true });
+    await removeScratchFolder(this.root, shortId(this.o.runId)).catch(() => undefined);
     const after = await this.o.store.load(this.o.runId);
     return {
       done: after.tasks.filter((t) => t.status === "done").map((t) => t.id),
@@ -202,7 +196,7 @@ export class Orchestrator {
     const controller = new AbortController();
     this.taskControllers.set(task.id, controller);
     const signal = this.o.signal ? AbortSignal.any([this.o.signal, controller.signal]) : controller.signal;
-    const scratch = new ScratchCopy(this.root, this.scratchDir(task.id), this.o.linkDirs);
+    const scratch = new ScratchCopy(this.root, [shortId(this.o.runId), task.id], this.o.linkDirs);
     let files: OverlayFiles | undefined;
     let worker: Worker | undefined;
     // Drafts already put up for review while the task ran, by path, so they are not announced twice.
@@ -255,7 +249,7 @@ export class Orchestrator {
       for (let round = 0; w.checks.length > 0 && overlay.writes.size > 0; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the checks decide. They run on a scratch copy.
-        const checks: CheckResult[] = await runAllChecks(w.checks, await checkDir(), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)), this.o.terminal);
+        const checks: CheckResult[] = await runAllChecks(w.checks, checkDir, signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)), this.o.terminal);
         signal.throwIfAborted();
         // Each check that ran is shown in the chat with its output, like a command a sub-agent ran.
         for (const c of checks) {

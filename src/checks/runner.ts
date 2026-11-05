@@ -1,6 +1,28 @@
 import { exec, splitCommand, tail } from "../util/exec";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { CommandSink } from "./commandTerminal";
+import { scratchCopyOf } from "../changes/scratch";
+
+/**
+ * The user's isolation wrapper (agentic.commands.isolation), such as a
+ * container or bubblewrap command. When set, every command runs inside it.
+ */
+let isolation: string[] | undefined;
+
+export function setCommandIsolation(argv: string[] | undefined): void {
+  isolation = argv?.length ? [...argv] : undefined;
+}
+
+/**
+ * The wrapper's arguments with ${command} (the whole command line, as one
+ * argument), ${folder} (where it runs: the scratch copy or the project) and
+ * ${project} (the real project folder, which linked folders such as
+ * node_modules in the copy point into) filled in. Nothing is parsed by a shell here.
+ */
+export function isolatedArgv(wrapper: readonly string[], command: string, folder: string): string[] {
+  const project = scratchCopyOf(folder)?.project ?? folder;
+  return wrapper.map((a) => a.split("${command}").join(command).split("${folder}").join(folder).split("${project}").join(project));
+}
 
 /** A check the user configured, such as `npm test`. Workers can only run these by name. */
 export interface CheckConfig {
@@ -97,7 +119,15 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
       env: checkEnv(),
       onOutput: view && ((chunk: string) => view.output(chunk)),
     };
-    const res = argv ? await exec(argv[0]!, argv.slice(1), { ...options, shell: false }) : await exec(check.command, [], { ...options, shell: true });
+    let res;
+    if (isolation) {
+      // The user's own wrapper starts the command; it is never given to a shell by the extension.
+      const wrapped = isolatedArgv(isolation, check.command, cwd);
+      view?.output(`[isolated: ${wrapped[0]}, from agentic.commands.isolation]\n`);
+      res = await exec(wrapped[0]!, wrapped.slice(1), { ...options, shell: false });
+    } else {
+      res = argv ? await exec(argv[0]!, argv.slice(1), { ...options, shell: false }) : await exec(check.command, [], { ...options, shell: true });
+    }
     view?.end({ code: res.code, timedOut: res.timedOut, durationMs: Date.now() - started });
     const combined = [res.stdout, res.stderr].filter(Boolean).join("\n");
     return {
@@ -117,7 +147,7 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
         ? e.message
         : "Stopped from the terminal."
       : e.code === "ENOENT"
-        ? `Command not found: ${check.command.trim().split(/\s+/)[0]}`
+        ? `Command not found: ${isolation ? `${isolation[0]} (from agentic.commands.isolation)` : check.command.trim().split(/\s+/)[0]}`
         : e.message;
     view?.end({ code: null, stopped, error: stopped ? undefined : output, durationMs: Date.now() - started });
     return { name: check.name, passed: false, output, durationMs: Date.now() - started };
@@ -126,19 +156,22 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
 
 export async function runAllChecks(
   checks: CheckConfig[],
-  cwd: string,
+  /** The folder, or a function that makes it; it is called only once the first check is approved. */
+  cwd: string | (() => Promise<string>),
   signal?: AbortSignal,
   approve?: ApproveCommand,
   terminal?: CommandSink,
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
+  let folder = typeof cwd === "string" ? cwd : undefined;
   for (const c of checks) {
     if (signal?.aborted) break;
     if (approve && !(await approve(c))) {
       results.push({ name: c.name, passed: true, skipped: true, output: "Skipped: you did not approve running it.", durationMs: 0 });
       continue;
     }
-    results.push(await runCheck(c, cwd, signal, undefined, terminal));
+    folder ??= await (cwd as () => Promise<string>)();
+    results.push(await runCheck(c, folder, signal, undefined, terminal));
   }
   return results;
 }

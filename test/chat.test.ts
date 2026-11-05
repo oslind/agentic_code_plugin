@@ -1,3 +1,4 @@
+import { scratchBase, scratchPathFor } from "../src/changes/scratch";
 import { existsSync, promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -614,7 +615,8 @@ describe("ChatController", () => {
       expect(entries.find((e) => e.tag === "not verified")!.text).toMatch(/both failed[\s\S]*Make the "both" check pass/);
       // The user's files were never touched: the checks ran in a copy.
       await expect(fs.access(path.join(ws, "src", "api.ts"))).rejects.toThrow();
-      await expect(fs.access(path.join(ws, ".agentic", "scratch", `verify-${started[0]!.slice(0, 8)}`))).rejects.toThrow();
+      await expect(fs.access(await scratchPathFor(ws, `verify-${started[0]!.slice(0, 8)}`))).rejects.toThrow();
+      await expect(fs.access(path.join(ws, ".agentic"))).rejects.toThrow();
     });
 
     it("asks before running a verification check when Run commands is off, and says when one was skipped", async () => {
@@ -1342,7 +1344,49 @@ describe("ChatController", () => {
     expect(entries.find((e) => e.kind === "command")).toMatchObject({ author: "agent", tone: "success", command: { line: command, output: "tests: 3 passed" } });
     // It ran in a copy: nothing appeared in the project, and the copy is gone.
     expect(existsSync(path.join(ws, "made.txt"))).toBe(false);
-    expect(existsSync(path.join(ws, ".agentic", "scratch", "research-" + entries.find((e) => e.kind === "research")!.runId!.slice(0, 8)))).toBe(false);
+    expect(existsSync(await scratchPathFor(ws, "research-" + entries.find((e) => e.kind === "research")!.runId!.slice(0, 8)))).toBe(false);
+    expect(existsSync(path.join(ws, ".agentic"))).toBe(false);
+  });
+
+  // A repository can hold a link named .agentic (or .agentic/scratch). Scratch copies never go through it.
+  it.skipIf(process.platform === "win32").each([
+    [".agentic", "outside"],
+    [".agentic/scratch", "outside"],
+    [".agentic", "another-project"],
+  ])("never puts a researcher's copy behind a planted %s link to %s", async (link, target) => {
+    const ws = path.join(dir, "ws");
+    const outside = path.join(dir, target);
+    await fs.mkdir(ws, { recursive: true });
+    await fs.mkdir(outside, { recursive: true });
+    await fs.writeFile(path.join(outside, "keep.txt"), "untouched");
+    await fs.writeFile(path.join(ws, "README.md"), "# Flight sim\n");
+    await fs.mkdir(path.dirname(path.join(ws, link)), { recursive: true });
+    await fs.symlink(target === "another-project" ? path.join("..", target) : outside, path.join(ws, link));
+    const command = `node -e ${JSON.stringify("console.log(process.cwd())")}`;
+    const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+    const { controller } = setup(
+      [
+        JSON.stringify({ reply: "I'll have a sub-agent run it.", action: "research", request: "", questions: ["Where does it run?"] }),
+        worker("Run it.", { tool: "run_command", command, reason: "see the folder" }),
+        worker("Done.", { tool: "finish", summary: "ran" }),
+        JSON.stringify({ reply: "Done.", action: "none", request: "" }),
+        "It ran.",
+      ],
+      "act",
+      { workspace: ws },
+    );
+    const sending = controller.send("where does it run?");
+    const card = await waitForCard(controller, "approval");
+    await controller.decide(card.id, { kind: "allow" });
+    await sending;
+    const ran = (await controller.state()).current!.entries.find((e) => e.kind === "command")!;
+    const cwd = ran.command!.output.trim();
+    // It ran in the extension's own scratch folder: not in the project, not behind the link.
+    expect(cwd.startsWith(await scratchBase())).toBe(true);
+    expect(cwd.startsWith(await fs.realpath(outside))).toBe(false);
+    // Nothing was created, copied, changed or deleted behind the link.
+    expect((await fs.readdir(outside)).sort()).toEqual(["keep.txt"]);
+    expect(await fs.readFile(path.join(outside, "keep.txt"), "utf8")).toBe("untouched");
   });
 
   it("runs a sub-agent's command without asking when Run commands is on", async () => {

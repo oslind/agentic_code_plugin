@@ -6,6 +6,10 @@ import { safeLinkDirs } from "./changes/scratch";
 import { AutoApprove } from "./tools/policy";
 import {
   autoRetriesFrom,
+  commandIsolationFrom,
+  scratchLimitsFrom,
+  USER_ONLY_COMMAND_KEYS,
+  USER_ONLY_SCRATCH_KEYS,
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
   legacyApiKeyFrom,
@@ -153,6 +157,16 @@ export function readProtectedFiles(): string[] {
   return [...new Set(all.filter((g): g is string => typeof g === "string"))];
 }
 
+/** The scratch copy's size budget and exclusions, from user settings only. */
+export function readScratchLimits(): ReturnType<typeof scratchLimitsFrom> {
+  return scratchLimitsFrom(vscode.workspace.getConfiguration("agentic.scratch"));
+}
+
+/** The isolation wrapper for commands (agentic.commands.isolation), from user settings only. */
+export function readCommandIsolation(): string[] | undefined {
+  return commandIsolationFrom(vscode.workspace.getConfiguration("agentic.commands"));
+}
+
 /** The switches from user settings only. A project's .vscode/settings.json cannot turn them on. */
 export function readPermissions(): Permissions {
   return permissionsFrom(vscode.workspace.getConfiguration("agentic.autoApprove"));
@@ -168,6 +182,8 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.model", scope), USER_ONLY_MODEL_KEYS).map((k) => `agentic.model.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.chat", scope), USER_ONLY_CHAT_KEYS).map((k) => `agentic.chat.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.delegation", scope), USER_ONLY_DELEGATION_KEYS).map((k) => `agentic.delegation.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.scratch", scope), USER_ONLY_SCRATCH_KEYS).map((k) => `agentic.scratch.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.commands", scope), USER_ONLY_COMMAND_KEYS).map((k) => `agentic.commands.${k}`),
   ];
 }
 

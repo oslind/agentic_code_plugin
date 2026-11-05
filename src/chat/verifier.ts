@@ -1,6 +1,5 @@
 import { planRequest } from "../coordinator/planner";
-import * as path from "path";
-import { AGENT_DIR, RunOutcome } from "../coordinator/orchestrator";
+import { RunOutcome } from "../coordinator/orchestrator";
 import { pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
@@ -206,11 +205,11 @@ export class Verifier {
     const root = await this.host.openFolder(workspaceRoot);
     if (!root) throw new Error(`${workspaceRoot} is not open in VS Code, so the work cannot be verified.`);
     const run = await this.tasks.load(runId);
-    const scratch = new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `verify-${runId.slice(0, 8)}`), this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    const scratch = new ScratchCopy(root, [`verify-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
     const trusted = new Set(checks.map((c) => c.command));
     try {
-      const dir = await scratch.sync(pendingBase(run.changes));
-      const results = await runAllChecks(checks, dir, signal, (check) => this.approveVerifyCheck(conversationId, runId, check, trusted), this.host.terminal?.(workspaceRoot));
+      // The copy is made only once a check is approved, so nothing is copied for a check the user rejects.
+      const results = await runAllChecks(checks, () => scratch.sync(pendingBase(run.changes)), signal, (check) => this.approveVerifyCheck(conversationId, runId, check, trusted), this.host.terminal?.(workspaceRoot));
       for (const r of results) {
         const command = checks.find((k) => k.name === r.name)?.command;
         if (r.skipped || !command) continue;

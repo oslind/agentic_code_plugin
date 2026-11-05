@@ -259,7 +259,7 @@ describe("the scratch copy", () => {
       await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
       await fs.writeFile(path.join(root, rel), content);
     }
-    const scratch = new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t1"), []);
+    const scratch = new ScratchCopy(root, ["t1"], []);
     const dir = await scratch.sync(new Map());
     const has = async (rel: string) => fs.lstat(path.join(dir, rel)).then(() => true, () => false);
     expect(await has("src/a.ts")).toBe(true);
@@ -356,7 +356,7 @@ describe("secrets behind harmless-looking symlinks", () => {
     await fs.writeFile(path.join(root, "lib", "x.ts"), "x");
     await fs.symlink(path.join("..", "lib"), path.join(root, "src", "lib-link"));
     await fs.symlink(os.tmpdir(), path.join(root, "src", "outside"));
-    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t1"), []).sync(new Map());
+    const dir = await new ScratchCopy(root, ["t1"], []).sync(new Map());
     const has = async (rel: string) => fs.lstat(path.join(dir, rel)).then(() => true, () => false);
     for (const rel of ["src/build-info.txt", "src/meta", "src/conf-link", "src/outside", "conf/.env"]) expect(await has(rel), rel).toBe(false);
     for (const rel of ["src/app.ts", "src/lib-link", "conf/app-link.ts"]) expect(await has(rel), rel).toBe(true);
@@ -389,7 +389,7 @@ describe("project-supplied scratch links and checks", () => {
     await fs.mkdir(path.join(root, "src"));
     await fs.writeFile(path.join(root, "src", ".env"), "SECRET=1");
     await fs.writeFile(path.join(root, "src", "a.ts"), "a");
-    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), ["src"]).sync(new Map());
+    const dir = await new ScratchCopy(root, ["t"], ["src"]).sync(new Map());
     expect((await fs.lstat(path.join(dir, "src"))).isSymbolicLink()).toBe(false);
     expect(await fs.readFile(path.join(dir, "src", "a.ts"), "utf8")).toBe("a");
     await expect(fs.lstat(path.join(dir, "src", ".env"))).rejects.toThrow();
@@ -405,7 +405,7 @@ describe("project-supplied scratch links and checks", () => {
     await fs.writeFile(path.join(root, "node_modules", "some-package", "dist", "deep.pem"), "pem");
     await fs.writeFile(path.join(root, "node_modules", "some-package", "index.js"), "i");
     await fs.symlink(os.tmpdir(), path.join(root, "vendor"));
-    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), ["node_modules", "vendor"]).sync(new Map());
+    const dir = await new ScratchCopy(root, ["t"], ["node_modules", "vendor"]).sync(new Map());
     const has = async (rel: string) => fs.lstat(path.join(dir, rel)).then(() => true, () => false);
     for (const rel of ["node_modules/.env", "node_modules/some-package/.env", "node_modules/some-package/dist/deep.pem", "vendor"]) {
       expect(await has(rel), rel).toBe(false);
@@ -420,7 +420,7 @@ describe("project-supplied scratch links and checks", () => {
     const root = await tempDir();
     await fs.writeFile(path.join(root, ".env"), "SECRET=1");
     await fs.symlink(path.join(root, ".env"), path.join(root, "notes.txt"));
-    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), []).sync(new Map());
+    const dir = await new ScratchCopy(root, ["t"], []).sync(new Map());
     await expect(fs.lstat(path.join(dir, "notes.txt"))).rejects.toThrow();
   });
 
@@ -490,7 +490,7 @@ describe("pending changes never reach the real project through the scratch copy"
 
   it.skipIf(!unix)("writes changes into the copy only, even inside linked folders and through project links", async () => {
     const root = await project();
-    const scratch = new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), ["node_modules", "src"]);
+    const scratch = new ScratchCopy(root, ["t"], ["node_modules", "src"]);
     const dir = await scratch.sync(
       new Map([
         ["src/main.cpp", "changed main"],
@@ -518,7 +518,7 @@ describe("pending changes never reach the real project through the scratch copy"
     await fs.symlink(path.join("..", "source"), path.join(root, "wrapper", "inner"));
     await fs.mkdir(path.join(root, "docs"));
     await fs.symlink(path.join("..", "wrapper"), path.join(root, "docs", "outer"));
-    const dir = await new ScratchCopy(root, path.join(root, ".agentic", "scratch", "t"), []).sync(new Map());
+    const dir = await new ScratchCopy(root, ["t"], []).sync(new Map());
     await expect(fs.lstat(path.join(dir, "docs", "outer"))).rejects.toThrow();
   });
 

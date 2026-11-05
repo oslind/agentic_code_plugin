@@ -1,4 +1,5 @@
 import * as path from "path";
+import { scratchCopyOf } from "../changes/scratch";
 import { escapeTerminalLine, escapeTerminalText, TerminalSanitizer } from "./terminalText";
 
 export { toTerminalText } from "./terminalText";
@@ -47,20 +48,23 @@ export interface ScreenEvents {
 
 export type ScreenFactory = (name: string, events: ScreenEvents) => TerminalScreen;
 
-/** How a folder is shown in the terminal: relative to the project, since that is the only place commands run. */
+/**
+ * How a folder is shown in the terminal: relative to the project, or as the
+ * project's scratch copy (which lives in the extension's own storage).
+ */
 export function shownFolder(projectRoot: string, cwd: string): string {
+  const copy = scratchCopyOf(cwd);
+  if (copy) return `${path.basename(projectRoot) || projectRoot} (scratch copy)${copy.rel ? `/${copy.rel}` : ""}`;
   const rel = path.relative(projectRoot, cwd);
   if (!rel) return path.basename(projectRoot) || projectRoot;
   if (rel.startsWith("..") || path.isAbsolute(rel)) return cwd;
   return `${path.basename(projectRoot)}/${rel.split(path.sep).join("/")}`;
 }
 
-const SCRATCH = /(^|\/)\.agentic\/scratch(\/|$)/;
-
 export function commandHeader(projectRoot: string, cwd: string, command: string): string {
   // The command and the folder come from the project: shown as text, never acted on by the terminal.
   const folder = escapeTerminalLine(shownFolder(projectRoot, cwd));
-  const note = SCRATCH.test(folder) ? "\x1b[2m  (a copy of the project with the pending changes; your files are not touched)\x1b[0m\r\n" : "";
+  const note = scratchCopyOf(cwd) ? "\x1b[2m  (a copy of the project with the pending changes; your files are not touched)\x1b[0m\r\n" : "";
   return `\x1b[1;36m${folder}\x1b[0m\r\n${note}\x1b[1m$ ${escapeTerminalLine(command)}\x1b[0m\r\n`;
 }
 

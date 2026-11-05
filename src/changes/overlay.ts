@@ -1,7 +1,7 @@
 import picomatch from "picomatch";
 import { PendingChange } from "../state/types";
 import { normalizeWorkspacePath } from "../tools/paths";
-import { ProjectFiles, SandboxError, WorkspaceSandbox } from "../tools/sandbox";
+import { FileHead, ProjectFiles, SandboxError, WorkspaceSandbox } from "../tools/sandbox";
 
 /** One draft of a sub-agent, as saved in its checkpoint. */
 export interface DraftSnapshot {
@@ -43,10 +43,18 @@ export class OverlayFiles implements ProjectFiles {
     return p;
   }
 
-  async readFile(relPath: string): Promise<string> {
+  async readFile(relPath: string, maxBytes?: number): Promise<string> {
     const p = this.norm(relPath);
     const own = this.writes.get(p) ?? this.base.get(p);
-    return own ?? this.disk.readFile(p);
+    return own ?? this.disk.readFile(p, maxBytes);
+  }
+
+  async readHead(relPath: string, maxBytes: number): Promise<FileHead> {
+    const p = this.norm(relPath);
+    const own = this.writes.get(p) ?? this.base.get(p);
+    if (own === undefined) return this.disk.readHead(p, maxBytes);
+    const bytes = Buffer.from(own, "utf8");
+    return { text: bytes.subarray(0, maxBytes).toString("utf8"), size: bytes.length, truncated: bytes.length > maxBytes };
   }
 
   async writeFile(relPath: string, content: string): Promise<void> {

@@ -51,6 +51,9 @@ export interface PlanResult {
   droppedContext: string[];
 }
 
+/** The heading of the project's file listing in a prompt. */
+export const FILES_HEADING = "Workspace files (names only, from the project):";
+
 /** Tokens held back for the model's reply and for retry turns. */
 const REPLY_RESERVE = 4096;
 
@@ -67,13 +70,19 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
     });
   }
   if (input.fileTree) {
-    sections.push({ name: "files", text: `Workspace files:\n${input.fileTree}`, priority: 50 });
+    // File names come from the project: fenced like any other project text, so a planted name is never an instruction.
+    sections.push({ name: "files", text: input.fileTree, priority: 50, wrap: (tree) => untrustedSection(FILES_HEADING, "workspace file listing", tree) });
   }
   if (input.notes) {
     sections.push({ name: "notes", text: `Project notes:\n${input.notes}`, priority: 10 });
   }
   if (input.learned) {
-    sections.push({ name: "learned", text: untrustedSection("What we know so far (from earlier research and sub-agent reports):", "earlier research and sub-agent reports", input.learned), priority: 40 });
+    sections.push({
+      name: "learned",
+      text: input.learned,
+      priority: 40,
+      wrap: (learned) => untrustedSection("What we know so far (from earlier research and sub-agent reports):", "earlier research and sub-agent reports", learned),
+    });
   }
   const system = systemPrompt(taskLimit(input));
   const user = fitToBudget(sections, budget - estimateTokens(system));

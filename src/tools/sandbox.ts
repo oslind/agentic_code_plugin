@@ -12,13 +12,50 @@ export class SandboxError extends Error {
 }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+
+/**
+ * The largest file read whole. A bigger one is refused before anything is
+ * read, so a huge file in the project cannot fill the extension's memory.
+ */
+export const MAX_FILE_BYTES = 16 * 1024 * 1024;
+
+/** The start of a file, read without loading the rest. */
+export interface FileHead {
+  text: string;
+  /** The file's size in bytes. */
+  size: number;
+  /** True when the file is longer than what was read. */
+  truncated: boolean;
+}
+
+function megabytes(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+}
+
+/** Reads at most `maxBytes` from an open file, whatever its size. */
+async function readBounded(handle: fs.FileHandle, maxBytes: number): Promise<FileHead> {
+  const size = (await handle.stat()).size;
+  // One byte more than allowed, to tell a file that is exactly at the limit from one that is longer (or grew).
+  const buffer = Buffer.alloc(Math.min(size, maxBytes) + 1);
+  let read = 0;
+  while (read < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read);
+    if (bytesRead === 0) break;
+    read += bytesRead;
+  }
+  const truncated = read > maxBytes || size > maxBytes;
+  return { text: buffer.subarray(0, Math.min(read, maxBytes)).toString("utf8"), size: Math.max(size, read), truncated };
+}
 const SKIP_DIRS = new Set([".git", "node_modules", ".agentic"]);
 
 /** What a sub-agent's tools see of the project: the real files, or the real files plus pending changes. */
 export interface ProjectFiles {
   /** The project folder on disk. */
   readonly root: string;
-  readFile(relPath: string): Promise<string>;
+  /** The whole file. Refused when it is larger than MAX_FILE_BYTES (or `maxBytes`). */
+  readFile(relPath: string, maxBytes?: number): Promise<string>;
+  /** At most the first `maxBytes` of a file, and its size, for tools that only need the start of a big file. */
+  readHead(relPath: string, maxBytes: number): Promise<FileHead>;
   writeFile(relPath: string, content: string): Promise<void>;
   listFiles(glob?: string, limit?: number): Promise<string[]>;
 }
@@ -122,12 +159,19 @@ export class WorkspaceSandbox implements ProjectFiles {
     return real;
   }
 
-  async readFile(relPath: string): Promise<string> {
+  async readFile(relPath: string, maxBytes = MAX_FILE_BYTES): Promise<string> {
+    const head = await this.readHead(relPath, maxBytes);
+    if (head.truncated) throw new SandboxError(`'${relPath}' is too large to read whole (${megabytes(head.size)}; the limit is ${megabytes(maxBytes)})`);
+    return head.text;
+  }
+
+  async readHead(relPath: string, maxBytes: number): Promise<FileHead> {
     const real = await this.resolveForRead(relPath);
     const handle = await fs.open(real, constants.O_RDONLY | NOFOLLOW);
     try {
       await this.assertSameFile(handle, relPath, () => this.resolveForRead(relPath));
-      return await handle.readFile("utf8");
+      // Size is checked on the open file, and no more than the limit is ever read, even if the file grows meanwhile.
+      return await readBounded(handle, maxBytes);
     } finally {
       await handle.close();
     }

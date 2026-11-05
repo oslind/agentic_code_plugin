@@ -1,5 +1,4 @@
-import * as path from "path";
-import { AGENT_DIR, publishDrafts } from "../coordinator/orchestrator";
+import { publishDrafts } from "../coordinator/orchestrator";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
@@ -126,7 +125,7 @@ export class FollowUps {
     // Like during its task: the project as on disk, plus the drafts still waiting for review.
     const overlay = research ? undefined : new OverlayFiles(disk, pendingBase(run.changes));
     // Commands run in a copy, never in the project itself; a researcher's copy just has no drafts.
-    const scratch = new ScratchCopy(root, path.join(root, AGENT_DIR, "scratch", `followup-${run.id.slice(0, 8)}`, task.id), ["node_modules"]);
+    const scratch = new ScratchCopy(root, [`followup-${run.id.slice(0, 8)}`, task.id], ["node_modules"]);
     const checks = research ? [] : ((await this.host.checksFor(workspaceRoot)).saved ?? []);
     const hooks = this.approvals.hooksFor(conversationId, run.id, checks, workspaceRoot);
     const history = await this.tasks.loadHistory(run.id, task.id);

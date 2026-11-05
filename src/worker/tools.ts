@@ -3,11 +3,16 @@ import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
 import { ToolCall } from "../tools/protocol";
 import { isSecretPath } from "../tools/policy";
+import { safeFileName } from "../context/untrusted";
 
 const MAX_READ_LINES = 300;
 const MAX_LIST = 200;
 const MAX_MATCHES = 40;
 const MAX_SEARCH_FILE_BYTES = 256 * 1024;
+/** Most bytes of a file read_file looks at. Larger files are read from the start only. */
+const MAX_READ_BYTES = 2 * 1024 * 1024;
+/** Most bytes one search reads across all files, so a search over a huge project stays cheap. */
+const MAX_SEARCH_TOTAL_BYTES = 64 * 1024 * 1024;
 
 export interface ToolContext {
   sandbox: ProjectFiles;
@@ -33,7 +38,11 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
   try {
     switch (call.tool) {
       case "read_file": {
-        const lines = (await ctx.sandbox.readFile(call.path)).split("\n");
+        // Never more than MAX_READ_BYTES is read, however large the file is.
+        const head = await ctx.sandbox.readHead(call.path, MAX_READ_BYTES);
+        const lines = head.text.split("\n");
+        // The last line of a cut file may be cut too.
+        if (head.truncated && lines.length > 1) lines.pop();
         const start = Math.max(1, call.startLine ?? 1);
         const end = Math.min(lines.length, call.endLine ?? start + MAX_READ_LINES - 1, start + MAX_READ_LINES - 1);
         const body = lines
@@ -41,33 +50,45 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
           .map((l, i) => `${String(start + i).padStart(4)}| ${l}`)
           .join("\n");
         const more = end < lines.length ? `\n[lines ${end + 1}-${lines.length} not shown; read again with startLine=${end + 1}]` : "";
-        return { ok: true, output: `${call.path} (${lines.length} lines)\n${body}${more}` };
+        const big = head.truncated ? `\n[the file is ${Math.round(head.size / (1024 * 1024))} MB; only its first ${lines.length} lines can be read. Use search to find something further on]` : "";
+        return { ok: true, output: `${call.path} (${head.truncated ? `first ${lines.length}` : lines.length} lines)\n${body}${more}${big}` };
       }
       case "list_files": {
         const files = await ctx.sandbox.listFiles(call.glob, MAX_LIST + 1);
         if (files.length === 0) return { ok: true, output: "No files match." };
         const more = files.length > MAX_LIST ? "\n[more files not shown; use a narrower glob]" : "";
-        return { ok: true, output: files.slice(0, MAX_LIST).join("\n") + more };
+        return { ok: true, output: files.slice(0, MAX_LIST).map(safeFileName).join("\n") + more };
       }
       case "search": {
         const files = await ctx.sandbox.listFiles(call.glob ?? "**", 5000);
         const hits: string[] = [];
+        let scanned = 0;
+        let stoppedEarly = false;
         for (const f of files) {
           if (hits.length >= MAX_MATCHES) break;
+          if (scanned >= MAX_SEARCH_TOTAL_BYTES) {
+            stoppedEarly = true;
+            break;
+          }
           // Secret files cannot be read, so they cannot be searched either.
           if (isSecretPath(f)) continue;
           let text: string;
           try {
-            text = await ctx.sandbox.readFile(f);
+            // Large files are skipped without being read: at most the limit plus one byte is read to find out.
+            const head = await ctx.sandbox.readHead(f, MAX_SEARCH_FILE_BYTES);
+            if (head.truncated) continue;
+            text = head.text;
           } catch {
             continue;
           }
-          if (text.length > MAX_SEARCH_FILE_BYTES || text.includes("\u0000")) continue;
+          scanned += Buffer.byteLength(text, "utf8");
+          if (text.includes("\u0000")) continue;
           text.split("\n").forEach((line, i) => {
-            if (hits.length < MAX_MATCHES && line.includes(call.query)) hits.push(`${f}:${i + 1}: ${line.trim().slice(0, 200)}`);
+            if (hits.length < MAX_MATCHES && line.includes(call.query)) hits.push(`${safeFileName(f)}:${i + 1}: ${line.trim().slice(0, 200)}`);
           });
         }
-        return { ok: true, output: hits.length ? hits.join("\n") : `No matches for '${call.query}'.` };
+        const partial = stoppedEarly ? `\n[search stopped after reading ${MAX_SEARCH_TOTAL_BYTES / (1024 * 1024)} MB; use a narrower glob]` : "";
+        return { ok: true, output: (hits.length ? hits.join("\n") : `No matches for '${call.query}'.`) + partial };
       }
       case "write_file":
         await ctx.sandbox.writeFile(call.path, call.content);
