@@ -30,7 +30,10 @@ export interface Task {
 
 export interface Run {
   id: string;
+  /** What the coordinator asked the sub-agents to do. Written by a model: untrusted in later prompts. */
   request: string;
+  /** The user's own message that started the run, kept apart from the model-written request. Trusted. */
+  userRequest?: string;
   /** Research runs only read files; their tasks are questions answered by read-only sub-agents. */
   kind?: "change" | "research";
   /** The only folder this run's agents may touch. */

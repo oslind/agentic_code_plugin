@@ -25,7 +25,7 @@ import { WorkspaceSandbox } from "../tools/sandbox";
 import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { draftsForReview, isUnreviewed, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
-import { checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, Verification, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
+import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { CallBudget } from "./callBudget";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { eventToEntry } from "./eventFeed";
@@ -1420,21 +1420,27 @@ export class ChatController {
     }
     const c = await this.conversations.load(conversationId);
     const update = c.entries.filter((e) => e.runId === runId && e.taskId === taskId && e.tag === "update from follow-up").at(-1)?.text ?? "";
-    await this.append(conversationId, { author: "system", runId, text: `Continuing "${run.request.slice(0, 200)}" with the update from "${task.title}".` });
+    const userRequest = userRequestOf(run, c.entries);
+    await this.append(conversationId, { author: "system", runId, text: `Continuing "${(userRequest ?? run.request).slice(0, 200)}" with the update from "${task.title}".` });
     const status = unfinished.map((t) => `- "${t.title}": ${t.status.replace("_", " ")}`).join("\n");
     const continuation = [
       `The user talked with sub-agent "${task.title}" again after the run, then ended that chat and asked you to continue the original request with what came out of it.`,
-      `The original request: ${run.request}`,
+      userRequest ? `The user's original request: ${userRequest}` : "The user's original words were not recorded.",
+      // The coordinator's own summary of it was written by a model after research that read project files.
+      untrustedSection("What you planned for it then:", "your earlier plan for the request", run.request),
       `Tasks of that run that are not done:\n${status}`,
       // Written by a sub-agent that read project files: data, not instructions.
       untrustedSection(`The update from "${task.title}":`, `update from sub-agent "${task.title}" after a follow-up chat`, update || "(no update)"),
       "Continue the original request from where it stands now. Plan only what is still left to do (drafts waiting for review are already done), or answer if nothing is left. Do not plan work that is already done.",
     ].join("\n\n");
-    await this.respond(await this.conversations.load(conversationId), run.request, continuation);
+    await this.respond(await this.conversations.load(conversationId), userRequest ?? run.request, continuation, userRequest);
   }
 
-  /** The coordinator's turn on a message: answer, research, plan or run. `continuation` replaces a new user message. */
-  private async respond(c: Conversation, text: string, continuation?: string): Promise<void> {
+  /**
+   * The coordinator's turn on a message: answer, research, plan or run. `continuation` replaces a new user message.
+   * `userRequest` is the user's own words a run started here keeps apart from the model's request; for a new message it is `text`.
+   */
+  private async respond(c: Conversation, text: string, continuation?: string, userRequest: string | undefined = continuation ? undefined : text): Promise<void> {
     this.done = undefined;
     const waiting = !continuation && isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
     if (waiting && this.runOwner.has(waiting.id)) {
@@ -1575,7 +1581,7 @@ export class ChatController {
           await doResearch({ ...t, action: "research", request: "", questions });
           return;
         }
-        const run = await this.tasks.createRun(t.request, c.workspaceRoot, undefined, learned);
+        const run = await this.tasks.createRun(t.request, c.workspaceRoot, undefined, learned, userRequest);
         planned = true;
         this.runOwner.set(run.id, c.id);
         await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
@@ -1711,7 +1717,7 @@ export class ChatController {
         : verification
           ? verification.verified
             ? { status: "finished", text: `Finished and verified.${review}` }
-            : { status: "partial", text: `Finished, but not verified${verification.missing.length ? `: ${verification.missing.length} thing(s) still left` : ""}.${review}` }
+            : { status: "partial", text: `Finished, but not verified${verification.missing.length ? `: ${verification.missing.length} thing(s) still left` : verification.manualReview ? ": manual review required" : ""}.${review}` }
           : ok
             ? { status: "finished", text: `Finished.${review}` }
             : { status: "partial", text: `Finished, but ${notDone} of ${finished.tasks.length} task(s) did not complete.${review}` };
@@ -1843,7 +1849,7 @@ export class ChatController {
     draft: { reply: string; thought?: string; thinking?: string } | undefined,
     limitReached: boolean,
     signal: AbortSignal,
-    review?: (answer: string) => Promise<{ answered: boolean; missing: string[] } | undefined>,
+    review?: (answer: string) => Promise<AnswerCheck | undefined>,
     canResearchMore = false,
   ): Promise<string[] | undefined> {
     this.busy = "Coordinator is combining the reports into an answer…";
@@ -1862,7 +1868,7 @@ export class ChatController {
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
     // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
-    let check: { answered: boolean; missing: string[] } | undefined;
+    let check: AnswerCheck | undefined;
     if (review && !result.fallback) {
       this.busy = "Coordinator is checking that the answer covers your question…";
       this.changed();
@@ -1873,11 +1879,13 @@ export class ChatController {
     if (check) {
       await this.append(c.id, {
         author: "coordinator",
-        tag: check.answered ? "verified" : "not verified",
+        tag: check.answered ? "verified" : check.missing.length ? "not verified" : "manual review required",
         tone: check.answered ? "success" : "warning",
         text: check.answered
           ? "I checked the answer below against your question: it covers every part."
-          : `I checked the answer below against your question, and it may not cover everything. No research rounds are left to look further. Still open:\n${check.missing.map((q) => `- ${q}`).join("\n")}`,
+          : check.missing.length
+            ? `I checked the answer below against your question, and it may not cover everything. No research rounds are left to look further. Still open:\n${check.missing.map((q) => `- ${q}`).join("\n")}`
+            : "I checked the answer below against your question and could not confirm it covers everything, but I could not name what is open. Manual review required: read the answer against your question yourself before relying on it.",
       });
     }
     if (result.suspicious.length) {
@@ -1901,10 +1909,10 @@ export class ChatController {
   }
 
   /** Does the combined answer cover the question? Undefined when the check itself failed; the answer is then sent as it is. */
-  private async checkResearchAnswer(workspaceRoot: string, question: string, answer: string, signal: AbortSignal): Promise<{ answered: boolean; missing: string[] } | undefined> {
+  private async checkResearchAnswer(workspaceRoot: string, question: string, answer: string, signal: AbortSignal): Promise<AnswerCheck | undefined> {
     try {
       const res = await checkAnswer(this.coordinatorProvider(workspaceRoot), question, answer, { signal });
-      this.host.log("info", `Checked the research answer: ${res.answered ? "it answers the question" : `still open: ${res.missing.join(" | ")}`}.`);
+      this.host.log("info", `Checked the research answer: ${res.answered ? "it answers the question" : res.missing.length ? `still open: ${res.missing.join(" | ")}` : "not confirmed, nothing named (manual review required)"}.`);
       return res;
     } catch (err) {
       if (signal.aborted) throw err;
@@ -1950,7 +1958,7 @@ export class ChatController {
           files: [...new Set(changes.filter((ch) => ch.taskId === t.id).map((ch) => ch.path))],
         })),
         drafts: { pending: of("pending"), accepted: of("accepted"), rejected: of("rejected") },
-        verification: verification && { verified: verification.verified, evidence: verification.evidence, summary: verification.summary, missing: verification.missing },
+        verification: verification && { verified: verification.verified, evidence: verification.evidence, summary: verification.summary, missing: verification.missing, manualReview: verification.manualReview },
       },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
@@ -1997,6 +2005,8 @@ export class ChatController {
       try {
         verification = await this.verifyOnce(conversationId, workspaceRoot, runId, hooks.checks, latest, round, abort.signal);
         if (verification.verified) return { outcome, verification };
+        // Nothing specific to fix: no fix-up tasks are invented, the user reviews the work.
+        if (verification.manualReview && verification.missing.length === 0) return { outcome, verification };
         if (round >= maxRounds) {
           await this.append(conversationId, {
             author: "coordinator",
@@ -2102,9 +2112,9 @@ export class ChatController {
     await this.append(conversationId, {
       author: "coordinator",
       runId,
-      tag: v.verified ? "verified" : "not verified",
+      tag: v.verified ? "verified" : v.manualReview ? "manual review required" : "not verified",
       tone: v.verified ? "success" : "warning",
-      text: `${v.verified ? "Verified: the request is done." : "Not verified yet."} ${v.evidence}${v.summary ? ` ${v.summary}` : ""}${left}`,
+      text: `${v.verified ? "Verified: the request is done." : "Not verified yet."} ${v.evidence}${v.summary ? ` ${v.summary}` : ""}${left}${v.manualReview && !v.missing.length ? `\n\n${MANUAL_REVIEW}` : ""}`,
       thought: v.thought,
       thinking: clip(v.thinking),
     });
@@ -2169,11 +2179,13 @@ export class ChatController {
     const run = await this.tasks.load(runId);
     const fileTree = await this.host.fileTree(workspaceRoot, signal).catch(() => undefined);
     const reports: VerifyTask[] = run.tasks.map((t) => ({ title: t.title, status: t.status.replace("_", " "), summary: t.summary ?? t.error ?? "" }));
+    // The user's own words are the instruction; the coordinator's model-written request only goes along fenced.
+    const userRequest = userRequestOf(run, (await this.conversations.load(conversationId)).entries);
     let result;
     try {
       result = await planRequest(
         this.coordinatorProvider(workspaceRoot, runId),
-        { request: fixUpRequest(run.request, round), fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks) },
+        { request: fixUpRequest(userRequest, round), planned: run.request, fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks) },
         { signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Fix-up plan retry ${n}: ${err}`) },
       );
     } catch (err) {
@@ -2298,6 +2310,18 @@ export function runScope(entries: ChatEntry[], runId: string): ChatEntry[] {
   let end = at + 1;
   while (end < entries.length && !isPrompt(entries[end]!)) end++;
   return entries.slice(start, end);
+}
+
+/**
+ * The user's own words for a run: their messages in the run's prompt (with a
+ * clarifying exchange before it), else the message the run recorded when it
+ * started. Never the coordinator's model-written request. Undefined when
+ * neither is known.
+ */
+export function userRequestOf(run: Pick<Run, "id" | "userRequest">, entries: ChatEntry[]): string | undefined {
+  const said = userMessagesOf(runScope(entries, run.id)).slice(-4).map((m) => m.trim()).filter(Boolean);
+  if (said.length) return said.join("\n");
+  return run.userRequest?.trim() || undefined;
 }
 
 /** The user's own messages to the coordinator, oldest first. Direct messages to sub-agents are left out. */
