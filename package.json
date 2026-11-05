@@ -176,9 +176,9 @@
         "agentic.model.maxOutputTokens": {
           "type": "number",
           "scope": "machine",
-          "default": 0,
+          "default": 8192,
           "minimum": 0,
-          "description": "Longest reply in tokens, thinking included, sent to the server as max_tokens. 0 means no limit. A limit stops one long thinking run from holding the server for minutes, but a reply cut short fails its format check and is asked again. Read from user settings only; a project cannot change it."
+          "description": "Longest reply in tokens, thinking included, sent to the server as max_tokens. Default 8192: a step only needs a short reply, so this stops a thinking run that loops (one step of qwen3:8b once thought for 13,900 tokens) without cutting normal replies. A reply cut short fails its format check and is asked again. 0 means no limit. Every reply is also kept within the context window. Read from user settings only; a project cannot change it."
         },
         "agentic.model.structuredOutput": {
           "type": "string",
