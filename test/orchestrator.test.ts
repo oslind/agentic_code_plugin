@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acceptChange, changeKind, rejectChange } from "../src/changes/review";
+import { acceptChange, changeKind, rejectChange, revertChange } from "../src/changes/review";
 import { CheckConfig } from "../src/checks/runner";
 import { Orchestrator, OrchestratorOptions } from "../src/coordinator/orchestrator";
 import { ProviderError } from "../src/providers/openaiCompatible";
@@ -324,6 +324,62 @@ describe("recovery", () => {
     expect((await store.load(runId)).tasks[0]!.attempts).toBe(2);
   });
 
+  it("retries a failed task automatically, telling it why, up to autoRetries", async () => {
+    const checks = [{ name: "test", command: node("process.exit(require('fs').readFileSync('v.txt','utf8')==='ok'?0:1)") }];
+    const runId = await setup([task("v", ["v.txt"]), task("after", ["after.txt"], ["v"])]);
+    const seen: ChatRequest[] = [];
+    const provider = scripted({ v: [write("v.txt", "bad"), finish, write("v.txt", "ok"), finish], after: [write("after.txt", "1"), finish] }, seen);
+    const outcome = await make(runId, provider, { checks, maxFixRounds: 0, autoRetries: 1 }).o.run();
+    expect(outcome.done.sort()).toEqual(["after", "v"]);
+    const v = (await store.load(runId)).tasks[0]!;
+    expect(v).toMatchObject({ attempts: 2, autoRetries: 1 });
+    const retryPrompt = seen.find((r) => r.messages[1]?.content.includes("previous attempt"))?.messages[1]?.content;
+    expect(retryPrompt).toMatch(/Checks failed: test/);
+    expect(retryPrompt).toMatch(/## v\.txt\nbad/);
+    expect((await store.readLog(runId)).find((e) => e.type === "auto_retry")).toMatchObject({ taskId: "v", data: { retry: 1, of: 1 } });
+  });
+
+  it("gives up after its automatic retries, and a manual retry gets them back", async () => {
+    const checks: CheckConfig[] = [{ name: "test", command: node("process.exit(1)") }];
+    const runId = await setup([task("a", ["a.txt"])]);
+    const provider = scripted({ a: [write("a.txt", "1"), finish, write("a.txt", "2"), finish, write("a.txt", "3"), finish, write("a.txt", "4"), finish] });
+    expect((await make(runId, provider, { checks, maxFixRounds: 0, autoRetries: 1 }).o.run()).failed).toEqual(["a"]);
+    expect((await store.load(runId)).tasks[0]).toMatchObject({ status: "failed", attempts: 2, autoRetries: 1 });
+    await store.retryTask(runId, "a");
+    expect((await store.load(runId)).tasks[0]!.autoRetries).toBeUndefined();
+    expect((await make(runId, provider, { checks, maxFixRounds: 0, autoRetries: 1 }).o.run()).failed).toEqual(["a"]);
+    expect((await store.load(runId)).tasks[0]!.attempts).toBe(4);
+  });
+
+  it("never retries automatically when off, after Stop, or when the model-call budget is used", async () => {
+    const checks: CheckConfig[] = [{ name: "test", command: node("process.exit(1)") }];
+    const off = await setup([task("a", ["a.txt"])]);
+    expect((await make(off, scripted({ a: [write("a.txt", "1"), finish] }), { checks, maxFixRounds: 0 }).o.run()).failed).toEqual(["a"]);
+    expect((await store.load(off)).tasks[0]!.attempts).toBe(1);
+
+    const budget = await setup([task("a", ["a.txt"])]);
+    const spent = new Error("This run reached its limit of 5 model calls");
+    spent.name = "ModelCallBudgetError";
+    const broke: ModelProvider = { model: "fake", contextWindow: 32768, chat: async () => Promise.reject(spent) };
+    expect((await make(budget, broke, { autoRetries: 3 }).o.run()).failed).toEqual(["a"]);
+    expect((await store.load(budget)).tasks[0]!.attempts).toBe(1);
+
+    const stopped = await setup([task("slow", ["s.txt"])]);
+    let started!: () => void;
+    const slowStarted = new Promise<void>((r) => (started = r));
+    const hang = (req: ChatRequest) =>
+      new Promise<Turn>((_, reject) => {
+        started();
+        req.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    const { o } = make(stopped, scripted({ slow: [hang] }), { autoRetries: 3 });
+    const running = o.run();
+    await slowStarted;
+    o.cancelTask("slow");
+    await running;
+    expect((await store.load(stopped)).tasks[0]).toMatchObject({ status: "cancelled", attempts: 1 });
+  });
+
   it("cancels one task without stopping the others", async () => {
     const runId = await setup([task("slow", ["s.txt"]), task("fast", ["f.txt"])]);
     let started!: () => void;
@@ -380,6 +436,60 @@ describe("reviewing changes", () => {
     expect(onDisk("README.md")).toBe("my newer version\n");
     expect((await acceptChange(store, runId, "README.md", repo, { overwrite: true })).ok).toBe(true);
     expect(onDisk("README.md")).toBe("agent version\n");
+  });
+
+  it("reverts an accepted edit to the text from before, and deletes a file the draft created", async () => {
+    const runId = await proposedRun(
+      { e: [read("README.md"), write("README.md", "agent\n"), write("new/a.txt", "A"), finish] },
+      [task("e", ["README.md", "new/a.txt"])],
+    );
+    expect(await revertChange(store, runId, "README.md", repo)).toMatchObject({ ok: false, reason: "not_accepted" });
+    await acceptChange(store, runId, "README.md", repo);
+    await acceptChange(store, runId, "new/a.txt", repo);
+    expect(await revertChange(store, runId, "README.md", repo)).toMatchObject({ ok: true, deleted: false });
+    expect(onDisk("README.md")).toBe("hello\nworld\n");
+    expect(await revertChange(store, runId, "new/a.txt", repo)).toMatchObject({ ok: true, deleted: true });
+    expect(onDisk("new/a.txt")).toBeUndefined();
+    expect((await changesOf(runId)).map((c) => c.status)).toEqual(["reverted", "reverted"]);
+    expect((await store.readLog(runId)).filter((e) => e.type === "change_reverted").map((e) => e.data)).toEqual([{ deleted: false }, { deleted: true }]);
+    // Reverted once: nothing left to revert.
+    expect((await revertChange(store, runId, "README.md", repo)).ok).toBe(false);
+  });
+
+  it("does not revert over the user's newer edits unless asked to", async () => {
+    const runId = await proposedRun({ e: [read("README.md"), write("README.md", "agent\n"), finish] }, [task("e", ["README.md"])]);
+    await acceptChange(store, runId, "README.md", repo);
+    await writeFile(path.join(repo, "README.md"), "mine\n");
+    expect(await revertChange(store, runId, "README.md", repo)).toMatchObject({ ok: false, reason: "changed_on_disk" });
+    expect(onDisk("README.md")).toBe("mine\n");
+    expect((await revertChange(store, runId, "README.md", repo, { overwrite: true })).ok).toBe(true);
+    expect(onDisk("README.md")).toBe("hello\nworld\n");
+  });
+
+  it("reverts the newest accept of a file first, then the one before it", async () => {
+    const runId = await setup([task("a", ["README.md"])]);
+    await store.addChanges(runId, [{ path: "README.md", taskId: "a", original: "hello\nworld\n", proposed: "one\n", status: "pending" }]);
+    await acceptChange(store, runId, "README.md", repo);
+    await store.addChanges(runId, [{ path: "README.md", taskId: "a", original: "one\n", proposed: "two\n", status: "pending" }]);
+    await acceptChange(store, runId, "README.md", repo);
+    expect((await revertChange(store, runId, "README.md", repo)).ok).toBe(true);
+    expect(onDisk("README.md")).toBe("one\n");
+    expect((await changesOf(runId)).map((c) => c.status)).toEqual(["accepted", "reverted"]);
+    expect((await revertChange(store, runId, "README.md", repo)).ok).toBe(true);
+    expect(onDisk("README.md")).toBe("hello\nworld\n");
+  });
+
+  it("never reverts protected paths or deletes outside the project", async () => {
+    const runId = await setup([task("a", ["a.txt"])]);
+    await store.addChanges(runId, [{ path: ".agentic/x.json", taskId: "a", original: null, proposed: "x", status: "accepted" }]);
+    await mkdir(path.join(repo, ".agentic"), { recursive: true });
+    await writeFile(path.join(repo, ".agentic", "x.json"), "x");
+    expect(await revertChange(store, runId, ".agentic/x.json", repo)).toMatchObject({ ok: false, reason: "protected" });
+    expect(existsSync(path.join(repo, ".agentic", "x.json"))).toBe(true);
+    await writeFile(path.join(base, "outside.txt"), "x");
+    await store.addChanges(runId, [{ path: "../outside.txt", taskId: "a", original: null, proposed: "x", status: "accepted" }]);
+    expect((await revertChange(store, runId, "../outside.txt", repo)).ok).toBe(false);
+    expect(existsSync(path.join(base, "outside.txt"))).toBe(true);
   });
 
   it("never writes protected paths, even from a tampered change list", async () => {

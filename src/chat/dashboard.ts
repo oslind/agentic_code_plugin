@@ -70,7 +70,7 @@ export interface DashboardView {
   /** For the current prompt's runs (or the latest run if the prompt made none). */
   counts: { total: number; completed: number; running: number; queued: number; failed: number; stopped: number; checksRun: number };
   /** Changes across the whole conversation. */
-  drafts: { awaiting: number; accepted: number; rejected: number };
+  drafts: { awaiting: number; accepted: number; rejected: number; reverted: number };
   /** Cards waiting for the user, so they are never hidden in another tab. */
   attention: { id: string; kind: string; tab: "overview" | "drafts" | "checks"; who: string; text: string }[];
   /** Set once the last prompt is dealt with. Finished does not mean the drafts were accepted. */
@@ -214,6 +214,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
     awaiting: allChanges.filter((c) => c.status === "pending").length,
     accepted: allChanges.filter((c) => c.status === "accepted").length,
     rejected: allChanges.filter((c) => c.status === "rejected").length,
+    reverted: allChanges.filter((c) => c.status === "reverted").length,
   };
 
   const cState = coordinatorState({
@@ -272,6 +273,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       plural(drafts.awaiting, "draft") + " awaiting review",
       drafts.accepted ? `${drafts.accepted} accepted` : "",
       drafts.rejected ? `${drafts.rejected} rejected` : "",
+      drafts.reverted ? `${drafts.reverted} reverted` : "",
       plural(checksRun, "check") + " run",
     ]
       .filter(Boolean)

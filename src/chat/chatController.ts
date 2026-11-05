@@ -7,14 +7,14 @@ import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
 import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
-import { TaskStore } from "../state/taskStore";
+import { latestAccepted, TaskStore } from "../state/taskStore";
 import { PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { CommandSink } from "../checks/commandTerminal";
 import { DetectedCheck } from "../checks/detect";
 import { ToolCall } from "../tools/protocol";
 import { AutoApprove, isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted } from "../tools/policy";
-import { acceptChange, changeKind, rejectChange } from "../changes/review";
+import { acceptChange, changeKind, rejectChange, revertChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
@@ -137,7 +137,7 @@ interface Supervision {
 }
 
 /** What the user can do with a pending change from the chat. */
-export type ReviewAction = "show" | "open" | "accept" | "reject";
+export type ReviewAction = "show" | "open" | "accept" | "reject" | "revert";
 
 /** What the user chose on a card that waited for them. */
 export type Decision =
@@ -171,8 +171,10 @@ export interface ChangeView {
   removed: number;
   /** Written by an auto-approve switch rather than by the user. */
   auto?: boolean;
-  /** Why the last Accept did not go through, e.g. the file changed on disk. */
+  /** Why the last Accept (or Revert) did not go through, e.g. the file changed on disk. */
   note?: string;
+  /** The newest accepted change of its file in this run: Revert puts the file back as it was before it. */
+  revertable?: boolean;
 }
 
 export interface ChatViewState {
@@ -420,7 +422,9 @@ export class ChatController {
           state: draftState(ch.status),
           ...lineCounts(ch.original, ch.proposed),
           auto: ch.auto,
-          note: this.changeNotes.get(`${runId}:${ch.path}`),
+          // Accept and Revert notes are kept apart, so a Revert warning never turns the next Accept into an overwrite.
+          note: ch.status === "pending" ? this.changeNotes.get(`${runId}:${ch.path}`) : ch === latestAccepted(run.changes, ch.path) ? this.changeNotes.get(`revert:${runId}:${ch.path}`) : undefined,
+          revertable: ch === latestAccepted(run.changes, ch.path) || undefined,
         })),
       };
     }
@@ -585,6 +589,10 @@ export class ChatController {
       return;
     }
     if (!root) throw new Error(`${run.workspaceRoot ?? "This run's folder"} is not open in VS Code, so nothing can be written.`);
+    if (action === "revert") {
+      if (filePath) await this.revert(conversationId, run, root, filePath);
+      return;
+    }
     const targets = (run.changes ?? []).filter(
       (c) => c.status === "pending" && (filePath ? c.path === filePath : !taskId || c.taskId === taskId),
     );
@@ -632,6 +640,35 @@ export class ChatController {
     }
     this.changed();
     if (failed.length) throw new Error(failed.join(" "));
+  }
+
+  /**
+   * Undoes the newest accept of one file: the file goes back to how it was
+   * before, or is deleted if the draft created it. Always the user's own
+   * click, one file at a time. A second Revert after a "changed on disk"
+   * note means: put the old version back anyway.
+   */
+  private async revert(conversationId: string | undefined, run: Run, root: string, filePath: string): Promise<void> {
+    const key = `revert:${run.id}:${filePath}`;
+    let res;
+    try {
+      res = await revertChange(this.tasks, run.id, filePath, root, { overwrite: this.changeNotes.has(key) });
+    } catch (err) {
+      const message = `Could not revert ${filePath}: ${(err as Error).message}`;
+      this.changeNotes.set(key, message);
+      this.host.log("error", message);
+      this.changed();
+      throw new Error(message);
+    }
+    if (res.ok) {
+      this.changeNotes.delete(key);
+      await this.host.closeChange(run.id, filePath).catch(() => undefined);
+      // The file itself is announced from the store's log (see eventFeed).
+    } else {
+      this.changeNotes.set(key, res.message);
+      if (conversationId) await this.append(conversationId, { author: "system", runId: run.id, tone: "warning", text: `Not reverted yet: ${res.message}` });
+    }
+    this.changed();
   }
 
   /**
@@ -2078,7 +2115,7 @@ export class ChatController {
     });
     // The newest draft of each file that is not rejected: what the user would get.
     const newest = new Map<string, PendingChange>();
-    for (const ch of run.changes ?? []) if (ch.status !== "rejected") newest.set(ch.path, ch);
+    for (const ch of run.changes ?? []) if (ch.status !== "rejected" && ch.status !== "reverted") newest.set(ch.path, ch);
     const ctx = {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,

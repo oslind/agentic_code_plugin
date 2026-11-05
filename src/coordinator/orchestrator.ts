@@ -29,6 +29,13 @@ export interface OrchestratorOptions {
   /** Attempts per task before a transient failure (such as the model server being down) needs the user. */
   maxAttempts?: number;
   retryDelayMs?: number;
+  /**
+   * Times a task that failed for another reason (checks kept failing, out of
+   * steps, a tool error) is started again on its own, told why the last
+   * attempt failed and what it wrote. 0 (the default) leaves every failure
+   * to the user. Each retry's model calls count like any other.
+   */
+  autoRetries?: number;
   /** Folders linked, not copied, into the scratch copy where checks run, such as node_modules. */
   linkDirs?: string[];
   signal?: AbortSignal;
@@ -86,7 +93,7 @@ export class Orchestrator {
   private root = "";
 
   constructor(options: OrchestratorOptions) {
-    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, linkDirs: ["node_modules"], ...options };
+    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, linkDirs: ["node_modules"], ...options };
   }
 
   private log(type: string, message: string, taskId?: string, data?: Record<string, unknown>): Promise<void> {
@@ -294,6 +301,15 @@ export class Orchestrator {
       await this.setStatus(task, "pending", `Retrying after: ${message}`);
       return;
     }
+    // Any other failure gets a bounded number of fresh attempts. Not after Stop (the user's, or the coordinator's
+    // for a stuck sub-agent), not when the run's model-call budget is used, and not when the model server is still down.
+    const used = current.autoRetries ?? 0;
+    if (!cancelled && used < this.o.autoRetries && isRetryableFailure(err)) {
+      await this.o.store.updateTask(this.o.runId, task.id, { autoRetries: used + 1 });
+      await this.log("auto_retry", message, task.id, { retry: used + 1, of: this.o.autoRetries });
+      await this.setStatus(task, "pending", `Retrying automatically after: ${message}`);
+      return;
+    }
     await this.log(cancelled ? "cancelled" : "task_failed", message, task.id, cancelled && kept.length ? { kept } : undefined);
     await this.setStatus(task, cancelled ? "cancelled" : "failed", message);
   }
@@ -329,6 +345,16 @@ export async function publishDrafts(
 
 function isTransient(err: unknown): boolean {
   return err instanceof ProviderError && err.retryable;
+}
+
+/**
+ * Whether starting the task again could help. A model server error has already
+ * been retried as often as allowed, and a used-up model-call budget stops the
+ * whole run (checked by name, so this module does not depend on the chat).
+ */
+function isRetryableFailure(err: unknown): boolean {
+  if (err instanceof ProviderError) return false;
+  return !(err instanceof Error && err.name === "ModelCallBudgetError");
 }
 
 /** Waits, but ends early when the run is stopped. */

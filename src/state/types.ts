@@ -24,6 +24,8 @@ export interface Task {
   error?: string;
   /** The most recent error, kept after the task is retried. */
   lastError?: string;
+  /** Times the task was retried automatically after it failed (agentic.delegation.autoRetries). */
+  autoRetries?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -54,7 +56,8 @@ export interface PendingChange {
   taskId: string;
   original: string | null;
   proposed: string;
-  status: "pending" | "accepted" | "rejected";
+  /** "reverted": it was accepted, then the user put the file back as it was before. */
+  status: "pending" | "accepted" | "rejected" | "reverted";
   /** Set when accepted without the user: the auto-approve switch for edits was on. */
   auto?: boolean;
 }
