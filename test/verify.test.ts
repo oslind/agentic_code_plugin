@@ -174,6 +174,12 @@ describe("verification rules", () => {
     expect(buildRunSummaryMessages({ question: "q", request: "r", tasks: [], drafts: { pending: [], accepted: [], rejected: [] } }, 8192)[1]!.content).not.toMatch(/Commands that failed/);
   });
 
+  it("tells the final reply not to ask for an Accept when nothing is pending", () => {
+    const base = { question: "q", request: "r", tasks: [] };
+    expect(buildRunSummaryMessages({ ...base, drafts: { pending: [], accepted: ["src/a.ts"], rejected: [] } }, 8192)[1]!.content).toMatch(/do not tell them to review or accept drafts/);
+    expect(buildRunSummaryMessages({ ...base, drafts: { pending: ["src/a.ts"], accepted: [], rejected: [] } }, 8192)[1]!.content).not.toMatch(/do not tell them to review/);
+  });
+
   it("passes what is missing and the failed output to the fix-up planner", () => {
     const notes = fixUpNotes({ verified: false, evidence: "", summary: "", missing: ["Fix src/a.ts"] }, [fail("test", "Expected 2, got 3")], [done]);
     expect(notes).toMatch(/- Fix src\/a.ts[\s\S]*Expected 2, got 3[\s\S]*Add flag \(done\): Added --verbose/);

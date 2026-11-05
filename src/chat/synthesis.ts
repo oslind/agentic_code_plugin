@@ -224,7 +224,10 @@ export function buildRunSummaryMessages(input: RunSummaryInput, contextWindow: n
     `The user's message:\n${input.question.trim()}`,
     // Written by a model (after research that read project files), so it is fenced like the reports.
     `The work you asked the sub-agents to do:\n${dataBlock("the work you planned", input.request.trim() || "(not recorded)")}`,
-    `Drafts waiting for the user's review (not written yet): ${list(input.drafts.pending)}\nDrafts the user accepted (written): ${list(input.drafts.accepted)}\nDrafts rejected: ${list(input.drafts.rejected)}`,
+    `Drafts waiting for the user's review (not written yet): ${list(input.drafts.pending)}\nDrafts the user accepted (written): ${list(input.drafts.accepted)}\nDrafts rejected: ${list(input.drafts.rejected)}${
+      // qwen3:8b told the user to "accept the drafts" after they were already written by an auto-approve switch.
+      input.drafts.pending.length ? "" : "\nNothing waits for the user's review: do not tell them to review or accept drafts."
+    }`,
   ];
   const failed = input.failedCommands ?? [];
   if (failed.length) {

@@ -135,6 +135,11 @@ const KICKOFF = "If anything about this task is unclear (what the user meant, wh
 /** How sub-agents use run_command. Small models skip a tool unless they are told plainly when it is the right one. */
 const COMMAND_RULES = `Use run_command like a developer at a terminal whenever running something tells you more than reading: run the tests, a build, a type check or linter, a script, or a tool's --version. One command per call, from the project root (use "cd sub && cmd" for a subfolder). It runs in a copy of the project that has your drafts, so files it creates or changes are not kept: change files only with the file tools. Commands may wait for the user's approval. Never run commands that need a network login, never start servers or watchers that do not exit, and do not use paths outside the project.`;
 
+/** A trusted AGENTS.md or .clinerules: project conventions every task gets, not a skill picked by topic. */
+export function isConventionSkill(s: Pick<Skill, "source" | "file">): boolean {
+  return s.source === "project" && (s.file === "AGENTS.md" || s.file === ".clinerules" || (s.file ?? "").startsWith(".clinerules/"));
+}
+
 /** The tool line and rule for load_skill, only when there are skills to load. */
 const SKILL_TOOL = `- {"tool":"load_skill","name":"run-tests"}  (reads a skill from the skill list: short advice on how to do a kind of task)`;
 const skillRules = () => `- Skills are listed in your first message. Follow the skills you were given where they fit. Load another with load_skill when your work needs it (for example a language or build skill for files you work on), at most ${MAX_LOADED_SKILLS}. ${SKILL_RULE}`;
@@ -240,7 +245,11 @@ export class Worker {
    */
   private skillSection(names: string[]): string {
     if (!this.skills.length) return "";
-    const given = names.map((n) => this.skills.find((s) => s.name === n)).filter((s): s is Skill => !!s);
+    const picked = names.map((n) => this.skills.find((s) => s.name === n)).filter((s): s is Skill => !!s);
+    // The project's own conventions (AGENTS.md, .clinerules), once the user trusted them, apply to every
+    // task like they do in other agents. The planner picking skills by topic left them out (e2e run on qwen3:8b).
+    const conventions = this.skills.filter((s) => isConventionSkill(s) && !picked.includes(s));
+    const given = [...picked, ...conventions];
     for (const s of given) {
       this.loadedSkills.add(s.name);
       this.opts.log("skill", s.name, { name: s.name, source: s.source, given: true });

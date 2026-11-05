@@ -188,8 +188,9 @@ export const SCENARIOS: Scenario[] = [
     description: "A conversation longer than the coordinator's history budget is compacted and still answers correctly (coordinator compaction, PR #51).",
     mode: "plan",
     files: thermostat,
-    // Small, so a few answers fill it. The extension's default is 12000.
-    historyTokens: 1500,
+    // Small, so a few short answers fill it: at 1500 the second live run never got past
+    // 70% of it, because qwen3:8b answered in a line or two. The extension's default is 12000.
+    historyTokens: 600,
     prompts: [
       "What is the default heating target in this project?",
       "How much lower is the target in night mode, and where is that decided?",
