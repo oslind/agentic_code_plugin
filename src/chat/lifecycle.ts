@@ -11,18 +11,20 @@ import { PendingChange, TaskStatus } from "../state/types";
  *
  *   proposed → draft → applied   (the user, or an auto-approve switch, accepted it)
  *                    → discarded (the user rejected it)
+ *   applied → reverted  (the user undid the accept: the file is back as before)
  *
  * "proposed" is a change a sub-agent is still working on: it is in the
  * sub-agent's scratch overlay and not yet shown. A draft waits for review.
  * Only "applied" means the file was written to the project.
  */
-export type DraftState = "proposed" | "draft" | "applied" | "discarded";
+export type DraftState = "proposed" | "draft" | "applied" | "discarded" | "reverted";
 
 export const DRAFT_TRANSITIONS: Record<DraftState, DraftState[]> = {
   proposed: ["draft"],
   draft: ["applied", "discarded"],
-  applied: [],
+  applied: ["reverted"],
   discarded: [],
+  reverted: [],
 };
 
 /** Labels the user sees. An unaccepted draft is never called written, created or modified. */
@@ -31,10 +33,11 @@ export const DRAFT_LABEL: Record<DraftState, string> = {
   draft: "Draft",
   applied: "Accepted",
   discarded: "Rejected",
+  reverted: "Reverted",
 };
 
 export function draftState(status: PendingChange["status"]): DraftState {
-  return status === "accepted" ? "applied" : status === "rejected" ? "discarded" : "draft";
+  return status === "accepted" ? "applied" : status === "rejected" ? "discarded" : status === "reverted" ? "reverted" : "draft";
 }
 
 /**

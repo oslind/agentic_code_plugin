@@ -337,6 +337,46 @@ describe("ChatController", () => {
       expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("new\n");
     });
 
+    it("reverts an accept from the chat: an edit goes back, a new file is deleted", async () => {
+      const { controller, tasks, ws, runId, closed } = await runWithChanges({ editFiles: false });
+      await controller.review(runId, "accept", "README.md");
+      await controller.review(runId, "accept", "src/model.ts");
+      let changes = (await controller.state()).plans[runId]!.changes;
+      expect(changes.map((c) => [c.path, c.state, c.revertable])).toEqual([
+        ["src/model.ts", "applied", true],
+        ["README.md", "applied", true],
+      ]);
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("old\n");
+      await controller.review(runId, "revert", "src/model.ts");
+      await expect(fs.access(path.join(ws, "src", "model.ts"))).rejects.toThrow();
+      expect(closed).toContain("src/model.ts");
+      changes = (await controller.state()).plans[runId]!.changes;
+      expect(changes.map((c) => [c.state, c.revertable])).toEqual([
+        ["reverted", undefined],
+        ["reverted", undefined],
+      ]);
+      expect((await tasks.load(runId)).changes!.map((c) => c.status)).toEqual(["reverted", "reverted"]);
+      const texts = (await controller.state()).current!.entries.map((e) => e.text);
+      expect(texts.some((t) => /Reverted the accept of README.md: the file is back/.test(t))).toBe(true);
+      expect(texts.some((t) => /Reverted the accept of src\/model.ts: .*deleted/.test(t))).toBe(true);
+      // A pending draft has nothing to revert.
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("old\n");
+    });
+
+    it("asks before reverting a file the user edited after the accept, and a Revert note never forces the next Accept", async () => {
+      const { controller, ws, runId } = await runWithChanges({ editFiles: false });
+      await controller.review(runId, "accept", "README.md");
+      await fs.writeFile(path.join(ws, "README.md"), "mine on top\n");
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("mine on top\n");
+      expect((await controller.state()).current!.entries.at(-1)).toMatchObject({ tone: "warning", text: expect.stringMatching(/^Not reverted yet: README.md changed on disk/) });
+      expect((await controller.state()).plans[runId]!.changes.find((c) => c.path === "README.md")!.note).toMatch(/changed on disk/);
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("old\n");
+    });
+
     it("writes right away when Edit files is on, without asking", async () => {
       const { controller, ws, runId, shown } = await runWithChanges({ editFiles: true });
       expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("new\n");

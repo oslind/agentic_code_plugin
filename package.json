@@ -335,6 +335,14 @@
           "maximum": 5,
           "description": "When verification finds work left (a failed check, a task that did not finish, a missing part of the request, or an open part of a research question), the coordinator plans fix-up tasks for exactly that and runs them, then verifies again, at most this many times per request. Fix-up tasks build on the drafts already made, and you still review every change. 0 verifies and reports without sending anyone back. Read from user settings only, so a project cannot make more model calls or rounds happen."
         },
+        "agentic.delegation.autoRetries": {
+          "type": "number",
+          "scope": "machine",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Times a sub-agent that failed (its checks kept failing, it ran out of steps, or a tool error stopped it) is started again on its own. The new attempt is told why the last one failed and sees what it had drafted. Not after you or the coordinator stopped it, and not once the run has used agentic.delegation.maxModelCallsPerRun, which every retry counts toward. 0 leaves every failure to you; you can still reopen or retry a sub-agent by hand. Read from user settings only, so a project cannot make more model calls happen."
+        },
         "agentic.delegation.maxResearchRounds": {
           "type": "number",
           "default": 3,
