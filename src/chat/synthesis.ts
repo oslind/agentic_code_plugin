@@ -139,6 +139,28 @@ export interface RunTaskReport {
   files: string[];
 }
 
+/** A command that failed the last time it ran in a run: what ran, who ran it, and the end of its output. */
+export interface FailedCommand {
+  line: string;
+  by?: string;
+  output: string;
+}
+
+/**
+ * The commands whose latest run failed, from command entries in run order. A
+ * command that failed and later passed (a fixed test) is not listed.
+ */
+export function failedCommandsOf(entries: { kind?: string; tone?: string; agentName?: string; command?: { line: string; output: string } }[]): FailedCommand[] {
+  const latest = new Map<string, FailedCommand | undefined>();
+  for (const e of entries) {
+    if (e.kind !== "command" || !e.command) continue;
+    const line = e.command.line.trim();
+    latest.delete(line);
+    latest.set(line, e.tone === "warning" ? { line, by: e.agentName, output: e.command.output.trim().split("\n").slice(-8).join("\n") } : undefined);
+  }
+  return [...latest.values()].filter((c): c is FailedCommand => !!c);
+}
+
 export interface RunSummaryInput {
   /** The user's message the run answers. */
   question: string;
@@ -147,6 +169,11 @@ export interface RunSummaryInput {
   tasks: RunTaskReport[];
   /** Drafts of the run by status. Pending drafts are not written yet. */
   drafts: { pending: string[]; accepted: string[]; rejected: string[] };
+  /**
+   * Commands whose latest run in this request failed, from the run's own
+   * command log (facts, not a model's report). The reply must name them.
+   */
+  failedCommands?: FailedCommand[];
   /** How the coordinator verified the request, when it did. `evidence` is built from facts, the rest by a model. */
   verification?: { verified: boolean; evidence: string; summary: string; missing: string[]; manualReview?: boolean };
 }
@@ -155,6 +182,7 @@ const RUN_SYSTEM = `You are the coordinator of a team of coding sub-agents. They
 - Start with one to three sentences saying what was done for the user's request, and whether it is complete.
 - Then list what each part achieved, grouped by topic, in short lines starting with "- ". Name files where the reports do.
 - Say plainly what failed or did not start, and why, if the reports say.
+- If "Commands that failed" is given, name each failed command and what failed in it (for example which test), even when it seems unrelated to the request. Never write "no failures" or "all tests pass" when that list is given.
 - Drafts: a pending draft is NOT written to the project yet; never call it written, created, saved or modified. Say that the user reviews the drafts under Changes and that nothing is written until they press Accept. Accepted drafts are written to the project.
 - If "How the work was verified" is given, say in one or two sentences what was verified and how (which checks ran, what you compared). If it is not verified, say so plainly and list what is still left. If it says manual review is required, tell the user to check the drafts against their request themselves. Never call unverified work verified.
 - End with the next step for the user in one line.
@@ -172,6 +200,16 @@ export function buildRunSummaryMessages(input: RunSummaryInput, contextWindow: n
     `The work you asked the sub-agents to do:\n${dataBlock("the work you planned", input.request.trim() || "(not recorded)")}`,
     `Drafts waiting for the user's review (not written yet): ${list(input.drafts.pending)}\nDrafts the user accepted (written): ${list(input.drafts.accepted)}\nDrafts rejected: ${list(input.drafts.rejected)}`,
   ];
+  const failed = input.failedCommands ?? [];
+  if (failed.length) {
+    // Command output comes from the project (its tests print what they like), so it is fenced.
+    head.push(
+      `Commands that failed (their latest run in this request failed; this is a fact from the run log):\n${dataBlock(
+        "failed commands and the end of their output",
+        failed.map((c) => `$ ${c.line}${c.by ? `   (run by "${c.by}")` : ""}\n${c.output || "(no output)"}`).join("\n\n"),
+      )}`,
+    );
+  }
   const v = input.verification;
   if (v) {
     // The verdict is a fact and stays plain. The evidence names checks (from settings a project can propose) and the

@@ -5,7 +5,7 @@ import { TaskStore } from "../state/taskStore";
 import { Run } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
-import { ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
+import { failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
 import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
@@ -523,6 +523,7 @@ export class RunLoop {
           files: [...new Set(changes.filter((ch) => ch.taskId === t.id).map((ch) => ch.path))],
         })),
         drafts: { pending: of("pending"), accepted: of("accepted"), rejected: of("rejected") },
+        failedCommands: failedCommandsOf(runScope(c.entries, run.id)),
         verification: verification && { verified: verification.verified, evidence: verification.evidence, summary: verification.summary, missing: verification.missing, manualReview: verification.manualReview },
       },
       { signal, onError: (m) => this.host.log("warn", m) },
