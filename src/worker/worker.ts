@@ -1,5 +1,6 @@
 import { CommandSink } from "../checks/commandTerminal";
-import { ApproveCommand, CheckConfig } from "../checks/runner";
+import { ApproveCommand, CheckConfig, CheckResult, runCheck } from "../checks/runner";
+import { toPlainText } from "../checks/terminalText";
 import { answerForSubAgent, coordinatorNote, MAX_COORDINATOR_QUESTIONS } from "../coordinator/consult";
 import { MAX_REVIEW_ROUNDS, reviewFeedback, ReviewVerdict } from "../coordinator/review";
 import { callStructured } from "../llm/structured";
@@ -28,7 +29,7 @@ export interface WorkerOptions {
   provider: ModelProvider;
   /** The project as this sub-agent sees it. Writes stay pending until the user accepts them. */
   sandbox: ProjectFiles;
-  /** Folder where check commands run. Defaults to the project folder (used by research, which never writes). */
+  /** Folder where commands run: a scratch copy of the project with this sub-agent's drafts. Defaults to the project folder. */
   checkDir?: () => Promise<string>;
   /** The extension's terminal, where commands are shown as they run. */
   terminal?: CommandSink;
@@ -109,8 +110,11 @@ Follow-up rules:
 /** Said at the start of a task, where a small model weighs it most. */
 const KICKOFF = "If anything about this task is unclear (what the user meant, what research found, what other sub-agents do), ask the coordinator with ask_coordinator before you guess.";
 
+/** How sub-agents use run_command. Small models skip a tool unless they are told plainly when it is the right one. */
+const COMMAND_RULES = `Use run_command like a developer at a terminal whenever running something tells you more than reading: run the tests, a build, a type check or linter, a script, or a tool's --version. One command per call, from the project root (use "cd sub && cmd" for a subfolder). It runs in a copy of the project that has your drafts, so files it creates or changes are not kept: change files only with the file tools. Commands may wait for the user's approval. Never run commands that need a network login, never start servers or watchers that do not exit, and do not use paths outside the project.`;
+
 function researchPrompt(): string {
-  return `You are a research agent. You investigate one question about a project by reading its files. You cannot change files or run commands.
+  return `You are a research agent. You investigate one question about a project by reading its files and, when it helps, running commands. You cannot change files.
 
 Each reply is one JSON object: {"thought": "...", "call": {"tool": "...", ...}}. Make exactly one tool call per reply.
 
@@ -118,6 +122,7 @@ Tools:
 - {"tool":"list_files","glob":"src/**"}
 - {"tool":"read_file","path":"README.md","startLine":1,"endLine":200}
 - {"tool":"search","query":"functionName","glob":"src/**"}
+- {"tool":"run_command","command":"npm test","reason":"see whether the tests pass"}  (runs in a terminal the user watches; output comes back to you)
 - {"tool":"ask_coordinator","question":"..."}  (ask the coordinator, who knows the user's messages and what other researchers found)
 - {"tool":"finish","summary":"your report"}
 
@@ -126,6 +131,7 @@ Rules:
 - The coordinator reads your thought at every step as your progress report. Say what you found so far and what you look at next.
 - The coordinator reviews your report when you finish, and may send you back to answer what is missing.
 - Start broad (README, package files, the file list), then read what matters for the question.
+- ${COMMAND_RULES}
 - Paths are relative to the project root.
 - Read only what you need. When you can answer, call finish.
 - The finish summary is your report to the coordinator: concrete findings, with file names. A few short paragraphs or a list.
@@ -144,7 +150,8 @@ Tools:
 - {"tool":"write_file","path":"src/a.ts","content":"full file content"}
 - {"tool":"replace_in_file","path":"src/a.ts","search":"exact old text","replace":"new text"}
 - {"tool":"run_check","name":"${checks[0]?.name ?? "test"}"}  (available: ${checks.map((c) => c.name).join(", ") || "none"})
-- {"tool":"request_check","name":"pytest","command":"python -m pytest tests/test_api.py -q","reason":"runs the tests for the code I changed"}  (asks the user to approve a new verification command)
+- {"tool":"run_command","command":"npm test","reason":"see whether my change works"}  (runs a command in a terminal the user watches; output comes back to you)
+- {"tool":"request_check","name":"pytest","command":"python -m pytest tests/test_api.py -q","reason":"runs the tests for the code I changed"}  (adds a command that verifies your task, also when it is checked at the end)
 - {"tool":"ask_coordinator","question":"..."}  (ask the coordinator, who planned this work: what the user said, what research found, what other sub-agents do)
 - {"tool":"ask_user","question":"..."}  (only for a decision only the user can make)
 - {"tool":"finish","summary":"what you changed"}
@@ -153,6 +160,8 @@ Rules:
 - You may only change files matching: ${task.fileScope.join(", ")}
 - Read a file before changing it. Prefer replace_in_file for small edits.
 - Paths are relative to the project root.
+- ${COMMAND_RULES}
+- After changing code, run the tests or a build with run_command or run_check before you finish, when the project has them.
 - Only use request_check if you changed code and none of the available checks covers it. Never for documentation, config text or other changes that have nothing to test. Approved checks also run when your task is verified.
 - You were given only part of what the coordinator knows. If you need context you were not given (what the user meant, what research found, what another sub-agent is doing, which approach to take), use ask_coordinator before guessing. Do not ask it what you can read in the files yourself.
 - Only use ask_user if you truly cannot continue without the user's decision. Never use it to ask for review or feedback ("Anything to change?", "Let me wait for your review"): the user reviews every draft after you call finish, and can message you then.
@@ -196,6 +205,15 @@ export class Worker {
    */
   history(): ChatMessage[] {
     return compactHistory(this.messages, SAVED_HISTORY_TOKENS).slice(1);
+  }
+
+  private async commandDir(): Promise<string> {
+    return this.opts.checkDir ? await this.opts.checkDir() : this.opts.sandbox.root;
+  }
+
+  /** Puts a command and its result in the chat, like the terminal shows it. */
+  private logCommand(command: string, res: CheckResult): void {
+    this.opts.log("command", command, commandEventData(command, res));
   }
 
   /** Configured checks plus any the user approved for this task. A later approval replaces one with the same name. */
@@ -307,9 +325,16 @@ export class Worker {
         this.messages.push({ role: "user", content: answerForSubAgent(reply) });
         continue;
       }
+      if (turn.call.tool === "run_command") {
+        // Approved above (by the user, or by the "Run commands" switch).
+        const res = await runCheck({ name: "command", command: turn.call.command }, await this.commandDir(), signal, 4000, this.opts.terminal);
+        this.logCommand(turn.call.command, res);
+        this.messages.push({ role: "user", content: commandResult(turn.call.command, res) });
+        continue;
+      }
       if (turn.call.tool === "request_check") {
         if (this.opts.readOnly) {
-          this.messages.push({ role: "user", content: "Research agents cannot run commands." });
+          this.messages.push({ role: "user", content: "Research agents cannot add checks. Use run_command to run a command." });
           continue;
         }
         // Approved above. Remember it so it can be rerun by name and runs at verification.
@@ -332,7 +357,14 @@ export class Worker {
           continue;
         }
       }
-      const outcome = await executeTool(call, { sandbox: this.opts.sandbox, checks: this.checks, signal, checkDir: this.opts.checkDir, terminal: this.opts.terminal });
+      const outcome = await executeTool(call, {
+        sandbox: this.opts.sandbox,
+        checks: this.checks,
+        signal,
+        checkDir: this.opts.checkDir,
+        terminal: this.opts.terminal,
+        onCommand: (command, res) => this.logCommand(command, res),
+      });
       if (outcome.wrote) this.changed.add(outcome.wrote);
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });
     }
@@ -353,6 +385,28 @@ export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max =
     text = lineDiff(before, call.content);
   }
   return text.length > max ? `${text.slice(0, max)}\n[… cut, ${text.length - max} more characters]` : text;
+}
+
+/** What the model is told after run_command. */
+export function commandResult(command: string, res: CheckResult): string {
+  const status = res.timedOut ? "timed out" : res.code === 0 ? "exit code 0" : res.code === undefined || res.code === null ? "did not run" : `exit code ${res.code}`;
+  return `Result of \`${command}\` (${status}):\n${res.output.trim() || "(no output)"}`;
+}
+
+/** The most command output shown in the chat; the terminal has all of it. */
+const CHAT_OUTPUT_CHARS = 3000;
+
+/** The data of a "command" event: what the chat shows of a command that ran. Output is plain text, its end kept. */
+export function commandEventData(command: string, res: CheckResult): Record<string, unknown> {
+  const plain = toPlainText(res.output).trim();
+  return {
+    command,
+    passed: res.passed,
+    code: res.code,
+    timedOut: res.timedOut,
+    durationMs: res.durationMs,
+    output: plain.length > CHAT_OUTPUT_CHARS ? `[… earlier output in the terminal]\n${plain.slice(-CHAT_OUTPUT_CHARS)}` : plain,
+  };
 }
 
 /** Thinking can be long; keep enough to follow along without bloating the log. */
