@@ -10,6 +10,7 @@ import {
   OpenAICompatibleConfig,
   OpenAICompatibleProvider,
   ProviderError,
+  replyRoom,
   retryAfter,
 } from "../src/providers/openaiCompatible";
 
@@ -202,7 +203,21 @@ describe("OpenAICompatibleProvider", () => {
     await new OpenAICompatibleProvider({ ...base, maxOutputTokens: 4000 }, f.fn).chat({ messages: [] });
     await new OpenAICompatibleProvider({ ...base, maxOutputTokens: 4000 }, f.fn).chat({ messages: [], maxTokens: 500 });
     await new OpenAICompatibleProvider(base, f.fn).chat({ messages: [] });
-    expect(f.calls.map((c) => JSON.parse(c.init.body as string).max_tokens)).toEqual([4000, 500, undefined]);
+    // Without a setting, the reply is still kept within the context window.
+    expect(f.calls.map((c) => JSON.parse(c.init.body as string).max_tokens)).toEqual([4000, 500, 32768 - 256]);
+  });
+
+  it("keeps the reply inside the context window after the prompt", async () => {
+    const f = fakeFetch(200, { choices: [{ message: { content: "{}" } }] });
+    const long = "x".repeat(3500 * 10); // about 10,000 tokens
+    await new OpenAICompatibleProvider({ ...base, contextWindow: 16384, maxOutputTokens: 8192 }, f.fn).chat({ messages: [{ role: "user", content: long }] });
+    await new OpenAICompatibleProvider({ ...base, contextWindow: 16384 }, f.fn).chat({ messages: [{ role: "user", content: "hi" }] });
+    const sent = f.calls.map((c) => JSON.parse(c.init.body as string).max_tokens as number);
+    expect(sent[0]).toBe(16384 - 10000 - 4 - 256);
+    expect(sent[1]).toBe(16384 - 1 - 4 - 256);
+    // A nearly full window still leaves room for a short reply.
+    expect(replyRoom([{ role: "user", content: "x".repeat(3500 * 20) }], 16384)).toBe(512);
+    expect(replyRoom([], 0)).toBeUndefined();
   });
 
   it("explains a 504 and carries Retry-After", async () => {

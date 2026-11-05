@@ -33,6 +33,7 @@ With Ollama, the model is unloaded at the end (`keep_alive: 0`) so it does not h
 | `AGENTIC_E2E_CONTEXT` | `16384` | Context window the extension plans its prompts for. |
 | `AGENTIC_E2E_STRUCTURED` | `json_schema` | Structured output mode (`json_schema`, `json_object`, `none`). |
 | `AGENTIC_E2E_TEMPERATURE` | `0.2` | Sampling temperature. |
+| `AGENTIC_E2E_MAX_OUTPUT` | `8192` | Longest reply in tokens, as the extension's `agentic.model.maxOutputTokens` (0: no limit). |
 | `AGENTIC_E2E_ONLY` | all | Comma-separated scenario names. |
 | `AGENTIC_E2E_PARALLEL` | `1` | Sub-agents at once. One GPU serves one request at a time anyway. |
 | `AGENTIC_E2E_STALL_MIN` | `3` | Fail as stalled when no model call runs and the chat has not changed for this many minutes. |

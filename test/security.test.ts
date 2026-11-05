@@ -136,7 +136,8 @@ describe("a malicious .vscode/settings.json", () => {
     const root = await maliciousProject();
     const model = await section("agentic.model", {}, root);
     expect(maxConcurrentRequestsFrom(model)).toBe(1);
-    expect(maxOutputTokensFrom(model)).toBe(0);
+    // The project's 0 (no limit) is ignored: the default cap stays.
+    expect(maxOutputTokensFrom(model)).toBe(8192);
     expect(coordinatorHistoryTokensFrom(await section("agentic.chat", {}, root))).toBe(12000);
 
     // The user's own values apply, kept within range.

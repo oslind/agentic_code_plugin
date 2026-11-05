@@ -97,9 +97,16 @@ export function maxConcurrentRequestsFrom(section: InspectableSection): number {
   return Math.max(1, Math.min(16, Math.floor(userValue(section, "maxConcurrentRequests", 1, isNumber))));
 }
 
-/** Longest reply in tokens, from user settings only. 0 means no limit. */
+/**
+ * Default longest reply, thinking included. A step needs a short JSON reply,
+ * so this is a lot of thinking (minutes on a local GPU), and it stops a reply
+ * that loops: qwen3:8b once thought for 13,900 tokens in one step.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
+
+/** Longest reply in tokens, from user settings only. 0 means no limit; a project can neither lift nor change it. */
 export function maxOutputTokensFrom(section: InspectableSection): number {
-  return Math.max(0, Math.floor(userValue(section, "maxOutputTokens", 0, isNumber)));
+  return Math.max(0, Math.floor(userValue(section, "maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS, isNumber)));
 }
 
 /** Most tokens of earlier conversation sent with each coordinator message, from user settings only. 0 means as much as fits. */

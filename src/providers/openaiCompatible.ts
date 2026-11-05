@@ -1,3 +1,4 @@
+import { estimateTokens } from "../context/budget";
 import { ChatPhase, ChatProgress, ChatRequest, ChatResponse, ModelProvider, StructuredOutputMode } from "./types";
 
 /** Reports a request's phase to its listener, if it has one. Display only, so a listener's error is ignored. */
@@ -71,6 +72,22 @@ export class ProviderError extends Error {
 }
 
 type FetchFn = typeof fetch;
+
+/** Tokens kept free besides the prompt estimate, since token counts are only estimated. */
+const CONTEXT_MARGIN = 256;
+/** A reply is never limited below this, even when the prompt estimate says the context is nearly full. */
+const MIN_REPLY_TOKENS = 512;
+
+/**
+ * Most reply tokens that still fit in the context window after the prompt,
+ * so a long thinking run stops at the window instead of overflowing it after
+ * minutes of work. Undefined without a context window.
+ */
+export function replyRoom(messages: ChatRequest["messages"], contextWindow: number): number | undefined {
+  if (!(contextWindow > 0)) return undefined;
+  const prompt = messages.reduce((n, m) => n + estimateTokens(m.content) + 4, 0);
+  return Math.max(MIN_REPLY_TOKENS, contextWindow - prompt - CONTEXT_MARGIN);
+}
 
 /**
  * Talks to any server that implements the OpenAI chat completions API.
@@ -173,7 +190,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     };
     if (body.stream) body.stream_options = { include_usage: true };
     const limit = this.config.maxOutputTokens && this.config.maxOutputTokens > 0 ? this.config.maxOutputTokens : undefined;
-    const maxTokens = request.maxTokens !== undefined && limit !== undefined ? Math.min(request.maxTokens, limit) : (request.maxTokens ?? limit);
+    const caps = [request.maxTokens, limit, replyRoom(request.messages, this.config.contextWindow)].filter((n): n is number => n !== undefined);
+    const maxTokens = caps.length ? Math.min(...caps) : undefined;
     if (maxTokens !== undefined) {
       body.max_tokens = maxTokens;
     }

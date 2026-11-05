@@ -7,6 +7,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { OpenAICompatibleProvider } from "../src/providers/openaiCompatible";
 import { RetryingProvider } from "../src/providers/retrying";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "../src/userSettings";
 import { ChatRequest, ChatResponse, ModelProvider, StructuredOutputMode } from "../src/providers/types";
 
 /** How the suite reaches the model, from AGENTIC_E2E_* environment variables. */
@@ -17,6 +18,8 @@ export interface LiveConfig {
   contextWindow: number;
   structuredOutput: StructuredOutputMode;
   temperature: number;
+  /** The extension's default reply cap unless AGENTIC_E2E_MAX_OUTPUT says otherwise (0: no limit). */
+  maxOutputTokens: number;
 }
 
 /**
@@ -34,6 +37,7 @@ export function liveConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LiveCon
     structuredOutput: (env.AGENTIC_E2E_STRUCTURED as StructuredOutputMode) || "json_schema",
     // Low, so runs are as repeatable as a local model allows.
     temperature: env.AGENTIC_E2E_TEMPERATURE !== undefined ? Number(env.AGENTIC_E2E_TEMPERATURE) : 0.2,
+    maxOutputTokens: env.AGENTIC_E2E_MAX_OUTPUT !== undefined ? Math.max(0, Number(env.AGENTIC_E2E_MAX_OUTPUT) || 0) : DEFAULT_MAX_OUTPUT_TOKENS,
   };
 }
 
@@ -51,6 +55,7 @@ export function liveProvider(c: LiveConfig, log: (message: string) => void): Mod
       structuredOutput: c.structuredOutput,
       stream: true,
       maxConcurrentRequests: 1,
+      maxOutputTokens: c.maxOutputTokens,
     },
     fetch,
     (from, to, error) => log(`server rejected structured output "${from}" (${error}); using "${to}"`),
