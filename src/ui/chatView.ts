@@ -19,7 +19,7 @@ type FromView =
   | { type: "cancel" }
   | { type: "settings" }
   | { type: "runCommand"; command: "showTaskLog" | "retryFailed"; runId: string }
-  | { type: "review"; runId: string; action: "show" | "open" | "accept" | "reject" | "resolve"; path?: string; taskId?: string; choice?: ConflictChoice }
+  | { type: "review"; runId: string; action: "show" | "open" | "accept" | "reject" | "resolve" | "revert"; path?: string; taskId?: string; choice?: ConflictChoice }
   | { type: "decide"; entryId: string; decision: unknown }
   | { type: "messageAgent"; runId: string; taskId: string; text: string }
   | { type: "endAgentChat"; runId: string; taskId: string }
@@ -28,7 +28,7 @@ type FromView =
   | { type: "openLink"; url: string };
 
 const RUN_COMMANDS = new Set(["showTaskLog", "retryFailed"]);
-const REVIEW_ACTIONS = new Set(["show", "open", "accept", "reject", "resolve"]);
+const REVIEW_ACTIONS = new Set(["show", "open", "accept", "reject", "resolve", "revert"]);
 const CONFLICT_CHOICES = new Set(["other", "draft", "both"]);
 /** A workspace-relative path as the page sends it back. The store only holds paths the policy already accepted. */
 const isRelPath = (x: unknown): x is string => typeof x === "string" && x.length > 0 && x.length < 1000 && !x.startsWith("/") && !x.split("/").includes("..");

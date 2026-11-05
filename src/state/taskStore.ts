@@ -30,9 +30,10 @@ export class TaskStore {
     return path.join(this.root, "runs", runId);
   }
 
-  async createRun(request: string, workspaceRoot?: string, kind?: Run["kind"], briefing?: string): Promise<Run> {
+  async createRun(request: string, workspaceRoot?: string, kind?: Run["kind"], briefing?: string, userRequest?: string): Promise<Run> {
     const time = this.now().toISOString();
     const run: Run = { id: randomUUID(), request, kind, workspaceRoot, briefing, createdAt: time, updatedAt: time, tasks: [] };
+    if (userRequest?.trim()) run.userRequest = userRequest.trim();
     await this.save(run);
     await this.log({ runId: run.id, type: "run_created", message: request });
     return run;
@@ -172,7 +173,7 @@ export class TaskStore {
   }
 
   /** Records results on a task without changing its status. */
-  updateTask(runId: string, taskId: string, patch: Partial<Pick<Task, "changedFiles" | "summary" | "unfinished">>): Promise<Task> {
+  updateTask(runId: string, taskId: string, patch: Partial<Pick<Task, "changedFiles" | "summary" | "unfinished" | "autoRetries">>): Promise<Task> {
     return this.lock.run(async () => {
       const run = await this.load(runId);
       const task = run.tasks.find((t) => t.id === taskId);
@@ -270,9 +271,29 @@ export class TaskStore {
     });
   }
 
+  /**
+   * Marks the newest accepted change of a file reverted: the user put the file
+   * back as it was before that accept. Resolves the change, or undefined if
+   * the file has no accepted change.
+   */
+  markReverted(runId: string, filePath: string): Promise<PendingChange | undefined> {
+    return this.lock.run(async () => {
+      const run = await this.load(runId);
+      const change = latestAccepted(run.changes, filePath);
+      if (!change) return undefined;
+      change.status = "reverted";
+      run.updatedAt = this.now().toISOString();
+      await this.save(run);
+      await this.log({ runId, taskId: change.taskId, type: "change_reverted", message: filePath, data: { deleted: change.original === null } });
+      return change;
+    });
+  }
+
   /** Puts a failed or cancelled task back in the queue. What its last attempt wrote is kept for the retry. */
   async retryTask(runId: string, taskId: string): Promise<Task> {
-    const task = await this.setStatus(runId, taskId, "pending");
+    await this.setStatus(runId, taskId, "pending");
+    // Retried by hand: it gets its automatic retries again.
+    const task = await this.updateTask(runId, taskId, { autoRetries: undefined });
     await this.log({ runId, taskId, type: "retry_requested", message: task.title });
     return task;
   }
@@ -294,6 +315,13 @@ export class TaskStore {
     }
     return stuck;
   }
+}
+
+/** The newest accepted change of a file: the one whose text is on disk, and the only one that can be reverted. */
+export function latestAccepted(changes: PendingChange[] | undefined, filePath: string): PendingChange | undefined {
+  const list = changes ?? [];
+  for (let i = list.length - 1; i >= 0; i--) if (list[i]!.path === filePath && list[i]!.status === "accepted") return list[i];
+  return undefined;
 }
 
 /** Pending tasks whose dependencies are all done. */

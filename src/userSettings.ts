@@ -47,7 +47,12 @@ export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens"] as const;
  * calls. A project could otherwise turn a run into many more requests to
  * your model server.
  */
-export const USER_ONLY_DELEGATION_KEYS = ["checkIns", "progressEvery", "reviewRounds", "maxModelCallsPerRun", "verify", "verifyRounds"] as const;
+export const USER_ONLY_DELEGATION_KEYS = ["checkIns", "progressEvery", "reviewRounds", "maxModelCallsPerRun", "verify", "verifyRounds", "autoRetries"] as const;
+
+/** Times a failed sub-agent is started again on its own, 0 (off) to 3, default 1. From user settings only: each retry calls the model again. */
+export function autoRetriesFrom(section: InspectableSection): number {
+  return Math.max(0, Math.min(3, Math.floor(userValue(section, "autoRetries", 1, isNumber))));
+}
 
 /** Whether the coordinator verifies a request, and its most fix-up rounds (0 to 5), from user settings only. */
 export function verificationFrom(section: InspectableSection): { verify: boolean; verifyRounds: number } {

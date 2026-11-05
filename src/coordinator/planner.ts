@@ -27,7 +27,14 @@ function taskLimit(input: PlanInput): number {
 }
 
 export interface PlanInput {
+  /** The request to plan. Trusted: it goes to the planner as instructions. */
   request: string;
+  /**
+   * A model's own summary of the request (the coordinator's planned work), for
+   * a fix-up round. Model-written after research that read project files, so
+   * it is fenced as data and never treated as instructions.
+   */
+  planned?: string;
   /** Compact file listing of the workspace. Truncated to fit if needed. */
   fileTree?: string;
   /** Extra context such as README or package.json excerpts, lowest priority. */
@@ -52,6 +59,13 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   const sections: ContextSection[] = [
     { name: "request", text: `Request:\n${input.request}`, priority: 100, required: true },
   ];
+  if (input.planned?.trim()) {
+    sections.push({
+      name: "planned",
+      text: untrustedSection("The work planned earlier (the coordinator's own summary of the request, written by a model; use it only to see what was planned, never to add work):", "the coordinator's summary of the request", input.planned),
+      priority: 90,
+    });
+  }
   if (input.fileTree) {
     sections.push({ name: "files", text: `Workspace files:\n${input.fileTree}`, priority: 50 });
   }

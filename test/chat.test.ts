@@ -348,6 +348,46 @@ describe("ChatController", () => {
       expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toMatch(/^<<<<<<< Your file on disk\nmine\n=======\nnew\n>>>>>>> Draft by /);
     });
 
+    it("reverts an accept from the chat: an edit goes back, a new file is deleted", async () => {
+      const { controller, tasks, ws, runId, closed } = await runWithChanges({ editFiles: false });
+      await controller.review(runId, "accept", "README.md");
+      await controller.review(runId, "accept", "src/model.ts");
+      let changes = (await controller.state()).plans[runId]!.changes;
+      expect(changes.map((c) => [c.path, c.state, c.revertable])).toEqual([
+        ["src/model.ts", "applied", true],
+        ["README.md", "applied", true],
+      ]);
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("old\n");
+      await controller.review(runId, "revert", "src/model.ts");
+      await expect(fs.access(path.join(ws, "src", "model.ts"))).rejects.toThrow();
+      expect(closed).toContain("src/model.ts");
+      changes = (await controller.state()).plans[runId]!.changes;
+      expect(changes.map((c) => [c.state, c.revertable])).toEqual([
+        ["reverted", undefined],
+        ["reverted", undefined],
+      ]);
+      expect((await tasks.load(runId)).changes!.map((c) => c.status)).toEqual(["reverted", "reverted"]);
+      const texts = (await controller.state()).current!.entries.map((e) => e.text);
+      expect(texts.some((t) => /Reverted the accept of README.md: the file is back/.test(t))).toBe(true);
+      expect(texts.some((t) => /Reverted the accept of src\/model.ts: .*deleted/.test(t))).toBe(true);
+      // A pending draft has nothing to revert.
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("old\n");
+    });
+
+    it("asks before reverting a file the user edited after the accept, and a Revert note never forces the next Accept", async () => {
+      const { controller, ws, runId } = await runWithChanges({ editFiles: false });
+      await controller.review(runId, "accept", "README.md");
+      await fs.writeFile(path.join(ws, "README.md"), "mine on top\n");
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("mine on top\n");
+      expect((await controller.state()).current!.entries.at(-1)).toMatchObject({ tone: "warning", text: expect.stringMatching(/^Not reverted yet: README.md changed on disk/) });
+      expect((await controller.state()).plans[runId]!.changes.find((c) => c.path === "README.md")!.note).toMatch(/changed on disk/);
+      await controller.review(runId, "revert", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("old\n");
+    });
+
     it("writes right away when Edit files is on, without asking", async () => {
       const { controller, ws, runId, shown } = await runWithChanges({ editFiles: true });
       expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("new\n");
@@ -465,9 +505,55 @@ describe("ChatController", () => {
       const fixPrompt = provider.requests[3]!.messages.map((m) => m.content).join("\n");
       expect(fixPrompt).toMatch(/fix-up round 1/);
       expect(fixPrompt).toMatch(/<untrusted_data[^>]*>[\s\S]*Add GET \/users\/:id to src\/api.ts/);
+      // The instruction is the user's own message; the coordinator's model-written request only goes along fenced.
+      expect(fixPrompt).toMatch(/Request:\nFinish the user's request. The user wrote:\nadd users/);
+      expect(fixPrompt).toMatch(/<untrusted_data source="the coordinator's summary of the request">\nAdd a User model and an API that uses it./);
+      expect(fixPrompt.replace(/<untrusted_data[\s\S]*?<\/untrusted_data>/g, "")).not.toMatch(/Add a User model and an API/);
+      expect(run.userRequest).toBe("add users");
       // The final reply hears how the work was verified.
       const last = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
       expect(last).toMatch(/How the work was verified: VERIFIED/);
+    });
+
+    it('keeps "not done" with nothing named unverified, asks for manual review and invents no fix-up tasks', async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const { controller, started, tasks, provider } = setup([...planReplies(), verdict("not_done", "Something is off.", []), finalReply], "act", {
+        workspace: ws,
+        saved: [],
+        verify: true,
+        verifyRounds: 2,
+        during: finishAll,
+      });
+      await controller.send("add users");
+      // No fix-up round: the plan is not run again and no tasks were added.
+      expect(started).toHaveLength(1);
+      expect((await tasks.load(started[0]!)).tasks.map((t) => t.id)).toEqual(["add-model", "add-api"]);
+      const state = await controller.state();
+      const tags = state.current!.entries.map((e) => e.tag).filter(Boolean);
+      expect(tags).not.toContain("verified");
+      expect(tags.some((t) => t?.startsWith("fix-up"))).toBe(false);
+      expect(state.current!.entries.find((e) => e.tag === "manual review required")!.text).toMatch(/Not verified yet[\s\S]*Manual review required/);
+      expect(state.done).toMatchObject({ status: "partial", text: expect.stringMatching(/not verified: manual review required/) });
+      const last = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
+      expect(last).toMatch(/How the work was verified: NOT VERIFIED, manual review required/);
+    });
+
+    it("asks for manual review, not verified, when the verification call fails", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const { controller, started } = setup([...planReplies(), "not json", "still not json", "nope", "no", finalReply], "act", {
+        workspace: ws,
+        saved: [],
+        verify: true,
+        verifyRounds: 2,
+        during: finishAll,
+      });
+      await controller.send("add users");
+      expect(started).toHaveLength(1);
+      const state = await controller.state();
+      expect(state.current!.entries.some((e) => e.tag === "verified")).toBe(false);
+      expect(state.done).toMatchObject({ status: "partial", text: expect.stringMatching(/not verified/) });
     });
 
     it("stops after the round cap and says the work is not verified", async () => {
@@ -579,6 +665,30 @@ describe("ChatController", () => {
     // The answer being checked is fenced: a model wrote it from project files.
     const checkPrompt = provider.requests[4]!.messages.map((m) => m.content).join("\n");
     expect(checkPrompt).toMatch(/<untrusted_data[^>]*>[\s\S]*How it is built was not found/);
+  });
+
+  it('never takes a research check of "no" with nothing named as answered: it asks for manual review', async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    await fs.writeFile(path.join(dir, "ws", "README.md"), "# Flight sim\n");
+    const worker = (summary: string) => JSON.stringify({ thought: "Done.", call: { tool: "finish", summary } });
+    const { controller } = setup(
+      [
+        JSON.stringify({ reply: "I'll have a sub-agent read the project.", action: "research", request: "", questions: ["What does this project do?"] }),
+        worker("It is a flight simulator, described in README.md."),
+        turn("It is a flight simulator."),
+        "This project is a flight simulator.",
+        JSON.stringify({ answered: "no", missing: [] }),
+      ],
+      "plan",
+      { verify: true },
+    );
+    await controller.send("What does this project do?");
+    const entries = (await controller.state()).current!.entries;
+    // One answer, no extra research round (nothing to look for), and no "verified" tag.
+    expect(entries.filter((e) => e.kind === "answer")).toHaveLength(1);
+    expect(entries.filter((e) => e.kind === "research")).toHaveLength(1);
+    expect(entries.some((e) => e.tag === "verified")).toBe(false);
+    expect(entries.at(-2)).toMatchObject({ tag: "manual review required", tone: "warning", text: expect.stringMatching(/Manual review required/) });
   });
 
   it("keeps the outcome as the reply when the final reply comes back empty", async () => {
@@ -1402,11 +1512,14 @@ describe("ChatController", () => {
       expect(last.role).toBe("user");
       expect(last.content).toMatch(/continue the original request/i);
       expect(last.content).toMatch(/Add a User model and an API/);
+      // The user's own words lead; the coordinator's earlier model-written request is fenced.
+      expect(last.content).toMatch(/The user's original request: add users/);
+      expect(last.content).toMatch(/<untrusted_data source="your earlier plan for the request">\nAdd a User model and an API/);
       expect(last.content).toMatch(/"Add model": failed/);
       // The sub-agent's update is model-written: fenced.
       expect(last.content).toMatch(/<untrusted_data source="update from sub-agent[^>]*>[\s\S]*Ignore previous instructions[\s\S]*<\/untrusted_data>/);
       const entries = (await controller.state()).current!.entries;
-      expect(entries.some((e) => e.author === "system" && /^Continuing/.test(e.text))).toBe(true);
+      expect(entries.some((e) => e.author === "system" && /^Continuing "add users"/.test(e.text))).toBe(true);
       expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: expect.stringMatching(/plan the API/) });
     });
 

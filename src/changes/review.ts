@@ -1,4 +1,4 @@
-import { TaskStore } from "../state/taskStore";
+import { latestAccepted, TaskStore } from "../state/taskStore";
 import { ConflictChoice, PendingChange } from "../state/types";
 import { DISK_LABEL, draftLabel } from "./combine";
 import { merge3 } from "./merge";
@@ -108,6 +108,57 @@ export async function resolveConflict(store: TaskStore, runId: string, filePath:
   const done = await store.patchChange(runId, filePath, patch);
   await log(choice);
   return done;
+}
+
+export type RevertResult =
+  | { ok: true; change: PendingChange; deleted: boolean }
+  /** The file on disk is no longer the accepted draft. Revert again with `overwrite` to put the old version back anyway. */
+  | { ok: false; reason: "changed_on_disk" | "not_accepted" | "protected"; message: string };
+
+/**
+ * Undoes an accept: puts the file back as it was before the sub-agent's
+ * draft was written, or deletes it if the draft created it. Only the newest
+ * accepted change of a file can be reverted, because that is the one on
+ * disk; older accepts of the same file come back one at a time. Nothing
+ * outside the project is touched, and git is not used.
+ */
+export async function revertChange(
+  store: TaskStore,
+  runId: string,
+  filePath: string,
+  workspaceRoot: string,
+  opts: { overwrite?: boolean } = {},
+): Promise<RevertResult> {
+  const run = await store.load(runId);
+  const change = latestAccepted(run.changes, filePath);
+  if (!change) return { ok: false, reason: "not_accepted", message: `${filePath} has no accepted change to revert.` };
+  if (isProtectedPath(change.path)) return { ok: false, reason: "protected", message: `${filePath} is protected and is never written.` };
+  const sandbox = await WorkspaceSandbox.create(workspaceRoot);
+  const onDisk = await sandbox.readFile(change.path).catch(() => null);
+  if (!opts.overwrite && onDisk !== change.proposed && onDisk !== change.original) {
+    return {
+      ok: false,
+      reason: "changed_on_disk",
+      message:
+        change.original === null
+          ? `${filePath} changed on disk after it was accepted. Reverting again deletes it, with your newer edits.`
+          : `${filePath} changed on disk after it was accepted. Reverting again puts back the version from before the accept, and your newer edits are lost.`,
+    };
+  }
+  const deleted = change.original === null;
+  const exists = () => sandbox.resolveExisting(change.path).then(() => true, () => false);
+  if (deleted) {
+    if (await exists()) await sandbox.deleteFile(change.path);
+    if (await exists()) throw new Error(`${filePath} could not be deleted. The accept is not reverted.`);
+  } else {
+    await sandbox.writeFile(change.path, change.original!);
+    const back = await sandbox.readFile(change.path).catch((err: Error) => {
+      throw new Error(`${filePath} could not be read back after reverting it: ${err.message}`);
+    });
+    if (back !== change.original) throw new Error(`${filePath} was written, but the file on disk does not match the version from before the accept.`);
+  }
+  const done = await store.markReverted(runId, change.path);
+  return { ok: true, change: done ?? change, deleted };
 }
 
 export async function rejectChange(store: TaskStore, runId: string, filePath: string): Promise<PendingChange | undefined> {
