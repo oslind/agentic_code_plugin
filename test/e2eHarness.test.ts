@@ -97,6 +97,17 @@ describe("end-to-end harness", () => {
     expect(result.failures[0]).toMatch(/^timed out after \d+ s\. Last entry before it was stopped: user/);
   });
 
+  it("stops a scenario whose model request goes silent, long before the scenario timeout", async () => {
+    const hung: ModelProvider = {
+      model: "hung",
+      contextWindow: 16384,
+      chat: (req) => new Promise((_resolve, reject) => req.signal?.addEventListener("abort", () => reject(new Error("aborted")))),
+    };
+    const result = await runScenario(research, hung, { stallMs: 60000, silenceMs: 1500, timeoutMs: 60000, maxParallel: 1 });
+    expect(result.failures[0]).toMatch(/^model request silent: call 1 sent nothing back for \d+ s/);
+    expect(result.durationMs).toBeLessThan(15000);
+  });
+
   it("counts a model call in flight as activity, but nothing at all as a stall", async () => {
     const p = new RecordingProvider(fakeModel());
     const before = p.lastActivity;

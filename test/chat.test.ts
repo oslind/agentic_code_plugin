@@ -2209,6 +2209,17 @@ describe("routing follows the model's own structured choice", () => {
     expect(route({ ...promise, goal: "answer", complete: false }, "find dead code", true, false)).toMatchObject({ action: "none", researchLimitReached: true });
   });
 
+  it("plans a change the model only promised, even when it calls the reply complete", () => {
+    // qwen3:8b in the end-to-end suite: a promise, no action, and "complete".
+    const promised = { reply: "I'll draft the usage guide and share it for your review.", action: "none" as const, request: "", goal: "change" as const, complete: true };
+    const out = route(promised, "Write docs/usage.md with a short guide. I want to review it before it is saved.");
+    expect(out.action).toBe("plan");
+    expect(out.request).toMatch(/docs\/usage\.md[\s\S]*draft the usage guide/);
+    // Asking the user first is a real "none".
+    const asks = { reply: "Should the guide cover night mode too?", action: "none" as const, request: "", goal: "change" as const, complete: true };
+    expect(route(asks, "Write docs/usage.md")).toBe(asks);
+  });
+
   it("leaves plain answers alone, whatever the reply says", () => {
     for (const t of [
       { reply: "It is a flight simulator, as the research found.", action: "none" as const, request: "", goal: "answer" as const, complete: true },

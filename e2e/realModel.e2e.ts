@@ -21,6 +21,7 @@ const only = (env.AGENTIC_E2E_ONLY ?? "")
 const scenarios = SCENARIOS.filter((s) => !only.length || only.includes(s.name));
 const minutes = (name: string, fallback: number) => (Number(env[name]) || fallback) * 60000;
 const stallMs = minutes("AGENTIC_E2E_STALL_MIN", 3);
+const silenceMs = minutes("AGENTIC_E2E_SILENCE_MIN", 5);
 const timeoutMs = minutes("AGENTIC_E2E_TIMEOUT_MIN", replay ? 2 : 30);
 
 const E2E_DIR = __dirname;
@@ -104,7 +105,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
         provider = new ReplayProvider(recorded);
       }
       log(`${scenario.name}: starting`);
-      const result = await runScenario(scenario, provider, { stallMs, timeoutMs, maxParallel: Number(env.AGENTIC_E2E_PARALLEL) || 1, outDir, log: (m) => log(`${scenario.name}: ${m}`) });
+      const result = await runScenario(scenario, provider, { stallMs, silenceMs, timeoutMs, maxParallel: Number(env.AGENTIC_E2E_PARALLEL) || 1, outDir, log: (m) => log(`${scenario.name}: ${m}`) });
       results.push(result);
       await saveRecording(path.join(outDir, "model-calls.jsonl"), result.calls);
       if (provider instanceof ReplayProvider && provider.drift.length) log(`${scenario.name}: ${provider.drift.length} prompt(s) changed since the recording (replies still played in order)`);
