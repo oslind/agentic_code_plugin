@@ -76,7 +76,7 @@ export interface ChatHost {
     maxModelCallsPerRun?: number;
     /** Whether the coordinator verifies a request before it calls it done. Unset: off. */
     verify?: boolean;
-    /** Most fix-up rounds when verification finds work left (agentic.delegation.verifyRounds). */
+    /** Most fix-up rounds when verification finds work left (from agentic.delegation.oversight). */
     verifyRounds?: number;
   };
   /** Folders linked, not copied, into a scratch copy of the project, such as node_modules. */
@@ -928,8 +928,8 @@ export class ChatController {
   /**
    * Every logged step of a supervised run passes through here. The monitor
    * counts steps without a model call; only a sign of trouble makes the
-   * coordinator look at the sub-agent (at most agentic.delegation.checkIns
-   * times per sub-agent, one look at a time).
+   * coordinator look at the sub-agent (at most the oversight level's check-ins
+   * per sub-agent, one look at a time).
    */
   private watch(event: RunEvent, run: Run): void {
     const s = this.supervised.get(event.runId);
@@ -1077,7 +1077,7 @@ export class ChatController {
   /**
    * A sub-agent called finish. Before its result counts, the coordinator
    * reads the report and the drafts and accepts them, or sends the sub-agent
-   * back with feedback (at most agentic.delegation.reviewRounds times).
+   * back with feedback (at most as often as the oversight level allows).
    *
    * When it cannot be sent back (too few steps left, or sent back as often as
    * allowed), the result is still reviewed, and a "revise" goes to the user.
@@ -1609,7 +1609,7 @@ export class ChatController {
         // Before the answer goes out, the coordinator checks that it answers the question, and sends
         // researchers after what is still open while research rounds are left.
         const limits = this.host.delegationLimits();
-        // Extra research rounds the check may start (agentic.delegation.verifyRounds), within the research round limit.
+        // Extra research rounds the check may start (from the oversight level), within the research round limit.
         let moreRounds = verifyRoundLimit(limits.verifyRounds);
         for (;;) {
           const review = limits.verify ? (answer: string) => this.checkResearchAnswer(c.workspaceRoot, text, answer, abort.signal) : undefined;
@@ -1972,7 +1972,7 @@ export class ChatController {
    * together and reads the drafts against the request. If something is left,
    * it plans fix-up tasks for exactly that, runs them in the same run (so
    * they build on the drafts), and verifies again, at most
-   * agentic.delegation.verifyRounds times. Every write and command still
+   * as many times as the oversight level allows. Every write and command still
    * needs the same approval as before, and drafts stay pending.
    */
   private async verifyUntilDone(
@@ -2004,8 +2004,8 @@ export class ChatController {
             tone: "warning",
             tag: "not verified",
             text: maxRounds
-              ? `I sent sub-agents back ${maxRounds} time(s) and still cannot verify that the request is done, so I stopped here. Tell me how to go on, or raise agentic.delegation.verifyRounds to allow more rounds.`
-              : "Fix-up rounds are off (agentic.delegation.verifyRounds is 0), so I did not send sub-agents back for what is left.",
+              ? `I sent sub-agents back ${maxRounds} time(s) and still cannot verify that the request is done, so I stopped here. Tell me how to go on, or set agentic.delegation.oversight to "thorough" to allow more rounds.`
+              : "Fix-up rounds are off at this oversight level, so I did not send sub-agents back for what is left.",
           });
           return { outcome, verification };
         }

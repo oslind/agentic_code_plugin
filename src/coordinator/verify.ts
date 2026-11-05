@@ -19,7 +19,7 @@ import { ChatMessage, ModelProvider } from "../providers/types";
  *
  * Facts beat the model: a failed check or an unfinished task means not done,
  * whatever the model says. When it is not done, the chat plans fix-up tasks
- * for what is left and runs them, up to agentic.delegation.verifyRounds times.
+ * for what is left and runs them, up to the fix-up rounds of the oversight level (agentic.delegation.oversight).
  */
 
 /** Most fix-up rounds after one request, whatever the setting says. */
