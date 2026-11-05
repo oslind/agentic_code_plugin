@@ -304,11 +304,15 @@
     );
   }
 
-  /** The conversation with the coordinator. Sub-agent steps live on their cards in the Agents tab. */
+  /**
+   * The conversation with the coordinator. Sub-agent steps live on their cards
+   * in the Agents tab, except what the user should see as it happens:
+   * questions, approvals, and the commands they ran with their output.
+   */
   function feedEntry(e) {
     if (isWaiting(e)) return false;
     if (e.kind === "spawn" || e.kind === "direct") return false;
-    if (e.author === "agent") return e.kind === "question" || e.kind === "approval" || e.kind === "consult";
+    if (e.author === "agent") return e.kind === "question" || e.kind === "approval" || e.kind === "consult" || e.kind === "command";
     return true;
   }
 
@@ -498,6 +502,7 @@
     if (kind === "checks") label = "Coordinator · checks";
     if (kind === "consult") label = entry.author === "agent" ? who + " asks the coordinator" : "Coordinator → " + (entry.agentName || "sub-agent");
     if (kind === "checkin") label = "Coordinator · checked on " + (entry.agentName || "a sub-agent");
+    if (kind === "command") label = who + " ran a command";
     if (kind === "question" && entry.author === "coordinator" && entry.agentName) label = "Coordinator asks, for " + entry.agentName;
     return el(
       "div",
@@ -511,7 +516,27 @@
       kind === "plan" || kind === "research" ? planCard(entry) : null,
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
       kind === "checks" ? checkList(entry) : null,
+      commandBlock(entry),
       entry.decided ? el("div", { class: "decided" }, "✓ " + entry.decided) : null,
+    );
+  }
+
+  /**
+   * A command a sub-agent ran, as the terminal shows it: the command, then the
+   * end of its output. Both come from the project, so they are only ever text.
+   */
+  function commandBlock(entry) {
+    const c = entry.kind === "command" && entry.command;
+    if (!c) return null;
+    const out = String(c.output || "").trim();
+    const lines = out.split("\n");
+    const body = out ? el("pre", { class: "command-output" }, out) : el("div", { class: "muted small" }, "(no output)");
+    return el(
+      "div",
+      { class: "command-run" },
+      el("code", { class: "command" }, "$ " + String(c.line || "")),
+      // Short output is shown open; long output folds, keeping the chat readable.
+      out && lines.length > 12 ? details("co:" + entry.id, "Output (" + lines.length + " lines)", body) : body,
     );
   }
 
@@ -743,6 +768,7 @@
       e.thought && e.thought !== e.text ? el("div", { class: "thought" }, e.thought) : null,
       coord && e.quote ? el("div", { class: "quote" }, e.quote) : null,
       longText("s:" + e.id, e.text, undefined, mine),
+      commandBlock(e),
       e.thinking ? details("t:" + e.id, "Thinking", el("pre", { class: "thinking-text" }, e.thinking)) : null,
       e.decided ? el("div", { class: "decided" }, "✓ " + e.decided) : null,
     );

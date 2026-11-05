@@ -1,5 +1,5 @@
 import { CommandSink } from "../checks/commandTerminal";
-import { CheckConfig, runCheck } from "../checks/runner";
+import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
 import { ToolCall } from "../tools/protocol";
 import { isSecretPath } from "../tools/policy";
@@ -17,6 +17,8 @@ export interface ToolContext {
   checkDir?: () => Promise<string>;
   /** The extension's terminal, where commands are shown as they run. */
   terminal?: CommandSink;
+  /** Called after a command ran, so the chat can show it with its output. */
+  onCommand?: (command: string, result: CheckResult) => void;
 }
 
 export interface ToolOutcome {
@@ -89,6 +91,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const check = ctx.checks.find((c) => c.name === call.name);
         if (!check) return { ok: false, output: `Unknown check '${call.name}'.` };
         const res = await runCheck(check, ctx.checkDir ? await ctx.checkDir() : ctx.sandbox.root, ctx.signal, undefined, ctx.terminal);
+        ctx.onCommand?.(check.command, res);
         return { ok: res.passed, output: `${check.name}: ${res.passed ? "passed" : "FAILED"}\n${res.output}` };
       }
       case "finish":
@@ -96,6 +99,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       case "ask_user":
       case "ask_coordinator":
       case "request_check":
+      case "run_command":
         // The worker handles these itself; they never reach here.
         return { ok: false, output: `${call.tool} is handled by the worker.` };
     }

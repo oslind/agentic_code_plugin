@@ -10,7 +10,7 @@ function short(text: string, max = 400): string {
 
 function target(call: Record<string, unknown> | undefined): string {
   if (!call) return "";
-  for (const key of ["path", "glob", "query", "name"]) {
+  for (const key of ["path", "glob", "query", "name", "command"]) {
     if (typeof call[key] === "string") return call[key] as string;
   }
   return "";
@@ -73,6 +73,25 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       }
       const what = target(call);
       return agent({ text: thought || `${event.message} ${what}`.trim(), thought: thought || undefined, thinking, tag: what ? `${event.message} ${what}` : event.message });
+    }
+    case "command": {
+      const secs = typeof data.durationMs === "number" ? ` in ${(data.durationMs / 1000).toFixed(1)}s` : "";
+      const code = typeof data.code === "number" ? data.code : undefined;
+      const status = data.timedOut
+        ? `Timed out${secs}.`
+        : data.passed
+          ? `Finished${secs} (exit code 0).`
+          : code !== undefined
+            ? `Failed${secs} (exit code ${code}).`
+            : `Did not run to the end${secs}.`;
+      const check = typeof data.check === "string" ? data.check : undefined;
+      return agent({
+        kind: "command",
+        text: `${check ? `Check "${check}": ` : ""}${status} The full output is in the Agentic Code terminal.`,
+        tag: check ? `check ${check}` : "ran a command",
+        tone: data.passed ? "success" : "warning",
+        command: { line: String(data.command ?? event.message), output: typeof data.output === "string" ? data.output : "" },
+      });
     }
     case "followup_opened":
       return agent({
