@@ -198,7 +198,11 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   });
   const chatView = new ChatViewProvider(context.extensionUri, chat, store, output);
-  void offerResume(store).catch((err) => output.warn(`Could not check for interrupted runs: ${(err as Error).message}`));
+  const resumeFailed = (err: unknown) => output.warn(`Could not check for interrupted runs: ${(err as Error).message}`);
+  void chat.interruptedRuns().then(() => {
+    void offerChatResume(chat, chatView).catch(resumeFailed);
+    void offerResume(store, (runId) => chat.owns(runId)).catch(resumeFailed);
+  }, resumeFailed);
   context.subscriptions.push(
     output,
     { dispose: () => chat.dispose() },
@@ -329,6 +333,23 @@ export function activate(context: vscode.ExtensionContext): void {
       output.show();
     }),
   );
+}
+
+/** Offers to resume a chat run that VS Code closed under. The chat itself also shows a Resume button. */
+async function offerChatResume(chat: ChatController, view: ChatViewProvider): Promise<void> {
+  const [first, ...more] = await chat.interruptedRuns();
+  if (!first) return;
+  const request = first.request.replace(/\s+/g, " ").trim();
+  const shown = request.length > 80 ? `${request.slice(0, 79)}…` : request;
+  const choice = await vscode.window.showInformationMessage(
+    `VS Code closed while "${shown}" was running${more.length ? ` (and ${more.length} more run(s))` : ""}. Its drafts are kept.`,
+    "Resume",
+    "Show in chat",
+  );
+  if (!choice) return;
+  await chat.open(first.conversationId);
+  await view.focus();
+  if (choice === "Resume") await chat.resumeRun(first.runId);
 }
 
 export function deactivate(): void {}

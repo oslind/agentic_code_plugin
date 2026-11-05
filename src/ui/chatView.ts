@@ -16,6 +16,7 @@ type FromView =
   | { type: "open"; id: string }
   | { type: "delete"; id: string }
   | { type: "runPlan"; runId: string }
+  | { type: "resumeRun"; runId: string }
   | { type: "cancel" }
   | { type: "settings" }
   | { type: "runCommand"; command: "showTaskLog" | "retryFailed"; runId: string }
@@ -123,6 +124,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return;
         case "runPlan":
           if (isId(m.runId)) await this.controller.runPlan(m.runId);
+          return;
+        case "resumeRun":
+          if (isId(m.runId)) await this.controller.resumeRun(m.runId);
           return;
         case "cancel":
           return this.controller.cancel();

@@ -1,3 +1,5 @@
+import { ChatMessage } from "../providers/types";
+
 export type TaskStatus =
   | "pending"
   | "running"
@@ -44,6 +46,12 @@ export interface Run {
   briefing?: string;
   /** File changes the sub-agents propose. Nothing is written to the project until one is accepted. */
   changes?: PendingChange[];
+  /**
+   * The VS Code extension host running this run right now. Set while its
+   * sub-agents work and cleared when they stop, so a run left with this set
+   * by a process that no longer exists was cut off by a restart.
+   */
+  activeIn?: { pid: number; since: string };
   createdAt: string;
   updatedAt: string;
   tasks: Task[];
@@ -101,6 +109,19 @@ export interface DraftConflict {
 
 /** How the user resolves a conflict: keep the other version, keep this draft, or keep both with markers. */
 export type ConflictChoice = "other" | "draft" | "both";
+
+/**
+ * Where a sub-agent was when it last started a step: its conversation and
+ * its drafts. Saved as it works, so a sub-agent cut off by a restart can
+ * continue from there instead of starting over.
+ */
+export interface TaskCheckpoint {
+  savedAt: string;
+  /** Steps it had taken in that attempt. */
+  turns: number;
+  history: ChatMessage[];
+  drafts: { path: string; original: string | null; content: string; basis?: string | null }[];
+}
 
 export interface RunEvent {
   time: string;

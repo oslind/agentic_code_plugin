@@ -277,6 +277,10 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
         kept === "disk" ? "kept your file on disk and rejected the draft" : kept === "both" ? "kept both versions with conflict markers" : kept === "other" ? "kept the other version" : "kept the draft";
       return { author: "system", runId: event.runId, text: `Conflict in ${event.message}: you ${what}.${kept === "disk" ? "" : " It is a draft again: Accept it to write it."}` };
     }
+    case "resumed": {
+      const turns = typeof data.turns === "number" ? data.turns : 0;
+      return agent({ text: `Picking up where I was cut off, after ${turns} step(s), with my conversation and drafts so far.`, tag: "resumed" });
+    }
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

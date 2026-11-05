@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { Mutex } from "../util/mutex";
 import { ChatMessage } from "../providers/types";
 import { combineDrafts } from "../changes/combine";
-import { PendingChange, Run, RunEvent, Task, TaskStatus, TRANSITIONS } from "./types";
+import { PendingChange, Run, RunEvent, Task, TaskCheckpoint, TaskStatus, TRANSITIONS } from "./types";
 
 export type NewTask = Pick<Task, "title" | "instructions"> &
   Partial<Pick<Task, "id" | "parentId" | "dependsOn" | "fileScope">>;
@@ -309,13 +309,96 @@ export class TaskStore {
    */
   async recoverInterrupted(runId: string): Promise<Task[]> {
     const run = await this.load(runId);
-    const stuck = run.tasks.filter((t) => t.status === "running" || t.status === "verifying");
+    const stuck = run.tasks.filter((t) => MID_FLIGHT.has(t.status));
     for (const t of stuck) {
-      await this.setStatus(runId, t.id, "pending", "Interrupted by restart");
+      await this.setStatus(runId, t.id, "pending", INTERRUPTED);
     }
     return stuck;
   }
+
+  /** Records which extension host runs this run, or clears it (undefined) when the run stops. */
+  setActive(runId: string, pid: number | undefined): Promise<void> {
+    return this.lock.run(async () => {
+      const run = await this.load(runId);
+      run.activeIn = pid === undefined ? undefined : { pid, since: this.now().toISOString() };
+      await this.save(run);
+    });
+  }
+
+  /**
+   * A run that VS Code closed under: its mid-flight tasks are marked stopped
+   * with the reason, so the chat shows them as stopped and can resume them.
+   * Returns the tasks it marked.
+   */
+  async markInterrupted(runId: string): Promise<Task[]> {
+    const run = await this.load(runId);
+    const stuck = run.tasks.filter((t) => MID_FLIGHT.has(t.status));
+    for (const t of stuck) await this.setStatus(runId, t.id, "cancelled", INTERRUPTED);
+    if (run.activeIn) await this.setActive(runId, undefined);
+    if (stuck.length) await this.log({ runId, type: "run_interrupted", message: `${stuck.length} task(s) were cut off by a restart` });
+    return stuck;
+  }
+
+  /**
+   * Gets an unfinished run ready to continue: stopped and interrupted tasks
+   * go back to the queue. Done tasks, their reports and every draft stay as
+   * they are. Returns the tasks that will run again.
+   */
+  async prepareResume(runId: string): Promise<Task[]> {
+    const run = await this.load(runId);
+    const again: Task[] = [];
+    for (const t of run.tasks) {
+      if (t.status === "cancelled" || MID_FLIGHT.has(t.status)) {
+        again.push(await this.setStatus(runId, t.id, "pending", t.error ?? INTERRUPTED));
+      }
+    }
+    await this.log({ runId, type: "run_resumed", message: `${again.length} task(s) continue` });
+    return again;
+  }
+
+  private checkpointFile(runId: string, taskId: string): string {
+    if (!/^[\w-]+$/.test(taskId)) throw new Error(`Invalid task id: ${taskId}`);
+    return path.join(this.runDir(runId), "checkpoints", `${taskId}.json`);
+  }
+
+  /** Saves where a sub-agent is, so it can continue after a restart. */
+  async saveCheckpoint(runId: string, taskId: string, checkpoint: Omit<TaskCheckpoint, "savedAt">): Promise<void> {
+    const file = this.checkpointFile(runId, taskId);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify({ savedAt: this.now().toISOString(), ...checkpoint }), "utf8");
+    await fs.rename(tmp, file);
+  }
+
+  /** A sub-agent's last checkpoint, or undefined if there is none or it cannot be read. */
+  async loadCheckpoint(runId: string, taskId: string): Promise<TaskCheckpoint | undefined> {
+    try {
+      const raw = JSON.parse(await fs.readFile(this.checkpointFile(runId, taskId), "utf8")) as Partial<TaskCheckpoint>;
+      if (!raw || !Array.isArray(raw.history) || !Array.isArray(raw.drafts)) return undefined;
+      const history = raw.history.filter(
+        (m): m is ChatMessage => !!m && typeof m === "object" && ["user", "assistant"].includes((m as ChatMessage).role) && typeof (m as ChatMessage).content === "string",
+      );
+      const drafts = raw.drafts.filter(
+        (d): d is TaskCheckpoint["drafts"][number] =>
+          !!d && typeof d === "object" && typeof d.path === "string" && typeof d.content === "string" && (d.original === null || typeof d.original === "string"),
+      );
+      if (history.length === 0) return undefined;
+      return { savedAt: String(raw.savedAt ?? ""), turns: Number(raw.turns) || 0, history, drafts };
+    } catch {
+      return undefined;
+    }
+  }
+
+  async deleteCheckpoint(runId: string, taskId: string): Promise<void> {
+    await fs.rm(this.checkpointFile(runId, taskId), { force: true });
+  }
 }
+
+/** Why a task stopped when VS Code closed under it. */
+export const INTERRUPTED = "Interrupted by restart";
+
+/** Statuses that mean a sub-agent was working on the task. */
+const MID_FLIGHT = new Set<TaskStatus>(["running", "verifying", "awaiting_approval"]);
 
 /** The newest accepted change of a file: the one whose text is on disk, and the only one that can be reverted. */
 export function latestAccepted(changes: PendingChange[] | undefined, filePath: string): PendingChange | undefined {
