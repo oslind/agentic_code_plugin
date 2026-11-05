@@ -17,7 +17,8 @@ export interface Compaction {
  */
 export function compactionOf(entries: ChatEntry[]): Compaction | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
-    const c = entries[i]!.kind === "compact" ? entries[i]!.compaction : undefined;
+    // Only the chat's own note: a sub-agent's notes on its steps (author "agent") are not the conversation's summary.
+    const c = entries[i]!.kind === "compact" && entries[i]!.author === "system" ? entries[i]!.compaction : undefined;
     if (c?.summary.trim()) return { summary: c.summary, keepFrom: c.keepFrom };
   }
   return undefined;

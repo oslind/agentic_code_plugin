@@ -11,6 +11,7 @@ import { ToolCall, workerTurnSchema } from "../tools/protocol";
 import { ProjectFiles } from "../tools/sandbox";
 import { lineDiff } from "../changes/lineDiff";
 import { compactHistory } from "./history";
+import { compactSteps, planStepCompaction } from "./stepSummary";
 import { executeTool } from "./tools";
 
 /** A message waiting for a sub-agent's next step: from the user, or from the coordinator keeping an eye on it. */
@@ -88,6 +89,12 @@ export interface WorkerOptions {
    * one message from the user, and its finish summary is the reply.
    */
   followUp?: boolean;
+  /**
+   * Summarize older steps with one model call when the conversation nears the
+   * context limit, instead of only dropping them (stepSummary.ts). From the
+   * user-only agentic.delegation.compactSubAgents setting.
+   */
+  compactSteps?: boolean;
 }
 
 export interface WorkerResult {
@@ -185,7 +192,9 @@ Rules:
  * the orchestrator can send it check failures and let it continue.
  */
 export class Worker {
-  private readonly messages: ChatMessage[];
+  private messages: ChatMessage[];
+  /** Step compaction is not tried again before the conversation has this many messages (after a failed summary). */
+  private retryCompactAt = 0;
   /** Checks the user approved for this task through request_check. They also run at verification. */
   readonly extraChecks: CheckConfig[] = [];
   private readonly changed = new Set<string>();
@@ -213,6 +222,27 @@ export class Worker {
    */
   history(): ChatMessage[] {
     return compactHistory(this.messages, SAVED_HISTORY_TOKENS).slice(1);
+  }
+
+  /**
+   * Turns older steps into notes once the conversation nears the context
+   * limit. A failed summary changes nothing (compactHistory still trims), and
+   * it is not tried again until a few more steps were taken.
+   */
+  private async compactOlderSteps(): Promise<void> {
+    if (this.messages.length < this.retryCompactAt) return;
+    const budget = this.opts.provider.contextWindow - REPLY_RESERVE;
+    const plan = planStepCompaction(this.messages, budget);
+    if (!plan) return;
+    try {
+      const r = await compactSteps(this.opts.provider, this.messages, plan, budget, REPLY_RESERVE, this.opts.signal);
+      this.messages = r.messages;
+      this.opts.log("steps_compacted", `Summarized ${r.summarized} earlier message(s) into notes`, { messages: r.summarized, notes: r.notes });
+    } catch (err) {
+      this.opts.signal?.throwIfAborted();
+      this.retryCompactAt = this.messages.length + 6;
+      this.opts.log("steps_compact_failed", (err as Error).message);
+    }
   }
 
   private async commandDir(): Promise<string> {
@@ -250,6 +280,7 @@ export class Worker {
           content: m.from === "coordinator" ? coordinatorNote(m.text) : `Message from the user: ${m.text}\n\nTake this into account, then continue with your task.`,
         });
       }
+      if (this.opts.compactSteps) await this.compactOlderSteps();
       const context = compactHistory(this.messages, provider.contextWindow - REPLY_RESERVE);
       let thinking: string | undefined;
       const turn = await callStructured({

@@ -14,6 +14,7 @@ import {
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
   autoCompactFrom,
+  compactSubAgentsFrom,
   autoRetriesFrom,
   oversightLimitsFrom,
   RETIRED_OVERSIGHT_KEYS,
@@ -49,6 +50,7 @@ const MALICIOUS_SETTINGS = {
   "agentic.delegation.oversight": "thorough",
   "agentic.delegation.maxModelCallsPerRun": 0,
   "agentic.delegation.autoRetries": 3,
+  "agentic.delegation.compactSubAgents": false,
 };
 
 const temps: string[] = [];
@@ -172,6 +174,9 @@ describe("a malicious .vscode/settings.json", () => {
     expect(autoRetriesFrom(await section("agentic.delegation", {}, root))).toBe(1);
     expect(autoRetriesFrom(await section("agentic.delegation", { "agentic.delegation.autoRetries": 9 }, root))).toBe(3);
     expect(autoRetriesFrom(await section("agentic.delegation", { "agentic.delegation.autoRetries": 0 }, root))).toBe(0);
+    // Nor turn sub-agent step summaries (model calls) on or off.
+    expect(compactSubAgentsFrom(await section("agentic.delegation", {}, root))).toBe(true);
+    expect(compactSubAgentsFrom(await section("agentic.delegation", { "agentic.delegation.compactSubAgents": false }, root))).toBe(false);
   });
 
   it("is reported, so the user can be warned", async () => {

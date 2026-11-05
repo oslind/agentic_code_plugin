@@ -40,6 +40,8 @@ export interface OrchestratorOptions {
   autoRetries?: number;
   /** Folders linked, not copied, into the scratch copy where checks run, such as node_modules. */
   linkDirs?: string[];
+  /** Sub-agents summarize their older steps near the context limit (agentic.delegation.compactSubAgents). */
+  compactSteps?: boolean;
   signal?: AbortSignal;
   /** The extension's terminal for this project, where every command is shown as it runs. */
   terminal?: CommandSink;
@@ -95,7 +97,7 @@ export class Orchestrator {
   private root = "";
 
   constructor(options: OrchestratorOptions) {
-    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, linkDirs: ["node_modules"], ...options };
+    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, compactSteps: false, linkDirs: ["node_modules"], ...options };
   }
 
   private log(type: string, message: string, taskId?: string, data?: Record<string, unknown>): Promise<void> {
@@ -229,6 +231,7 @@ export class Orchestrator {
         context: note,
         checks: this.o.checks,
         maxTurns: this.o.maxTurns,
+        compactSteps: this.o.compactSteps,
         signal,
         approve: (reason, call, preview) => this.o.approveTool(task, reason, call, preview),
         approveCommand: this.o.approveCommand && ((check) => this.o.approveCommand!(task, check)),

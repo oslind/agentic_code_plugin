@@ -422,6 +422,7 @@ export class RunLoop {
             maxTurns,
             signal,
             readOnly: true,
+            compactSteps: this.host.compactSubAgents?.() ?? false,
             terminal,
             checkDir: () => scratch.sync(new Map()),
             context: learned ? untrustedSection("What earlier researchers found (build on it, do not repeat it):", "earlier research and sub-agent reports", learned) : undefined,

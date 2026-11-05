@@ -7,7 +7,7 @@ import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
 import { removeStaleScratch, setScratchBase, setScratchLimits } from "./changes/scratch";
 import { setCommandIsolation } from "./checks/runner";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, readScratchLimits, readCommandIsolation, PERMISSION_KEYS, readCoordinatorHistoryTokens, readAutoCompact, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, setSecretApiKey } from "./config";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, readScratchLimits, readCommandIsolation, PERMISSION_KEYS, readCoordinatorHistoryTokens, readAutoCompact, readCompactSubAgents, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, setSecretApiKey } from "./config";
 import { legacyApiKeyFrom, OVERSIGHT_LEVELS } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
@@ -150,6 +150,7 @@ export function activate(context: vscode.ExtensionContext): void {
       ),
     coordinatorHistoryTokens: () => readCoordinatorHistoryTokens(),
     autoCompact: () => readAutoCompact(),
+    compactSubAgents: () => readCompactSubAgents(),
     modelLabel: (root) => {
       const c = readModelConfig(root ? vscode.Uri.file(root) : undefined);
       // The version and build time show which build is installed, which helps when trying a new VSIX.
