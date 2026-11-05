@@ -582,3 +582,35 @@ describe("asking the coordinator", () => {
     expect(msgs.find((m) => m.includes("A note from the coordinator"))).toMatch(/<untrusted_data source="the coordinator's note[^"]*">\nREADME.md has what you need./);
   });
 });
+
+describe("the coordinator reviewing a result", () => {
+  it("sends a sub-agent back with fenced feedback, shows the drafts as diffs, and takes the second finish", async () => {
+    const runId = await setup([task("api", ["src/api.ts"])]);
+    const seen: ChatRequest[] = [];
+    const provider = scripted({ api: [write("src/api.ts", "export const a = 1;\n"), finish, write("src/api.ts", "export const a = 1;\nexport const b = 2;\n"), finish] }, seen);
+    const reviews: { summary: string; drafts: string }[] = [];
+    const { o } = make(runId, provider, {
+      reviewResult: async (_t, summary, drafts) => {
+        reviews.push({ summary, drafts });
+        return reviews.length === 1 ? { accept: false, feedback: "The task asks for b too. Add export const b." } : { accept: true };
+      },
+    });
+    expect((await o.run()).done).toEqual(["api"]);
+    expect(reviews).toHaveLength(2);
+    expect(reviews[0]!.drafts).toMatch(/## src\/api.ts\nNew file:\n\+ export const a = 1;/);
+    expect(reviews[1]!.drafts).toMatch(/\+ export const b = 2;/);
+    const feedback = seen[2]!.messages.at(-1)!.content;
+    expect(feedback).toMatch(/sent it back/);
+    expect(feedback).toMatch(/<untrusted_data source="the coordinator's review of your result">\nThe task asks for b too/);
+    expect(feedback).toMatch(/call finish again/);
+    expect((await changesOf(runId)).map((c) => c.proposed)).toEqual(["export const a = 1;\nexport const b = 2;\n"]);
+  });
+
+  it("takes the finish as is when there is no reviewer or it accepts", async () => {
+    const runId = await setup([task("a", ["a.txt"])]);
+    let n = 0;
+    const { o } = make(runId, scripted({ a: [finish] }), { reviewResult: async () => (n++, { accept: true }) });
+    expect((await o.run()).done).toEqual(["a"]);
+    expect(n).toBe(1);
+  });
+});

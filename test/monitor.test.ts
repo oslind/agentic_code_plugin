@@ -207,3 +207,75 @@ describe("showing the exchanges", () => {
     expect(checking.coordinator.activity).toBe('Checking on "t"');
   });
 });
+
+describe("regular progress looks and news between sub-agents", () => {
+  it("is due every N steps, and soon after another sub-agent finishes", () => {
+    const m = new AgentMonitor({ maxTurns: 40 });
+    const a = task("a");
+    const b = task("b", ["src/b.ts"]);
+    for (let i = 0; i < 3; i++) m.observe(call("search", { query: `q${i}` }, "a"), a);
+    m.observe(call("search", { query: "x" }, "b"), b);
+    expect(m.progressDue("a", 4)).toBeUndefined();
+    m.observe(call("search", { query: "q3" }, "a"), a);
+    expect(m.progressDue("a", 4)).toMatchObject({ kind: "progress", detail: expect.stringMatching(/regular look after 4 of at most 40 steps/i) });
+    expect(m.progressDue("a", 0)).toBeUndefined();
+    m.markProgressCheck("a");
+    expect(m.progressDue("a", 4)).toBeUndefined();
+    // "b" finishes: "a" gets a look two steps later, with the news.
+    m.finished("b");
+    m.observe(call("search", { query: "q4" }, "a"), a);
+    expect(m.progressDue("a", 4)).toBeUndefined();
+    m.observe(call("search", { query: "q5" }, "a"), a);
+    expect(m.progressDue("a", 4)!.detail).toMatch(/Another sub-agent finished/);
+  });
+
+  it("notices a sub-agent guessing instead of asking, unless it asked", () => {
+    const m = new AgentMonitor({ maxTurns: 40 });
+    const t = task("t");
+    m.observe(ev("tool_call", "write_file", { thought: "I'll assume the user wants ISO dates.", call: { tool: "write_file", path: "src/a.ts" } }), t);
+    expect(m.concerns("t")).toEqual([expect.objectContaining({ kind: "guessing", evidence: "Its thought: I'll assume the user wants ISO dates." })]);
+    // The detail is fixed wording only.
+    expect(m.concerns("t")[0]!.detail).not.toMatch(/ISO/);
+    const m2 = new AgentMonitor({ maxTurns: 40 });
+    m2.observe(ev("tool_call", "ask_coordinator", { thought: "Not sure which format.", call: { tool: "ask_coordinator", question: "Which date format?" } }), t);
+    m2.observe(ev("tool_call", "read_file", { thought: "I'm not sure what this does.", call: { tool: "read_file", path: "src/a.ts" } }), t);
+    expect(m2.concerns("t")).toEqual([]);
+  });
+
+  it("gives a regular look its own prompt with the coordinator's notes fenced, and never stops anyone", () => {
+    const concern = { kind: "progress" as const, detail: "A regular look after 8 of at most 40 steps. Nothing looks wrong." };
+    const msgs = buildSuperviseMessages(
+      {
+        userMessages: ["add users"],
+        request: "Add users",
+        agent: { title: "Add API", instructions: "Add src/api.ts" },
+        concern,
+        activity: "- read_file src/api.ts: reading",
+        notesSent: 0,
+        learned: "- [report] auth lives in src/auth.ts",
+        team: '- "Add model" (src/model.ts): done, reported: added User with email',
+      },
+      8192,
+    );
+    expect(msgs[0]!.content).toMatch(/regular look at its progress/);
+    expect(msgs[1]!.content).toMatch(/Why you look now: A regular look after 8/);
+    expect(msgs[1]!.content).not.toMatch(/"stop" is not available/);
+    expect(msgs[1]!.content).toMatch(/<untrusted_data source="what the other sub-agents are doing">\n- "Add model"/);
+    expect(msgs[1]!.content).toMatch(/<untrusted_data source="earlier research and sub-agent reports">/);
+    expect(guardDecision({ action: "stop", message: "" }, 3, true)).toMatchObject({ action: "continue" });
+    expect(guardDecision({ action: "stop", message: "Use requireSession." }, 3, true)).toMatchObject({ action: "message" });
+    expect(guardDecision({ action: "stop", message: "x" }, 3)).toMatchObject({ action: "stop" });
+  });
+
+  it("shows reviews and regular looks in the chat", () => {
+    const tasks = [task("t")];
+    expect(eventToEntry(ev("coordinator_review", "revise", { feedback: "Add the b export." }), tasks)).toMatchObject({
+      author: "coordinator",
+      kind: "checkin",
+      tag: "sent back",
+      text: `Reviewed "t"'s result and sent it back: Add the b export.`,
+    });
+    expect(eventToEntry(ev("coordinator_review", "accept", { feedback: "" }), tasks)).toMatchObject({ tag: "reviewed", text: `Reviewed "t"'s result and accepted it.` });
+    expect(eventToEntry(ev("coordinator_checkin", "continue", { concern: "progress", detail: "x" }), tasks)).toMatchObject({ tag: "progress check", text: expect.stringMatching(/on track/) });
+  });
+});

@@ -186,6 +186,8 @@ export function activate(context: vscode.ExtensionContext): void {
         maxResearchers: c.get<number>("maxResearchers", 8),
         maxResearchRounds: c.get<number>("maxResearchRounds", 3),
         checkIns: c.get<number>("checkIns", 2),
+        progressEvery: c.get<number>("progressEvery", 8),
+        reviewRounds: c.get<number>("reviewRounds", 1),
       };
     },
     terminal: (workspaceRoot) => terminals.for(workspaceRoot),

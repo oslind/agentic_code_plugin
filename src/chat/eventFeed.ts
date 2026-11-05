@@ -129,12 +129,15 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       // Shown to the user only; the evidence names the call a sub-agent repeated.
       const detail = [data.detail, data.evidence].filter((x): x is string => typeof x === "string" && !!x).map((x) => (/[.!?]$/.test(x) ? x : `${x}.`)).join(" ");
       const adjusted = typeof data.adjusted === "string" ? ` (${data.adjusted})` : "";
+      const progress = data.concern === "progress";
       const text =
         event.message === "stop"
           ? `Stopped ${name}. ${detail} Its drafts are kept for your review, and you can retry the task.`
           : event.message === "message"
             ? `Checked on ${name}. ${detail} I sent it a note: ${String(data.note ?? "")}${adjusted}`
-            : `Checked on ${name}. ${detail} It looks fine, so I let it continue.${adjusted}`;
+            : progress
+              ? `Checked on ${name}'s progress. It is on track, and I had nothing to add.${adjusted}`
+              : `Checked on ${name}. ${detail} It looks fine, so I let it continue.${adjusted}`;
       const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
       return {
         author: "coordinator",
@@ -142,9 +145,30 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
         runId: event.runId,
         taskId: event.taskId,
         agentName: task?.title ?? event.taskId,
-        tag: event.message === "stop" ? "stopped by coordinator" : event.message === "message" ? "note from coordinator" : "check-in",
+        tag: event.message === "stop" ? "stopped by coordinator" : event.message === "message" ? "note from coordinator" : progress ? "progress check" : "check-in",
         tone: event.message === "stop" ? "warning" : "info",
         text,
+        thought: typeof data.thought === "string" ? short(data.thought) : undefined,
+        thinking,
+      };
+    }
+    case "coordinator_review": {
+      const name = `"${task?.title ?? event.taskId ?? "a sub-agent"}"`;
+      const revise = event.message === "revise";
+      const feedback = typeof data.feedback === "string" ? data.feedback.trim() : "";
+      const adjusted = typeof data.adjusted === "string" ? ` (${data.adjusted})` : "";
+      const thinking = typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined;
+      return {
+        author: "coordinator",
+        kind: "checkin",
+        runId: event.runId,
+        taskId: event.taskId,
+        agentName: task?.title ?? event.taskId,
+        tag: revise ? "sent back" : "reviewed",
+        tone: revise ? "warning" : "info",
+        text: revise
+          ? `Reviewed ${name}'s result and sent it back: ${feedback}`
+          : `Reviewed ${name}'s result and accepted it.${feedback ? ` ${feedback}` : ""}${adjusted}`,
         thought: typeof data.thought === "string" ? short(data.thought) : undefined,
         thinking,
       };
