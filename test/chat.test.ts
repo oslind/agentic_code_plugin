@@ -19,13 +19,14 @@ import { ChatEntry, ChatMode } from "../src/chat/types";
 import { RunOutcome } from "../src/coordinator/orchestrator";
 import { changedFilesOf, describeOutcome } from "../src/chat/outcome";
 import { PendingChange, Run } from "../src/state/types";
-import { ChatRequest, ModelProvider } from "../src/providers/types";
+import { ChatRequest, ChatResponse, ModelProvider } from "../src/providers/types";
 import { TaskStore } from "../src/state/taskStore";
 
 /** How long a test waits for background work. Generous, since CI runners can be slow and busy; a passing test returns as soon as the work is done. */
 const WAIT_MS = 10000;
 
-function scripted(replies: string[], contextWindow = 32768): ModelProvider & { requests: ChatRequest[] } {
+/** A reply is its text, or a whole response (for example one the server cut off at its length limit). */
+function scripted(replies: (string | ChatResponse)[], contextWindow = 32768): ModelProvider & { requests: ChatRequest[] } {
   const requests: ChatRequest[] = [];
   return {
     model: "test",
@@ -33,7 +34,8 @@ function scripted(replies: string[], contextWindow = 32768): ModelProvider & { r
     requests,
     async chat(req) {
       requests.push({ ...req, messages: [...req.messages] });
-      return { content: replies.shift() ?? "" };
+      const r = replies.shift() ?? "";
+      return typeof r === "string" ? { content: r } : r;
     },
   };
 }
@@ -232,7 +234,7 @@ describe("ChatController", () => {
     verifyRounds?: number;
   }
 
-  function setup(replies: string[], mode: ChatMode, opts: SetupOptions = {}) {
+  function setup(replies: (string | ChatResponse)[], mode: ChatMode, opts: SetupOptions = {}) {
     const conversations = new ConversationStore(path.join(dir, "state"));
     const tasks = new TaskStore(path.join(dir, "state"));
     const provider = scripted(replies);
@@ -451,6 +453,60 @@ describe("ChatController", () => {
     const entries = (await controller.state()).current!.entries;
     expect(entries.at(-1)).toMatchObject({ author: "coordinator", kind: "answer", tag: "from research", text: "This project is a flight simulator (see README.md)." });
     expect(entries.some((e) => e.kind === "error")).toBe(false);
+  });
+
+  describe("a reply that stops partway (Oskar's report)", () => {
+    it("never shows \"Here's what was changed:\" with nothing after it as the answer", async () => {
+      await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+      const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+      const { controller } = setup(
+        [
+          JSON.stringify({ thought: "Let me summarize what was done:", reply: "Yes, the implementation is now complete! Here's what was changed:\n\n\n", action: "none", goal: "answer", complete: true, request: "" }),
+          worker("Done.", { tool: "finish", summary: "The resume feature is in src/chat/restarts.ts; nothing is left to change." }),
+          JSON.stringify({ reply: "It is complete.", action: "none", goal: "answer", complete: true, request: "" }),
+          "Yes, it is complete. The resume feature is in src/chat/restarts.ts, and nothing is left to change.",
+        ],
+        "act",
+      );
+      await controller.send("Is the implementation complete now? what has to be changed?");
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.some((e) => /Here's what was changed/.test(e.text))).toBe(false);
+      expect(entries.find((e) => e.author === "coordinator")!.text).toMatch(/stopped before it was complete/);
+      expect(entries.at(-1)).toMatchObject({ kind: "answer", tag: "from research", text: "Yes, it is complete. The resume feature is in src/chat/restarts.ts, and nothing is left to change." });
+      expect(entries.at(-1)!.cutOff).toBeUndefined();
+    });
+
+    it("marks a research answer cut off at the length limit, and the bar does not say it finished", async () => {
+      await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+      const worker = (thought: string, call: object) => JSON.stringify({ thought, call });
+      const { controller } = setup(
+        [
+          JSON.stringify({ reply: "Checking.", action: "research", goal: "answer", complete: false, request: "", questions: ["Is the implementation complete?"] }),
+          worker("Done.", { tool: "finish", summary: "Two files are left: src/a.ts and src/b.ts." }),
+          JSON.stringify({ reply: "Two files are left.", action: "none", goal: "answer", complete: true, request: "" }),
+          { content: "Not yet. Two files still have to change, src/a.ts and", truncated: true },
+        ],
+        "act",
+      );
+      await controller.send("Is the implementation complete now?");
+      const state = await controller.state();
+      const entries = state.current!.entries;
+      expect(entries.at(-1)).toMatchObject({ kind: "answer", tag: "from research", tone: "warning", cutOff: true });
+      expect(entries.at(-1)!.text).toMatch(/src\/a\.ts and\n\n… \(cut off here\)$/);
+      expect(entries.at(-2)).toMatchObject({ author: "system", tone: "warning" });
+      expect(entries.at(-2)!.text).toMatch(/was cut off[\s\S]*not a complete answer/);
+      expect(state.done).toMatchObject({ status: "partial", text: expect.stringMatching(/cut off/) });
+    });
+
+    it("marks a final reply cut off at the length limit, and the bar does not say it finished", async () => {
+      const { controller } = setup([...planReplies(), { content: "Both tasks are done. The User model is in", truncated: true }], "act");
+      await controller.send("add users");
+      const state = await controller.state();
+      const entries = state.current!.entries;
+      expect(entries.at(-1)).toMatchObject({ kind: "answer", tag: "final reply", cutOff: true, tone: "warning" });
+      expect(entries.at(-2)!.text).toMatch(/The final reply below was cut off/);
+      expect(state.done).toMatchObject({ status: "partial", text: expect.stringMatching(/final reply was cut off/) });
+    });
   });
 
   it("ends a change run with the coordinator's own final reply after the outcome", async () => {

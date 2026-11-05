@@ -44,6 +44,12 @@ export interface ChatResponse {
   reasoning?: string;
   promptTokens?: number;
   completionTokens?: number;
+  /**
+   * True when the server stopped the reply at its length limit (finish_reason
+   * "length"): max_tokens, the context window, or the server's own cap. The
+   * text then ends mid-answer and must never be shown as a finished one.
+   */
+  truncated?: boolean;
 }
 
 export interface ModelProvider {
