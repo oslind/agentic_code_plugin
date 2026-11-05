@@ -188,8 +188,11 @@ export function activate(context: vscode.ExtensionContext): void {
         checkIns: c.get<number>("checkIns", 2),
         progressEvery: c.get<number>("progressEvery", 8),
         reviewRounds: c.get<number>("reviewRounds", 1),
+        verify: c.get<boolean>("verify", true),
+        verifyRounds: c.get<number>("verifyRounds", 2),
       };
     },
+    scratchLinkDirs: (workspaceRoot) => readRunConfig(vscode.Uri.file(workspaceRoot)).linkDirs,
     terminal: (workspaceRoot) => terminals.for(workspaceRoot),
     researchLimits: () => {
       const c = readRunConfig();
