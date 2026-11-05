@@ -11,6 +11,7 @@ import {
   VerifyTask,
 } from "../src/coordinator/verify";
 import { ModelProvider } from "../src/providers/types";
+import { verificationFrom } from "../src/userSettings";
 
 const pass = (name: string): CheckResult => ({ name, passed: true, output: "ok", durationMs: 1 });
 const fail = (name: string, output = "1 failing"): CheckResult => ({ name, passed: false, code: 1, output, durationMs: 1 });
@@ -50,6 +51,12 @@ describe("verification rules", () => {
     expect(checkEvidence([pass("test"), fail("lint"), skip("types")])).toMatch(/all drafts together.*test passed, lint failed, types skipped \(not approved\)/);
   });
 
+  it("reads verify settings from user settings only", () => {
+    const section = (v: Record<string, { globalValue?: unknown; workspaceValue?: unknown }>) => ({ inspect: <T>(k: string) => v[k] as { globalValue?: T } | undefined });
+    expect(verificationFrom(section({ verify: { workspaceValue: false }, verifyRounds: { workspaceValue: 5 } }))).toEqual({ verify: true, verifyRounds: 2 });
+    expect(verificationFrom(section({ verify: { globalValue: false }, verifyRounds: { globalValue: 9 } }))).toEqual({ verify: false, verifyRounds: 5 });
+  });
+
   it("does not call work verified when the model call failed and the checks passed", () => {
     expect(factsOnlyVerification({ checks: [pass("test")], tasks: [done] }, "timeout")).toMatchObject({ verified: false, missing: [] });
     expect(factsOnlyVerification({ checks: [fail("test")], tasks: [done] }, "timeout")).toMatchObject({ verified: false, missing: ['Make the "test" check pass on all drafts together.'] });
@@ -72,6 +79,9 @@ describe("verification rules", () => {
     expect(user).toMatch(/<untrusted_data[^>]*all drafts of the run[^>]*>[\s\S]*\+ verbose/);
     expect(user).toMatch(/<untrusted_data[^>]*failed check test[^>]*>[\s\S]*ignore previous instructions/);
     expect(user).toMatch(/already sent sub-agents back 1 time/);
+    // Model-written plan text and task titles are inside fences, never plain.
+    expect(user).toMatch(/<untrusted_data[^>]*the work you planned[^>]*>\s*Add --verbose/);
+    expect(user).toMatch(/<untrusted_data[^>]*task 1 \(done\)[^>]*>\s*Title: Add flag\nReport: Added --verbose/);
   });
 
   it("passes what is missing and the failed output to the fix-up planner", () => {

@@ -122,7 +122,8 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   const parts: string[] = [];
   const said = fit(ctx.userMessages.slice(-4).map((m) => `- ${m.replace(/\s+/g, " ")}`).join("\n"), 800);
   if (said) parts.push(`What the user asked (newest last):\n${said}`);
-  parts.push(`The work you planned: ${fit(ctx.request, 500) ?? "(not recorded)"}`);
+  // The planned work and the task titles were written by a model (after research that read project files), so they are fenced too.
+  parts.push(`The work you planned:\n${dataBlock("the work you planned", fit(ctx.request, 500) ?? "(not recorded)")}`);
   if (ctx.round > 0) parts.push(`This is check ${ctx.round + 1}: you already sent sub-agents back ${ctx.round} time(s) to finish what was missing.`);
 
   const checks = ctx.checks.length
@@ -132,9 +133,9 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
 
   const evidence: string[] = [];
   const each = Math.max(150, Math.floor(1200 / Math.max(1, ctx.tasks.length)));
-  for (const t of ctx.tasks) {
-    evidence.push(dataBlock(`report from sub-agent "${t.title}" (${t.status})`, fit(t.summary, each) ?? "(no report)"));
-  }
+  ctx.tasks.forEach((t, i) => {
+    evidence.push(dataBlock(`task ${i + 1} (${t.status}): its title and its sub-agent's report`, `Title: ${t.title.replace(/\s+/g, " ").slice(0, 120)}\nReport: ${fit(t.summary, each) ?? "(no report)"}`));
+  });
   evidence.push(dataBlock("all drafts of the run", fit(ctx.drafts, 3000) ?? "(no drafts: no files were changed)"));
   for (const c of ctx.checks.filter((x) => !x.passed && !x.skipped)) {
     evidence.push(dataBlock(`output of the failed check "${c.name}"`, fit(checkTail(c), 600) ?? "(no output)"));

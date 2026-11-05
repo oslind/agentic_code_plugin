@@ -5,7 +5,7 @@ import * as vscode from "vscode";
 import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
 import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, PERMISSION_KEYS, readCoordinatorHistoryTokens, readModelConfig, readPermissions, readRunConfig, setSecretApiKey } from "./config";
-import { legacyApiKeyFrom } from "./userSettings";
+import { legacyApiKeyFrom, verificationFrom } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
 import { planRequest } from "./coordinator/planner";
@@ -188,8 +188,8 @@ export function activate(context: vscode.ExtensionContext): void {
         checkIns: c.get<number>("checkIns", 2),
         progressEvery: c.get<number>("progressEvery", 8),
         reviewRounds: c.get<number>("reviewRounds", 1),
-        verify: c.get<boolean>("verify", true),
-        verifyRounds: c.get<number>("verifyRounds", 2),
+        // User settings only: a project must not decide how many extra model calls and rounds it causes.
+        ...verificationFrom(c),
       };
     },
     scratchLinkDirs: (workspaceRoot) => readRunConfig(vscode.Uri.file(workspaceRoot)).linkDirs,

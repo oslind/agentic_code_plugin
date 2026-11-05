@@ -13,6 +13,7 @@ import {
   PERMISSION_KEYS,
   permissionsFrom,
   USER_ONLY_CHAT_KEYS,
+  USER_ONLY_DELEGATION_KEYS,
   USER_ONLY_MODEL_KEYS,
   workspaceOverrides,
 } from "./userSettings";
@@ -162,6 +163,7 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.autoApprove", scope), PERMISSION_KEYS).map((k) => `agentic.autoApprove.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.model", scope), USER_ONLY_MODEL_KEYS).map((k) => `agentic.model.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.chat", scope), USER_ONLY_CHAT_KEYS).map((k) => `agentic.chat.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.delegation", scope), USER_ONLY_DELEGATION_KEYS).map((k) => `agentic.delegation.${k}`),
   ];
 }
 

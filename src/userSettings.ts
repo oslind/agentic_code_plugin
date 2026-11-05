@@ -40,6 +40,17 @@ export const USER_ONLY_MODEL_KEYS = ["baseUrl", "apiKey", "maxConcurrentRequests
 /** Keys under "agentic.chat" that limit how much of your conversation is sent to the model. */
 export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens"] as const;
 
+/** Keys under "agentic.delegation" that decide how many extra model calls and sub-agent rounds one request may cause. */
+export const USER_ONLY_DELEGATION_KEYS = ["verify", "verifyRounds"] as const;
+
+/** Whether the coordinator verifies a request, and its most fix-up rounds (0 to 5), from user settings only. */
+export function verificationFrom(section: InspectableSection): { verify: boolean; verifyRounds: number } {
+  return {
+    verify: userValue(section, "verify", true, isBoolean),
+    verifyRounds: Math.max(0, Math.min(5, Math.floor(userValue(section, "verifyRounds", 2, isNumber)))),
+  };
+}
+
 export const DEFAULT_BASE_URL = "http://localhost:11434/v1";
 
 /**
