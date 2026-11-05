@@ -57,7 +57,44 @@ export interface PendingChange {
   status: "pending" | "accepted" | "rejected";
   /** Set when accepted without the user: the auto-approve switch for edits was on. */
   auto?: boolean;
+  /**
+   * The text this draft was built on: the last version its sub-agent put up
+   * for review, or else what the file held (with earlier drafts of the run)
+   * when the sub-agent first wrote it. A draft whose basis is not the pending
+   * draft of the same file did not see that draft, so the two are combined
+   * instead of one replacing the other.
+   */
+  basis?: string | null;
+  /** Other sub-agents whose drafts of this file were combined into this one, by task id. */
+  combinedWith?: string[];
+  /** Set when the file on disk had changed and the draft was combined with it on Accept. */
+  combinedWithDisk?: boolean;
+  /** Two versions changed the same lines. The draft cannot be accepted until the user picks how to resolve it. */
+  conflict?: DraftConflict;
 }
+
+/**
+ * Two versions of one file that changed the same lines: this draft and either
+ * another sub-agent's draft ("draft") or the file as it is now on disk
+ * ("disk"). Nothing is lost: both texts are kept until the user picks one,
+ * or both with conflict markers to sort out in the editor.
+ */
+export interface DraftConflict {
+  with: "draft" | "disk";
+  /** The other sub-agent, for a conflict between two drafts. */
+  otherTaskId?: string;
+  /** The other version: the other sub-agent's draft, or the file on disk. */
+  other: string;
+  /** The text both versions started from. */
+  base: string;
+  /** Both versions combined, with git-style markers around each conflicting part (the other version first). */
+  markers: string;
+  /** How many places conflict. */
+  regions: number;
+}
+
+/** How the user resolves a conflict: keep the other version, keep this draft, or keep both with markers. */
+export type ConflictChoice = "other" | "draft" | "both";
 
 export interface RunEvent {
   time: string;

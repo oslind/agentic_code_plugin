@@ -8,13 +8,14 @@ import { ScratchCopy } from "../changes/scratch";
 import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
-import { PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
+import { ConflictChoice, PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { CommandSink } from "../checks/commandTerminal";
 import { DetectedCheck } from "../checks/detect";
 import { ToolCall } from "../tools/protocol";
 import { AutoApprove, isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted } from "../tools/policy";
-import { acceptChange, changeKind, rejectChange } from "../changes/review";
+import { acceptChange, changeKind, rejectChange, resolveConflict } from "../changes/review";
+import { hasConflictMarkers } from "../changes/merge";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
@@ -137,7 +138,7 @@ interface Supervision {
 }
 
 /** What the user can do with a pending change from the chat. */
-export type ReviewAction = "show" | "open" | "accept" | "reject";
+export type ReviewAction = "show" | "open" | "accept" | "reject" | "resolve";
 
 /** What the user chose on a card that waited for them. */
 export type Decision =
@@ -173,6 +174,14 @@ export interface ChangeView {
   auto?: boolean;
   /** Why the last Accept did not go through, e.g. the file changed on disk. */
   note?: string;
+  /** Other sub-agents whose drafts of this file were combined into this one, by name. */
+  combinedWith?: string[];
+  /** Combined with a newer version of the file on disk when it was accepted. */
+  combinedWithDisk?: boolean;
+  /** This draft and another version changed the same lines. It cannot be accepted until the user picks how to resolve it. */
+  conflict?: { with: "draft" | "disk"; otherAgent?: string; regions: number };
+  /** The draft still has conflict markers (the user chose to keep both versions). */
+  markers?: boolean;
 }
 
 export interface ChatViewState {
@@ -406,6 +415,7 @@ export class ChatController {
     for (const runId of current?.runIds ?? []) {
       const run = await this.tasks.load(runId).catch(() => undefined);
       if (!run) continue;
+      const titleOf = (taskId: string) => run.tasks.find((t) => t.id === taskId)?.title ?? taskId;
       plans[runId] = {
         kind: run.kind ?? "change",
         tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
@@ -414,13 +424,17 @@ export class ChatController {
         changes: (run.changes ?? []).map((ch) => ({
           path: ch.path,
           taskId: ch.taskId,
-          agentName: run.tasks.find((t) => t.id === ch.taskId)?.title ?? ch.taskId,
+          agentName: titleOf(ch.taskId),
           kind: changeKind(ch),
           status: ch.status,
           state: draftState(ch.status),
           ...lineCounts(ch.original, ch.proposed),
           auto: ch.auto,
           note: this.changeNotes.get(`${runId}:${ch.path}`),
+          combinedWith: ch.combinedWith?.map(titleOf),
+          combinedWithDisk: ch.combinedWithDisk,
+          conflict: ch.conflict && { with: ch.conflict.with, otherAgent: ch.conflict.otherTaskId && titleOf(ch.conflict.otherTaskId), regions: ch.conflict.regions },
+          markers: ch.status === "pending" && !ch.conflict && hasConflictMarkers(ch.proposed) ? true : undefined,
         })),
       };
     }
@@ -570,11 +584,21 @@ export class ChatController {
    * Shows, accepts or rejects a pending change from the chat. Without a path,
    * accepts or rejects every pending change of that run's task (or the whole run).
    */
-  async review(runId: string, action: ReviewAction, filePath?: string, taskId?: string): Promise<void> {
+  async review(runId: string, action: ReviewAction, filePath?: string, taskId?: string, choice?: ConflictChoice): Promise<void> {
     const conversationId = this.runOwner.get(runId) ?? this.currentId;
     const run = await this.tasks.load(runId);
     if (action === "show") {
       if (filePath) await this.host.showChange(runId, filePath);
+      return;
+    }
+    if (action === "resolve") {
+      // Picking a side writes nothing: the result is a draft again (or, keeping the file on disk, a rejected one).
+      if (!filePath || !choice) return;
+      const done = await resolveConflict(this.tasks, runId, filePath, choice);
+      this.changeNotes.delete(`${runId}:${filePath}`);
+      if (done?.status === "rejected") await this.host.closeChange(runId, filePath).catch(() => undefined);
+      else if (done) await this.host.showChange(runId, filePath).catch(() => undefined);
+      this.changed();
       return;
     }
     const root = run.workspaceRoot && (await this.host.openFolder(run.workspaceRoot));
@@ -589,6 +613,7 @@ export class ChatController {
       (c) => c.status === "pending" && (filePath ? c.path === filePath : !taskId || c.taskId === taskId),
     );
     const written: string[] = [];
+    const combined: string[] = [];
     const held: string[] = [];
     const failed: string[] = [];
     for (const c of targets) {
@@ -612,6 +637,7 @@ export class ChatController {
         if (res.ok) {
           this.changeNotes.delete(key);
           written.push(c.path);
+          if (res.combined) combined.push(c.path);
         } else {
           this.changeNotes.set(key, res.message);
           held.push(res.message);
@@ -626,6 +652,13 @@ export class ChatController {
     if (conversationId && targets.length > 1 && (written.length || action === "reject")) {
       const n = action === "accept" ? written.length : targets.length;
       await this.append(conversationId, { author: "system", runId, text: action === "accept" ? `Accepted ${n} draft(s) and wrote them to your project.` : `Rejected ${n} draft(s). Nothing was written for them.` });
+    }
+    if (conversationId && combined.length) {
+      await this.append(conversationId, {
+        author: "system",
+        runId,
+        text: `${combined.join(", ")} had changed on disk since the sub-agent read ${combined.length === 1 ? "it" : "them"}. The changes did not touch the same lines, so the draft was combined with the newer version and nothing was lost.`,
+      });
     }
     if (conversationId && action === "accept" && (held.length || failed.length || warnings.length)) {
       await this.append(conversationId, { author: "system", runId, tone: "warning", text: [...held.map((m) => `Not written yet: ${m}`), ...failed, ...warnings].join("\n") });

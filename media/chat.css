@@ -1487,3 +1487,8 @@ body.vscode-high-contrast-light [class^="tok-"] {
   align-items: baseline;
   margin-top: 4px;
 }
+
+.conflict-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}

@@ -13,7 +13,7 @@ Rules:
 - Each task must be doable alone by a worker who sees only that task and its files.
 - If "What we know so far" is given, copy the facts a task needs (file names, how things work, decisions) into that task's instructions.
 - fileScope lists every file or glob the task may create or change, relative to the workspace root.
-- Tasks that change the same files must not run at the same time: make one depend on the other.
+- Give each file to one task. If two tasks must change the same file, make one depend on the other so they never run at the same time.
 - dependsOn lists ids of tasks whose results this task needs.
 - Do not add tasks for running tests or reviewing; that happens automatically.
 - Set "changes": true only when a task creates or edits files. Tasks that read, explore, explain or summarise set "changes": false.

@@ -16,6 +16,10 @@ function target(call: Record<string, unknown> | undefined): string {
   return "";
 }
 
+function nameOf(tasks: Task[], taskId: unknown): string {
+  return (typeof taskId === "string" && tasks.find((t) => t.id === taskId)?.title) || (typeof taskId === "string" ? taskId : "another sub-agent");
+}
+
 /**
  * Turns a run event into a chat message from the sub-agent (or the
  * coordinator) it belongs to. Events that are only bookkeeping return undefined.
@@ -227,6 +231,36 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       return { author: "system", text: `Accepted the draft of ${event.message} and wrote it to your project.`, tone: "success" };
     case "change_rejected":
       return { author: "system", text: `Rejected the draft of ${event.message}. Nothing was written.` };
+    case "drafts_combined": {
+      const other = nameOf(tasks, data.with);
+      return coordinator(
+        `"${task?.title ?? event.taskId}" and "${other}" both drafted ${event.message} without seeing each other's draft. They changed different lines, so I combined them into one draft. Nothing was lost.`,
+      );
+    }
+    case "drafts_conflict": {
+      const other = nameOf(tasks, data.with);
+      const n = typeof data.regions === "number" ? data.regions : 1;
+      return {
+        ...coordinator(
+          `"${task?.title ?? event.taskId}" and "${other}" changed the same lines of ${event.message} (${n === 1 ? "one place" : `${n} places`}). Both versions are kept. Under Drafts, keep one, or keep both with conflict markers to sort out in the editor.`,
+          "warning",
+        ),
+        tag: "conflict",
+      };
+    }
+    case "disk_conflict":
+      return {
+        author: "system",
+        runId: event.runId,
+        tone: "warning",
+        text: `${event.message} changed on disk after the sub-agent read it, and both changed the same lines. Nothing was written. Under Drafts, keep your file, keep the draft, or keep both with conflict markers.`,
+      };
+    case "conflict_resolved": {
+      const kept = String(data.kept ?? "");
+      const what =
+        kept === "disk" ? "kept your file on disk and rejected the draft" : kept === "both" ? "kept both versions with conflict markers" : kept === "other" ? "kept the other version" : "kept the draft";
+      return { author: "system", runId: event.runId, text: `Conflict in ${event.message}: you ${what}.${kept === "disk" ? "" : " It is a draft again: Accept it to write it."}` };
+    }
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

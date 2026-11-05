@@ -325,16 +325,27 @@ describe("ChatController", () => {
       expect((await tasks.load(runId)).changes!.map((c) => c.status)).toEqual(["rejected", "accepted"]);
     });
 
-    it("asks before overwriting a file the user changed meanwhile, then overwrites on a second Accept", async () => {
-      const { controller, ws, runId } = await runWithChanges({ editFiles: false });
+    it("holds a conflict when the user changed the same lines meanwhile; a second Accept never overwrites", async () => {
+      const { controller, ws, runId, shown } = await runWithChanges({ editFiles: false });
       await fs.writeFile(path.join(ws, "README.md"), "mine\n");
       await controller.review(runId, "accept", "README.md");
       expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("mine\n");
       // Said in the chat too, not only on the card.
-      expect((await controller.state()).current!.entries.at(-1)).toMatchObject({ tone: "warning", text: expect.stringMatching(/^Not written yet: README.md changed on disk/) });
-      expect((await controller.state()).plans[runId]!.changes.find((c) => c.path === "README.md")!.note).toMatch(/changed on disk/);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.some((e) => e.tone === "warning" && /^Not written yet: README.md changed on disk/.test(e.text))).toBe(true);
+      const card = () => controller.state().then((s) => s.plans[runId]!.changes.find((c) => c.path === "README.md")!);
+      expect((await card()).conflict).toEqual({ with: "disk", otherAgent: undefined, regions: 1 });
       await controller.review(runId, "accept", "README.md");
-      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("new\n");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toBe("mine\n");
+
+      // Keeping both: a draft with markers, which the next Accept writes.
+      shown.length = 0;
+      await controller.review(runId, "resolve", "README.md", undefined, "both");
+      expect(shown).toContain("README.md");
+      expect(await card()).toMatchObject({ markers: true, state: "draft" });
+      expect((await card()).conflict).toBeUndefined();
+      await controller.review(runId, "accept", "README.md");
+      expect(await fs.readFile(path.join(ws, "README.md"), "utf8")).toMatch(/^<<<<<<< Your file on disk\nmine\n=======\nnew\n>>>>>>> Draft by /);
     });
 
     it("writes right away when Edit files is on, without asking", async () => {

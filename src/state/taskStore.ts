@@ -3,6 +3,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import { Mutex } from "../util/mutex";
 import { ChatMessage } from "../providers/types";
+import { combineDrafts } from "../changes/combine";
 import { PendingChange, Run, RunEvent, Task, TaskStatus, TRANSITIONS } from "./types";
 
 export type NewTask = Pick<Task, "title" | "instructions"> &
@@ -205,19 +206,52 @@ export class TaskStore {
     return task;
   }
 
-  /** Adds a task's proposed file changes. A later change to the same file from the same run replaces the earlier pending one. */
+  /**
+   * Adds a task's proposed file changes. A later draft of a file that was
+   * built on the pending one replaces it. One that was not (two sub-agents
+   * drafted the file without seeing each other's work) is combined with it,
+   * or holds a conflict for the user, so no sub-agent's work is lost.
+   */
   addChanges(runId: string, changes: PendingChange[]): Promise<Run> {
     return this.lock.run(async () => {
       const run = await this.load(runId);
       const list = (run.changes ??= []);
+      const titleOf = (taskId: string) => run.tasks.find((t) => t.id === taskId)?.title ?? taskId;
+      const notes: Omit<RunEvent, "time">[] = [];
       for (const c of changes) {
         const i = list.findIndex((x) => x.path === c.path && x.status === "pending");
-        if (i >= 0) list.splice(i, 1, { ...c, original: list[i]!.original });
-        else list.push(c);
+        if (i < 0) {
+          list.push(c);
+          continue;
+        }
+        const existing = list[i]!;
+        const { change, outcome } = combineDrafts(existing, c, titleOf);
+        list.splice(i, 1, change);
+        const other = change.conflict?.otherTaskId ?? existing.taskId;
+        if (outcome === "combined") {
+          notes.push({ runId, taskId: c.taskId, type: "drafts_combined", message: c.path, data: { path: c.path, with: other } });
+        } else if (outcome === "conflict" && !existing.conflict) {
+          notes.push({ runId, taskId: c.taskId, type: "drafts_conflict", message: c.path, data: { path: c.path, with: other, regions: change.conflict?.regions ?? 1 } });
+        }
       }
       run.updatedAt = this.now().toISOString();
       await this.save(run);
+      for (const n of notes) await this.log(n);
       return run;
+    });
+  }
+
+  /** Changes fields of the pending change to `filePath`. Resolves the updated change, or undefined if none is pending. */
+  patchChange(runId: string, filePath: string, patch: Partial<Omit<PendingChange, "path" | "status">>): Promise<PendingChange | undefined> {
+    return this.lock.run(async () => {
+      const run = await this.load(runId);
+      const change = run.changes?.find((c) => c.path === filePath && c.status === "pending");
+      if (!change) return undefined;
+      Object.assign(change, patch);
+      for (const k of Object.keys(patch) as (keyof typeof patch)[]) if (patch[k] === undefined) delete change[k];
+      run.updatedAt = this.now().toISOString();
+      await this.save(run);
+      return change;
     });
   }
 
