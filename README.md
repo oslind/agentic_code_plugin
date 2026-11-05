@@ -116,3 +116,16 @@ The version in `package.json` changes only when a release is made, never in an o
 
 - **During development:** leave `version` alone. `npm run package` stamps each VSIX with the time it was built (`out/build.json`), and the chat's model label shows it next to the version, for example `v0.6.0 · built 11-05 13:02`. That tells you which build is installed.
 - **At a release:** on `main`, with every change for the release merged, bump the version once (`npm version minor --no-git-tag-version` for new features, `patch` for fixes only), commit it as "Release 0.7.0", then run `npm run package` and install the VSIX.
+
+### Where the chat's code lives
+
+`src/chat/chatController.ts` is the chat's public face for the webview and VS Code. Its parts share one `ChatSession` (`session.ts`: the stores, the host, what the chat is doing, the cards waiting for you):
+
+- `runLoop.ts`: the coordinator's turn, research rounds, running or resuming a plan, the final reply.
+- `coordinatorChat.ts`: the coordinator's prompt and `routeTurn`, which turns the model's structured choice (`action`, `goal`, `complete`) into what runs. There are no keyword rules on your words: when the model says a question needs reading, it becomes research; when it says work is left but picked no action, it gets the action it promised.
+- `oversight.ts`: watching sub-agents, check-ins, answers to their questions, result reviews.
+- `verifier.ts`: verification before a request counts as done, and the fix-up rounds.
+- `approvals.ts`: the cards for commands, writes and checks, and a run's hooks.
+- `followUps.ts`: direct messages and reopened sub-agent conversations.
+- `drafts.ts`: Accept, Reject and Revert. `restarts.ts`: what a VS Code restart left behind.
+- `viewState.ts`: what the webview shows. `host.ts`, `scope.ts`, `helpers.ts`: the host interface and shared helpers.
