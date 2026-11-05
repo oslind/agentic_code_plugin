@@ -11,14 +11,15 @@ import { ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
 import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
-import { Verification, verifyRoundLimit } from "../coordinator/verify";
+import { AnswerCheck, Verification, verifyRoundLimit } from "../coordinator/verify";
 import { changedFilesOf, describeOutcome } from "./outcome";
 import { Conversation } from "./types";
+import { resumableTasks, resumeState } from "../state/resume";
 import { ChatHost } from "./host";
 import { ChatSession } from "./session";
 import { DoneBar } from "./viewState";
-import { clip, describePlan, isUnstarted, title } from "./helpers";
-import { learnedSoFar, runScope } from "./scope";
+import { clip, clipLine, describePlan, isUnstarted, plural, title } from "./helpers";
+import { learnedSoFar, runScope, userRequestOf } from "./scope";
 import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
@@ -70,21 +71,27 @@ export class RunLoop {
     }
     const c = await this.conversations.load(conversationId);
     const update = c.entries.filter((e) => e.runId === runId && e.taskId === taskId && e.tag === "update from follow-up").at(-1)?.text ?? "";
-    await this.s.append(conversationId, { author: "system", runId, text: `Continuing "${run.request.slice(0, 200)}" with the update from "${task.title}".` });
+    const userRequest = userRequestOf(run, c.entries);
+    await this.s.append(conversationId, { author: "system", runId, text: `Continuing "${(userRequest ?? run.request).slice(0, 200)}" with the update from "${task.title}".` });
     const status = unfinished.map((t) => `- "${t.title}": ${t.status.replace("_", " ")}`).join("\n");
     const continuation = [
       `The user talked with sub-agent "${task.title}" again after the run, then ended that chat and asked you to continue the original request with what came out of it.`,
-      `The original request: ${run.request}`,
+      userRequest ? `The user's original request: ${userRequest}` : "The user's original words were not recorded.",
+      // The coordinator's own summary of it was written by a model after research that read project files.
+      untrustedSection("What you planned for it then:", "your earlier plan for the request", run.request),
       `Tasks of that run that are not done:\n${status}`,
       // Written by a sub-agent that read project files: data, not instructions.
       untrustedSection(`The update from "${task.title}":`, `update from sub-agent "${task.title}" after a follow-up chat`, update || "(no update)"),
       "Continue the original request from where it stands now. Plan only what is still left to do (drafts waiting for review are already done), or answer if nothing is left. Do not plan work that is already done.",
     ].join("\n\n");
-    await this.respond(await this.conversations.load(conversationId), run.request, continuation);
+    await this.respond(await this.conversations.load(conversationId), userRequest ?? run.request, continuation, userRequest);
   }
 
-  /** The coordinator's turn on a message: answer, research, plan or run. `continuation` replaces a new user message. */
-  async respond(c: Conversation, text: string, continuation?: string): Promise<void> {
+  /**
+   * The coordinator's turn on a message: answer, research, plan or run. `continuation` replaces a new user message.
+   * `userRequest` is the user's own words a run started here keeps apart from the model's request; for a new message it is `text`.
+   */
+  async respond(c: Conversation, text: string, continuation?: string, userRequest: string | undefined = continuation ? undefined : text): Promise<void> {
     this.s.done = undefined;
     const waiting = !continuation && isGoAhead(text) ? await this.pendingPlan(await this.conversations.load(c.id)) : undefined;
     if (waiting && this.s.runOwner.has(waiting.id)) {
@@ -223,7 +230,7 @@ export class RunLoop {
           await doResearch({ ...t, action: "research", request: "", questions });
           return;
         }
-        const run = await this.tasks.createRun(t.request, c.workspaceRoot, undefined, learned);
+        const run = await this.tasks.createRun(t.request, c.workspaceRoot, undefined, learned, userRequest);
         planned = true;
         this.s.runOwner.set(run.id, c.id);
         await this.conversations.update(c.id, (x) => x.runIds.push(run.id));
@@ -311,80 +318,11 @@ export class RunLoop {
     }
     const run = await this.tasks.load(runId);
     if (!isUnstarted(run)) {
+      if (resumeState(run, process.pid)) return this.resumeRun(runId);
       await this.s.append(conversationId, { author: "system", text: "That plan has already run. Retry tasks from the Tasks view.", tone: "warning" });
       return;
     }
-    if (this.s.mode !== "act") await this.s.setMode("act");
-    // The plan's sub-agents may work on the same files; reopened conversations pass on what they found first.
-    await this.followUps.endFollowUpsOf(conversationId);
-
-    this.s.busy = "Waiting for you to approve the checks…";
-    this.s.runningRunId = runId;
-    this.s.done = undefined;
-    this.s.changed();
-    let ended: DoneBar = { status: "stopped", text: "The run was not started" };
-    try {
-      const workspaceRoot = run.workspaceRoot ?? (await this.conversations.load(conversationId)).workspaceRoot;
-      const checks = await this.approvals.chooseChecks(conversationId, workspaceRoot);
-      if (!checks) {
-        await this.s.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
-        return;
-      }
-      this.s.busy = `Sub-agents are working on ${run.tasks.length} task(s)…`;
-      this.s.changed();
-      await this.s.append(conversationId, {
-        author: "coordinator",
-        text: `Starting sub-agents for ${run.tasks.length} task(s). Each may only change its own files, and you review every change before it is written.`,
-      });
-      this.oversight.supervise(runId, conversationId, this.host.researchLimits().maxTurns);
-      const hooks = this.approvals.hooksFor(conversationId, runId, checks, workspaceRoot);
-      let outcome = await this.host.runPlan(runId, hooks);
-      // Let sub-agent messages that are still queued land before the summary.
-      await this.s.settle();
-      if (!outcome) {
-        await this.s.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
-        return;
-      }
-      // A sub-agent saying "done" is not the end: the coordinator verifies the request and sends sub-agents back for what is left.
-      let verification: Verification | undefined;
-      if (!this.s.stopping) ({ outcome, verification } = await this.verifier.verifyUntilDone(conversationId, workspaceRoot, runId, hooks, outcome));
-      const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
-      const finished = await this.tasks.load(runId);
-      const waitingReview = (finished.changes ?? []).filter((ch) => ch.status === "pending").length;
-      // The bar's live detail line counts the drafts; a count frozen in here would go stale after Accept.
-      const review = waitingReview ? " Drafts are waiting for your review." : "";
-      const notDone = outcome.failed.length + outcome.blocked.length;
-      ended = this.s.stopping
-        ? { status: "stopped", text: `Stopped.${review}` }
-        : verification
-          ? verification.verified
-            ? { status: "finished", text: `Finished and verified.${review}` }
-            : { status: "partial", text: `Finished, but not verified${verification.missing.length ? `: ${verification.missing.length} thing(s) still left` : ""}.${review}` }
-          : ok
-            ? { status: "finished", text: `Finished.${review}` }
-            : { status: "partial", text: `Finished, but ${notDone} of ${finished.tasks.length} task(s) did not complete.${review}` };
-      await this.s.append(conversationId, {
-        author: "coordinator",
-        kind: "outcome",
-        runId,
-        tone: ok ? "success" : "warning",
-        text: describeOutcome(finished, outcome, this.s.stopping),
-        outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
-      });
-      // The outcome lists what happened; the coordinator's own reply says what it means. A stop skips it.
-      if (!this.s.stopping) await this.answerFromRun(conversationId, workspaceRoot, finished, outcome, verification);
-    } catch (err) {
-      this.host.log("error", (err as Error).message);
-      ended = { status: "failed", text: "Failed. See the message above." };
-      await this.s.append(conversationId, { author: "system", kind: "error", text: (err as Error).message, tone: "error" });
-    } finally {
-      this.oversight.endSupervision(runId);
-      this.s.runningRunId = undefined;
-      this.s.busy = undefined;
-      this.s.stopping = false;
-      this.s.done = { ...ended, time: new Date().toISOString(), conversationId };
-      this.s.changed();
-    }
+    await this.startRun(conversationId, run, false);
   }
 
   /**
@@ -491,7 +429,7 @@ export class RunLoop {
     draft: { reply: string; thought?: string; thinking?: string } | undefined,
     limitReached: boolean,
     signal: AbortSignal,
-    review?: (answer: string) => Promise<{ answered: boolean; missing: string[] } | undefined>,
+    review?: (answer: string) => Promise<AnswerCheck | undefined>,
     canResearchMore = false,
   ): Promise<string[] | undefined> {
     this.s.busy = "Coordinator is combining the reports into an answer…";
@@ -510,7 +448,7 @@ export class RunLoop {
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
     // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
-    let check: { answered: boolean; missing: string[] } | undefined;
+    let check: AnswerCheck | undefined;
     if (review && !result.fallback) {
       this.s.busy = "Coordinator is checking that the answer covers your question…";
       this.s.changed();
@@ -521,11 +459,13 @@ export class RunLoop {
     if (check) {
       await this.s.append(c.id, {
         author: "coordinator",
-        tag: check.answered ? "verified" : "not verified",
+        tag: check.answered ? "verified" : check.missing.length ? "not verified" : "manual review required",
         tone: check.answered ? "success" : "warning",
         text: check.answered
           ? "I checked the answer below against your question: it covers every part."
-          : `I checked the answer below against your question, and it may not cover everything. No research rounds are left to look further. Still open:\n${check.missing.map((q) => `- ${q}`).join("\n")}`,
+          : check.missing.length
+            ? `I checked the answer below against your question, and it may not cover everything. No research rounds are left to look further. Still open:\n${check.missing.map((q) => `- ${q}`).join("\n")}`
+            : "I checked the answer below against your question and could not confirm it covers everything, but I could not name what is open. Manual review required: read the answer against your question yourself before relying on it.",
       });
     }
     if (result.suspicious.length) {
@@ -585,7 +525,7 @@ export class RunLoop {
           files: [...new Set(changes.filter((ch) => ch.taskId === t.id).map((ch) => ch.path))],
         })),
         drafts: { pending: of("pending"), accepted: of("accepted"), rejected: of("rejected") },
-        verification: verification && { verified: verification.verified, evidence: verification.evidence, summary: verification.summary, missing: verification.missing },
+        verification: verification && { verified: verification.verified, evidence: verification.evidence, summary: verification.summary, missing: verification.missing, manualReview: verification.manualReview },
       },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
@@ -613,6 +553,138 @@ export class RunLoop {
       return `- ${t.title} (${t.status.replace("_", " ")}): ${said.replace(/\s+/g, " ").slice(0, 300)}`;
     });
     return `\n\nReports from the sub-agents:\n${lines.join("\n")}`;
+  }
+
+  /**
+   * Continues a run that VS Code closed under, or that was stopped: the
+   * stopped sub-agents pick up their own conversation and drafts where they
+   * were, tasks that never started start now, and done tasks and every draft
+   * stay as they are. The user approves the checks again, as for any run.
+   */
+  async resumeRun(runId: string): Promise<void> {
+    const conversationId = this.s.runOwner.get(runId);
+    if (!conversationId) return;
+    if (this.s.busy) {
+      await this.s.append(conversationId, { author: "system", tone: "warning", text: `The run was not resumed because the chat is busy (${this.s.busy.replace(/…$/, "")}). Press "Resume" again when it is done.` });
+      return;
+    }
+    const run = await this.tasks.load(runId);
+    const state = resumeState(run, process.pid);
+    if (state === "elsewhere") {
+      await this.s.append(conversationId, { author: "system", tone: "warning", text: "This run is still working in another VS Code window, so it was not resumed here." });
+      return;
+    }
+    if (!state) {
+      await this.s.append(conversationId, { author: "system", tone: "warning", text: "There is nothing left to resume in that run." });
+      return;
+    }
+    if (this.s.currentId !== conversationId) {
+      this.s.currentId = conversationId;
+      this.s.mode = (await this.conversations.load(conversationId)).mode;
+    }
+    await this.startRun(conversationId, run, true);
+  }
+
+  /** Runs a plan's sub-agents, or resumes the ones left, then verifies and reports. */
+  async startRun(conversationId: string, run: Run, resume: boolean): Promise<void> {
+    const runId = run.id;
+    if (this.s.mode !== "act") await this.s.setMode("act");
+    // The plan's sub-agents may work on the same files; reopened conversations pass on what they found first.
+    await this.followUps.endFollowUpsOf(conversationId);
+
+    this.s.busy = "Waiting for you to approve the checks…";
+    this.s.runningRunId = runId;
+    this.s.done = undefined;
+    this.s.changed();
+    let ended: DoneBar = { status: "stopped", text: "The run was not started" };
+    try {
+      const workspaceRoot = run.workspaceRoot ?? (await this.conversations.load(conversationId)).workspaceRoot;
+      const checks = await this.approvals.chooseChecks(conversationId, workspaceRoot);
+      if (!checks) {
+        await this.s.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
+        return;
+      }
+      if (resume) {
+        // Checked again: the user may have answered the checks card after something else changed the run.
+        const left = resumableTasks(await this.tasks.load(runId));
+        if (left.length === 0 || resumeState(await this.tasks.load(runId), process.pid) === "elsewhere") {
+          await this.s.append(conversationId, { author: "system", text: "There is nothing left to resume in that run.", tone: "warning" });
+          return;
+        }
+        const again = await this.tasks.prepareResume(runId);
+        const current = await this.tasks.load(runId);
+        const done = current.tasks.filter((t) => t.status === "done").length;
+        const drafts = (current.changes ?? []).filter((c) => c.status === "pending").length;
+        this.s.busy = `Sub-agents are working on ${left.length} task(s) left…`;
+        this.s.changed();
+        await this.s.append(conversationId, {
+          author: "coordinator",
+          runId,
+          tag: "resumed",
+          text: [
+            `Resuming "${clipLine(run.request, 200)}": ${plural(left.length, "task")} left, ${done} of ${current.tasks.length} already done.`,
+            again.length ? `Sub-agents that were cut off continue from their last step with their own drafts.` : "",
+            drafts ? `${plural(drafts, "draft")} from before stay under Drafts for your review.` : "",
+            "Each may only change its own files, and you review every change before it is written.",
+          ].filter(Boolean).join(" "),
+        });
+      } else {
+        this.s.busy = `Sub-agents are working on ${run.tasks.length} task(s)…`;
+        this.s.changed();
+        await this.s.append(conversationId, {
+          author: "coordinator",
+          text: `Starting sub-agents for ${run.tasks.length} task(s). Each may only change its own files, and you review every change before it is written.`,
+        });
+      }
+      this.oversight.supervise(runId, conversationId, this.host.researchLimits().maxTurns);
+      const hooks = this.approvals.hooksFor(conversationId, runId, checks, workspaceRoot);
+      let outcome = await this.host.runPlan(runId, hooks);
+      // Let sub-agent messages that are still queued land before the summary.
+      await this.s.settle();
+      if (!outcome) {
+        await this.s.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
+        return;
+      }
+      // A sub-agent saying "done" is not the end: the coordinator verifies the request and sends sub-agents back for what is left.
+      let verification: Verification | undefined;
+      if (!this.s.stopping) ({ outcome, verification } = await this.verifier.verifyUntilDone(conversationId, workspaceRoot, runId, hooks, outcome));
+      const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
+      const finished = await this.tasks.load(runId);
+      const waitingReview = (finished.changes ?? []).filter((ch) => ch.status === "pending").length;
+      // The bar's live detail line counts the drafts; a count frozen in here would go stale after Accept.
+      const review = waitingReview ? " Drafts are waiting for your review." : "";
+      const notDone = outcome.failed.length + outcome.blocked.length;
+      ended = this.s.stopping
+        ? { status: "stopped", text: `Stopped.${review}` }
+        : verification
+          ? verification.verified
+            ? { status: "finished", text: `Finished and verified.${review}` }
+            : { status: "partial", text: `Finished, but not verified${verification.missing.length ? `: ${verification.missing.length} thing(s) still left` : verification.manualReview ? ": manual review required" : ""}.${review}` }
+          : ok
+            ? { status: "finished", text: `Finished.${review}` }
+            : { status: "partial", text: `Finished, but ${notDone} of ${finished.tasks.length} task(s) did not complete.${review}` };
+      await this.s.append(conversationId, {
+        author: "coordinator",
+        kind: "outcome",
+        runId,
+        tone: ok ? "success" : "warning",
+        text: describeOutcome(finished, outcome, this.s.stopping),
+        outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
+      });
+      // The outcome lists what happened; the coordinator's own reply says what it means. A stop skips it.
+      if (!this.s.stopping) await this.answerFromRun(conversationId, workspaceRoot, finished, outcome, verification);
+    } catch (err) {
+      this.host.log("error", (err as Error).message);
+      ended = { status: "failed", text: "Failed. See the message above." };
+      await this.s.append(conversationId, { author: "system", kind: "error", text: (err as Error).message, tone: "error" });
+    } finally {
+      this.oversight.endSupervision(runId);
+      this.s.runningRunId = undefined;
+      this.s.busy = undefined;
+      this.s.stopping = false;
+      this.s.done = { ...ended, time: new Date().toISOString(), conversationId };
+      this.s.changed();
+    }
   }
 
 }

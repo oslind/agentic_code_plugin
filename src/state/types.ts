@@ -1,3 +1,5 @@
+import { ChatMessage } from "../providers/types";
+
 export type TaskStatus =
   | "pending"
   | "running"
@@ -24,13 +26,18 @@ export interface Task {
   error?: string;
   /** The most recent error, kept after the task is retried. */
   lastError?: string;
+  /** Times the task was retried automatically after it failed (agentic.delegation.autoRetries). */
+  autoRetries?: number;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface Run {
   id: string;
+  /** What the coordinator asked the sub-agents to do. Written by a model: untrusted in later prompts. */
   request: string;
+  /** The user's own message that started the run, kept apart from the model-written request. Trusted. */
+  userRequest?: string;
   /** Research runs only read files; their tasks are questions answered by read-only sub-agents. */
   kind?: "change" | "research";
   /** The only folder this run's agents may touch. */
@@ -39,6 +46,12 @@ export interface Run {
   briefing?: string;
   /** File changes the sub-agents propose. Nothing is written to the project until one is accepted. */
   changes?: PendingChange[];
+  /**
+   * The VS Code extension host running this run right now. Set while its
+   * sub-agents work and cleared when they stop, so a run left with this set
+   * by a process that no longer exists was cut off by a restart.
+   */
+  activeIn?: { pid: number; since: string };
   createdAt: string;
   updatedAt: string;
   tasks: Task[];
@@ -54,9 +67,23 @@ export interface PendingChange {
   taskId: string;
   original: string | null;
   proposed: string;
-  status: "pending" | "accepted" | "rejected";
+  /** "reverted": it was accepted, then the user put the file back as it was before. */
+  status: "pending" | "accepted" | "rejected" | "reverted";
   /** Set when accepted without the user: the auto-approve switch for edits was on. */
   auto?: boolean;
+}
+
+/**
+ * Where a sub-agent was when it last started a step: its conversation and
+ * its drafts. Saved as it works, so a sub-agent cut off by a restart can
+ * continue from there instead of starting over.
+ */
+export interface TaskCheckpoint {
+  savedAt: string;
+  /** Steps it had taken in that attempt. */
+  turns: number;
+  history: ChatMessage[];
+  drafts: { path: string; original: string | null; content: string }[];
 }
 
 export interface RunEvent {

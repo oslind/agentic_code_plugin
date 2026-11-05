@@ -21,7 +21,7 @@ import { Approvals } from "./approvals";
  * changes of its run, and when the conversation ends it reports what is new
  * to the coordinator.
  */
-export interface FollowUp {
+interface FollowUp {
   key: string;
   runId: string;
   taskId: string;

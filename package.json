@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -315,6 +315,14 @@
           "description": "Most model calls one run may make: every step of its sub-agents plus the coordinator's check-ins, progress looks, result reviews and answers to sub-agents. When a run reaches it, its sub-agents are stopped as if you pressed Stop, and their drafts are kept for your review (never written automatically). 0 means no limit. Only your user settings count: a project cannot raise this.",
           "scope": "machine"
         },
+        "agentic.delegation.autoRetries": {
+          "type": "number",
+          "scope": "machine",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Times a sub-agent that failed (its checks kept failing, it ran out of steps, or a tool error stopped it) is started again on its own. The new attempt is told why the last one failed and sees what it had drafted. Not after you or the coordinator stopped it, and not once the run has used agentic.delegation.maxModelCallsPerRun, which every retry counts toward. 0 leaves every failure to you; you can still reopen or retry a sub-agent by hand. Read from user settings only, so a project cannot make more model calls happen."
+        },
         "agentic.delegation.maxResearchRounds": {
           "type": "number",
           "default": 3,
@@ -445,9 +453,11 @@
     "vscode:prepublish": "npm run compile && node scripts/stamp-build.mjs",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "typecheck": "tsc -p . --noEmit",
-    "lint": "eslint src test",
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.e2e.json",
+    "lint": "eslint src test e2e",
     "test": "vitest run",
+    "e2e": "tsc -p tsconfig.e2e.json && vitest run --config vitest.e2e.config.mts",
+    "e2e:replay": "tsc -p tsconfig.e2e.json && AGENTIC_E2E_REPLAY=1 vitest run --config vitest.e2e.config.mts",
     "check": "npm run typecheck && npm run lint && npm test",
     "package": "vsce package --out agentic-code-plugin.vsix"
   },

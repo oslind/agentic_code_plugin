@@ -310,7 +310,6 @@ export class Oversight {
     }
   }
 
-
   /** Stops looking at every run's sub-agents (Stop, dispose). */
   abortAll(): void {
     for (const s of this.supervised.values()) s.abort.abort();

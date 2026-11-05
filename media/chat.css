@@ -790,6 +790,11 @@ ul.mini-files li {
   justify-content: space-between;
 }
 
+ul.mini-files li button.small {
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
 .file-link {
   padding: 0;
   font-family: var(--vscode-editor-font-family, monospace);
@@ -890,7 +895,8 @@ ul.mini-files li {
 }
 
 .draft.state-applied,
-.draft.state-discarded {
+.draft.state-discarded,
+.draft.state-reverted {
   opacity: 0.75;
 }
 

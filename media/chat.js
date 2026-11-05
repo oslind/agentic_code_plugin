@@ -192,8 +192,12 @@
     stopped: "warning",
     failed: "error",
   };
-  const DRAFT_TONE = { proposed: "muted", draft: "attention", applied: "success", discarded: "muted" };
-  const DRAFT_LABEL = { proposed: "Proposed", draft: "Draft", applied: "Accepted", discarded: "Rejected" };
+  const DRAFT_TONE = { proposed: "muted", draft: "attention", applied: "success", discarded: "muted", reverted: "muted" };
+  const DRAFT_LABEL = { proposed: "Proposed", draft: "Draft", applied: "Accepted", discarded: "Rejected", reverted: "Reverted" };
+  const REVERT_TITLE = {
+    new: "Undo this accept: delete the file the sub-agent created. Only this file is touched.",
+    edit: "Undo this accept: put the file back as it was before the draft was written. Only this file is touched.",
+  };
 
   function stateIcon(s) {
     if (s === "initializing" || s === "working" || s === "verifying" || s === "asking") return el("span", { class: "spinner", "aria-hidden": "true" });
@@ -368,6 +372,32 @@
     );
   }
 
+  /** A run VS Code closed under, or one that was stopped, with a button to continue it. */
+  function resumeBanner() {
+    if (state.busy) return null;
+    const runId = Object.keys(state.plans).reverse().find((id) => state.plans[id].resumable);
+    if (!runId) return null;
+    const plan = state.plans[runId];
+    const interrupted = plan.resumable === "interrupted";
+    const drafts = (plan.changes || []).filter((c) => c.state === "draft").length;
+    return el(
+      "section",
+      { class: "card finished done-partial", role: "status" },
+      el("div", { class: "card-head" }, el("span", { class: "done-icon" }, "■"), el("span", { class: "card-title" }, interrupted ? "Interrupted when VS Code closed" : "Stopped before it was done")),
+      el(
+        "div",
+        { class: "finished-text" },
+        `${plural(plan.tasksLeft || 0, "task")} left. Resume continues where it stopped: sub-agents that were cut off pick up from their last step.` + (drafts ? ` ${plural(drafts, "draft")} from before wait under Drafts.` : ""),
+      ),
+      el(
+        "div",
+        { class: "row" },
+        el("button", { class: "primary", onclick: () => post({ type: "resumeRun", runId }) }, "Resume"),
+        drafts ? el("button", { class: "ghost", onclick: () => setTab("drafts") }, "Review drafts") : null,
+      ),
+    );
+  }
+
   /** Cards waiting for the user. Never hidden in another tab without a sign here. */
   function attentionSection(scope, filter) {
     const entries = state.current.entries.filter((e) => isWaiting(e) && (!filter || filter(e)));
@@ -396,6 +426,7 @@
     const entries = state.current.entries.filter(feedEntry);
     return [
       el("div", { class: "sticky-top" }, summaryCard()),
+      resumeBanner(),
       finishedBanner(),
       attentionSection("ov"),
       el("section", { class: "feed" }, el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Activity")), entries.map(message)),
@@ -428,6 +459,7 @@
         "div",
         { class: "row" },
         canRun ? el("button", { class: "primary", onclick: () => post({ type: "runPlan", runId: entry.runId }) }, "Run it") : null,
+        plan.resumable && !state.busy ? el("button", { class: "primary", title: "Continue the tasks that were stopped or cut off", onclick: () => post({ type: "resumeRun", runId: entry.runId }) }, "Resume") : null,
         plan.started ? el("button", { class: "ghost", onclick: () => setTab("agents") }, "See agents") : null,
       ),
     );
@@ -440,7 +472,7 @@
     const changes = ((state.plans[entry.runId] || {}).changes || []);
     const n = (st) => changes.filter((c) => c.state === st).length;
     const now = changes.length
-      ? [n("draft") ? `${n("draft")} awaiting review` : "", n("applied") ? `${n("applied")} accepted and written` : "", n("discarded") ? `${n("discarded")} rejected` : ""].filter(Boolean).join(" · ")
+      ? [n("draft") ? `${n("draft")} awaiting review` : "", n("applied") ? `${n("applied")} accepted and written` : "", n("discarded") ? `${n("discarded")} rejected` : "", n("reverted") ? `${n("reverted")} reverted` : ""].filter(Boolean).join(" · ")
       : "";
     return el(
       "div",
@@ -748,6 +780,7 @@
       {},
       el("button", { class: "file-link", title: c.path, onclick: () => post({ type: "review", runId: c.runId, action: "show", path: c.path }) }, baseName(c.path)),
       pill(DRAFT_TONE[c.state], DRAFT_LABEL[c.state]),
+      c.state === "applied" && c.revertable ? el("button", { class: "ghost danger small", title: REVERT_TITLE[c.kind], onclick: () => post({ type: "review", runId: c.runId, action: "revert", path: c.path }) }, c.note ? "Revert anyway" : "Revert") : null,
     );
   }
 
@@ -911,7 +944,8 @@
           "span",
           { class: "row" },
           c.state === "applied" ? el("button", { class: "ghost", title: "Open the file in your project, with the accepted draft", onclick: () => review(c, "open") }, "Open file") : null,
-          el("button", { class: "ghost", onclick: () => review(c, "show") }, c.state === "applied" ? (isNew ? "Draft" : "Diff") : isNew ? "Review file" : "Review diff"),
+          el("button", { class: "ghost", onclick: () => review(c, "show") }, c.state === "applied" || c.state === "reverted" ? (isNew ? "Draft" : "Diff") : isNew ? "Review file" : "Review diff"),
+          c.state === "applied" && c.revertable ? el("button", { class: "ghost danger", title: REVERT_TITLE[c.kind], onclick: () => review(c, "revert") }, c.note ? "Revert anyway" : "Revert") : null,
           pending ? el("button", { class: "ghost danger", title: "Discard this draft. Nothing is written.", onclick: () => review(c, "reject") }, "Reject") : null,
           pending ? el("button", { class: "primary", title: "Write this draft to your project", onclick: () => review(c, "accept") }, c.note ? "Accept anyway" : "Accept") : null,
         ),
@@ -924,6 +958,7 @@
     const pending = changes.filter((c) => c.state === "draft");
     const accepted = changes.filter((c) => c.state === "applied");
     const rejected = changes.filter((c) => c.state === "discarded");
+    const reverted = changes.filter((c) => c.state === "reverted");
     const seg = (by, label) => el("button", { class: "seg-btn" + (filesBy === by ? " on" : ""), "aria-pressed": filesBy === by ? "true" : "false", onclick: () => { filesBy = by; persist(); render(); } }, label);
     const list = (items) => {
       if (filesBy === "file") return items.map((c) => draftCard(c, true));
@@ -955,10 +990,12 @@
             "div",
             { class: "accepted-group" },
             el("div", { class: "section-head" }, el("span", { class: "section-title" }, "Accepted · written to your project"), pill("success", String(accepted.length))),
+            el("div", { class: "muted small" }, "Revert undoes an accept: the file goes back to how it was before, or is deleted if the sub-agent created it."),
             list(accepted),
           )
         : null,
       rejected.length ? details("decided", `Rejected · ${rejected.length}`, el("div", {}, list(rejected)), "fold decided-group") : null,
+      reverted.length ? details("reverted", `Reverted · ${reverted.length}`, el("div", {}, list(reverted)), "fold decided-group") : null,
       pending.length
         ? el(
             "div",

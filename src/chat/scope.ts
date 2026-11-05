@@ -1,4 +1,4 @@
-import { Task } from "../state/types";
+import { Run, Task } from "../state/types";
 import { ChatEntry } from "./types";
 
 /**
@@ -32,6 +32,7 @@ export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | un
   return lines.length ? lines.join("\n") : undefined;
 }
 
+
 const isPrompt = (e: ChatEntry) => e.author === "user" && e.kind !== "direct";
 
 /**
@@ -62,6 +63,18 @@ export function runScope(entries: ChatEntry[], runId: string): ChatEntry[] {
   let end = at + 1;
   while (end < entries.length && !isPrompt(entries[end]!)) end++;
   return entries.slice(start, end);
+}
+
+/**
+ * The user's own words for a run: their messages in the run's prompt (with a
+ * clarifying exchange before it), else the message the run recorded when it
+ * started. Never the coordinator's model-written request. Undefined when
+ * neither is known.
+ */
+export function userRequestOf(run: Pick<Run, "id" | "userRequest">, entries: ChatEntry[]): string | undefined {
+  const said = userMessagesOf(runScope(entries, run.id)).slice(-4).map((m) => m.trim()).filter(Boolean);
+  if (said.length) return said.join("\n");
+  return run.userRequest?.trim() || undefined;
 }
 
 /** The user's own messages to the coordinator, oldest first. Direct messages to sub-agents are left out. */

@@ -1,4 +1,5 @@
-import { PendingChange, TaskStatus } from "../state/types";
+import { PendingChange, Run, TaskStatus } from "../state/types";
+import { latestAccepted } from "../state/taskStore";
 import { CheckConfig } from "../checks/runner";
 import { AutoApprove } from "../tools/policy";
 import { parallelWaves } from "../coordinator/plan";
@@ -11,7 +12,7 @@ import { isUnstarted } from "./helpers";
 import type { ChatSession } from "./session";
 
 /** What the user can do with a pending change from the chat. */
-export type ReviewAction = "show" | "open" | "accept" | "reject";
+export type ReviewAction = "show" | "open" | "accept" | "reject" | "revert";
 
 /** What the user chose on a card that waited for them. */
 export type Decision =
@@ -29,6 +30,13 @@ export interface PlanView {
   waves: number;
   /** Proposed file changes and what became of them. */
   changes: ChangeView[];
+  /**
+   * Set when the run can be resumed: "interrupted" when VS Code closed under
+   * it, "stopped" when it was stopped or left tasks unstarted. Unset while it runs.
+   */
+  resumable?: "interrupted" | "stopped";
+  /** Tasks a resume would run. */
+  tasksLeft?: number;
 }
 
 export interface ChangeView {
@@ -45,8 +53,10 @@ export interface ChangeView {
   removed: number;
   /** Written by an auto-approve switch rather than by the user. */
   auto?: boolean;
-  /** Why the last Accept did not go through, e.g. the file changed on disk. */
+  /** Why the last Accept (or Revert) did not go through, e.g. the file changed on disk. */
   note?: string;
+  /** The newest accepted change of its file in this run: Revert puts the file back as it was before it. */
+  revertable?: boolean;
 }
 
 export interface ChatViewState {
@@ -88,6 +98,8 @@ export interface ViewExtras {
   followUps: Record<string, FollowUpState>;
   consulting: Record<string, string>;
   checkingOn: Record<string, string>;
+  /** Whether a run can be resumed, and how many tasks it has left. */
+  resumeView: (run: Run) => Pick<PlanView, "resumable" | "tasksLeft">;
 }
 
 /**
@@ -106,6 +118,7 @@ export async function buildViewState(
   const conversations = await s.conversations.list();
   let current: Conversation | undefined;
   if (s.currentId) current = await s.conversations.load(s.currentId).catch(() => undefined);
+  const now = extras();
   const plans: Record<string, PlanView> = {};
   for (const runId of current?.runIds ?? []) {
     const run = await s.tasks.load(runId).catch(() => undefined);
@@ -115,6 +128,7 @@ export async function buildViewState(
       tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
       started: !isUnstarted(run),
       waves: parallelWaves(run.tasks).length,
+      ...now.resumeView(run),
       changes: (run.changes ?? []).map((ch) => ({
         path: ch.path,
         taskId: ch.taskId,
@@ -124,13 +138,14 @@ export async function buildViewState(
         state: draftState(ch.status),
         ...lineCounts(ch.original, ch.proposed),
         auto: ch.auto,
-        note: s.changeNotes.get(`${runId}:${ch.path}`),
+        // Accept and Revert notes are kept apart, so a Revert warning never turns the next Accept into an overwrite.
+        note: ch.status === "pending" ? s.changeNotes.get(`${runId}:${ch.path}`) : ch === latestAccepted(run.changes, ch.path) ? s.changeNotes.get(`revert:${runId}:${ch.path}`) : undefined,
+        revertable: ch === latestAccepted(run.changes, ch.path) || undefined,
       })),
     };
   }
   const done = s.done && s.done.conversationId === current?.id ? { status: s.done.status, text: s.done.text, time: s.done.time } : undefined;
   const waiting = [...s.pending.keys()];
-  const now = extras();
   return {
     mode: s.mode,
     model: s.host.modelLabel(current?.workspaceRoot),

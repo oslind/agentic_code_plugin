@@ -33,7 +33,10 @@ describe("draft lifecycle", () => {
     expect(draftState("rejected")).toBe("discarded");
     expect(Object.values(DRAFT_LABEL).join(" ")).not.toMatch(/written|created|modified/i);
     expect(DRAFT_TRANSITIONS.draft).toEqual(["applied", "discarded"]);
-    expect(DRAFT_TRANSITIONS.applied).toEqual([]);
+    expect(draftState("reverted")).toBe("reverted");
+    // Only an accepted change can be reverted, and a reverted one is final.
+    expect(DRAFT_TRANSITIONS.applied).toEqual(["reverted"]);
+    expect(DRAFT_TRANSITIONS.reverted).toEqual([]);
   });
 
   it("counts added and removed lines like a diff", () => {
@@ -79,7 +82,7 @@ describe("buildDashboard", () => {
     const d = buildDashboard({ entries, plans: { r1: plan() }, runIds: ["r1"], waiting: [], busy: "Working", stopping: false, runningRunId: "r1" });
     expect(d.kind).toBe("changes");
     expect(d.counts).toMatchObject({ total: 3, completed: 1, running: 1, queued: 1 });
-    expect(d.drafts).toEqual({ awaiting: 1, accepted: 0, rejected: 1 });
+    expect(d.drafts).toEqual({ awaiting: 1, accepted: 0, rejected: 1, reverted: 0 });
     expect(d.coordinator.state).toBe("supervising");
     const [a, b, c] = d.agents;
     expect(a).toMatchObject({ state: "completed", activity: "Fixed the parser.", drafts: 1, draftFiles: 2, report: "Fixed the parser." });

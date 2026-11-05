@@ -1,5 +1,6 @@
 import { TaskStore } from "../state/taskStore";
 import { RunEvent } from "../state/types";
+import { Restarts } from "./restarts";
 import { AutoApprove } from "../tools/policy";
 import { Approvals } from "./approvals";
 import { ConversationStore } from "./conversationStore";
@@ -18,7 +19,7 @@ import { buildViewState, ChatViewState, Decision, ReviewAction } from "./viewSta
 
 export type { ChatHost, RunControl, RunHooks } from "./host";
 export type { ChangeView, ChatViewState, Decision, DoneBar, FollowUpState, PlanView, ReviewAction } from "./viewState";
-export { earlierAnswers, earlierWork, learnedSoFar, runScope, userMessagesOf } from "./scope";
+export { earlierAnswers, earlierWork, learnedSoFar, runScope, userMessagesOf, userRequestOf } from "./scope";
 
 /**
  * Drives the chat: one coordinator per conversation that talks with the user
@@ -32,7 +33,8 @@ export { earlierAnswers, earlierWork, learnedSoFar, runScope, userMessagesOf } f
  * - Verifier (verifier.ts): verifying a request before it is called done, with fix-up rounds;
  * - Approvals (approvals.ts): the cards for commands, writes and checks, and a run's hooks;
  * - FollowUps (followUps.ts): direct messages and reopened sub-agent conversations;
- * - Drafts (drafts.ts): Accept and Reject;
+ * - Drafts (drafts.ts): Accept, Reject and Revert;
+ * - Restarts (restarts.ts): what a VS Code restart left behind, and runs to resume;
  * - viewState.ts: what the webview shows.
  */
 export class ChatController {
@@ -43,6 +45,7 @@ export class ChatController {
   private readonly verifier: Verifier;
   private readonly runLoop: RunLoop;
   private readonly drafts: Drafts;
+  private readonly restarts: Restarts;
   private readonly stopEvents: () => void;
   private readonly ready: Promise<void>;
 
@@ -59,9 +62,10 @@ export class ChatController {
     this.verifier = new Verifier(this.s);
     this.runLoop = new RunLoop(this.s, this.oversight, this.approvals, this.followUps, this.verifier);
     this.drafts = new Drafts(this.s);
+    this.restarts = new Restarts(this.s);
     // Events are handled one at a time so sub-agent messages keep their order.
     this.stopEvents = tasks.onEvent((e) => void this.s.eventQueue.run(() => this.onRunEvent(e)));
-    this.ready = this.indexRuns();
+    this.ready = this.restarts.indexRuns();
   }
 
   /** What every model call is doing right now, so a long "thinking" shows that it is still working. */
@@ -87,29 +91,13 @@ export class ChatController {
     this.s.changed();
   }
 
-  private async indexRuns(): Promise<void> {
-    for (const s of await this.conversations.list()) {
-      const c = await this.conversations.load(s.id).catch(() => undefined);
-      for (const runId of c?.runIds ?? []) {
-        this.s.runOwner.set(runId, s.id);
-        // Research that was cut off by a restart has no live sub-agent; mark it failed.
-        const run = await this.tasks.load(runId).catch(() => undefined);
-        for (const t of run?.kind === "research" ? run.tasks.filter((x) => x.status === "running") : []) {
-          await this.tasks.setStatus(runId, t.id, "failed", "Interrupted by restart").catch(() => undefined);
-        }
-      }
-    }
-    this.s.currentId ??= (await this.conversations.list())[0]?.id;
-    const current = this.s.currentId ? await this.conversations.load(this.s.currentId).catch(() => undefined) : undefined;
-    if (current) this.s.mode = current.mode;
-  }
-
   state(): Promise<ChatViewState> {
     // What the chat is doing at the moment it is asked, before the loads let a running prompt move on.
     return buildViewState(this.s, { busy: this.s.busy, stopping: this.s.stopping, ready: this.ready }, () => ({
       followUps: this.followUps.followUpStates(),
       consulting: Object.fromEntries(this.oversight.consulting),
       checkingOn: Object.fromEntries(this.oversight.checkingOn),
+      resumeView: (run) => this.restarts.resumeView(run),
     }));
   }
 
@@ -279,6 +267,28 @@ export class ChatController {
    */
   runPlan(runId: string): Promise<void> {
     return this.runLoop.runPlan(runId);
+  }
+
+  /**
+   * Continues a run that VS Code closed under, or that was stopped: the
+   * stopped sub-agents pick up their own conversation and drafts where they
+   * were, tasks that never started start now, and done tasks and every draft
+   * stay as they are. The user approves the checks again, as for any run.
+   */
+  async resumeRun(runId: string): Promise<void> {
+    await this.ready;
+    return this.runLoop.resumeRun(runId);
+  }
+
+  /** Whether a run was started from a chat conversation. */
+  owns(runId: string): boolean {
+    return this.s.runOwner.has(runId);
+  }
+
+  /** Change runs found cut off by a restart when the chat started, for the "Resume?" notification. */
+  async interruptedRuns(): Promise<{ runId: string; conversationId: string; request: string }[]> {
+    await this.ready;
+    return this.restarts.interruptedRuns();
   }
 
   private async onRunEvent(event: RunEvent): Promise<void> {

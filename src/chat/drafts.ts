@@ -1,5 +1,6 @@
 import { TaskStore } from "../state/taskStore";
-import { acceptChange, rejectChange } from "../changes/review";
+import { Run } from "../state/types";
+import { acceptChange, rejectChange, revertChange } from "../changes/review";
 import { ConversationStore } from "./conversationStore";
 import { ChatHost } from "./host";
 import { ChatSession } from "./session";
@@ -38,6 +39,10 @@ export class Drafts {
       return;
     }
     if (!root) throw new Error(`${run.workspaceRoot ?? "This run's folder"} is not open in VS Code, so nothing can be written.`);
+    if (action === "revert") {
+      if (filePath) await this.revert(conversationId, run, root, filePath);
+      return;
+    }
     const targets = (run.changes ?? []).filter(
       (c) => c.status === "pending" && (filePath ? c.path === filePath : !taskId || c.taskId === taskId),
     );
@@ -85,6 +90,35 @@ export class Drafts {
     }
     this.s.changed();
     if (failed.length) throw new Error(failed.join(" "));
+  }
+
+  /**
+   * Undoes the newest accept of one file: the file goes back to how it was
+   * before, or is deleted if the draft created it. Always the user's own
+   * click, one file at a time. A second Revert after a "changed on disk"
+   * note means: put the old version back anyway.
+   */
+  async revert(conversationId: string | undefined, run: Run, root: string, filePath: string): Promise<void> {
+    const key = `revert:${run.id}:${filePath}`;
+    let res;
+    try {
+      res = await revertChange(this.tasks, run.id, filePath, root, { overwrite: this.s.changeNotes.has(key) });
+    } catch (err) {
+      const message = `Could not revert ${filePath}: ${(err as Error).message}`;
+      this.s.changeNotes.set(key, message);
+      this.host.log("error", message);
+      this.s.changed();
+      throw new Error(message);
+    }
+    if (res.ok) {
+      this.s.changeNotes.delete(key);
+      await this.host.closeChange(run.id, filePath).catch(() => undefined);
+      // The file itself is announced from the store's log (see eventFeed).
+    } else {
+      this.s.changeNotes.set(key, res.message);
+      if (conversationId) await this.s.append(conversationId, { author: "system", runId: run.id, tone: "warning", text: `Not reverted yet: ${res.message}` });
+    }
+    this.s.changed();
   }
 
 }

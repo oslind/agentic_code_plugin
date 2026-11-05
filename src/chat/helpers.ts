@@ -1,4 +1,5 @@
 import { Run } from "../state/types";
+import { ChatEntry } from "./types";
 
 /** Thinking can be long; keep enough to follow along. */
 export function clip(text: string | undefined, max = 4000): string | undefined {
@@ -14,6 +15,20 @@ export function title(text: string): string {
 
 export function describePlan(run: Run): string {
   return run.tasks.map((t, i) => `${i + 1}. ${t.title} (files: ${t.fileScope.join(", ")})`).join("\n");
+}
+
+export function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+export function clipLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** An entry that waits for the user to decide. */
+export function isCard(e: ChatEntry): boolean {
+  return e.kind === "checks" || e.kind === "approval" || e.kind === "question";
 }
 
 export function isUnstarted(run: Run): boolean {

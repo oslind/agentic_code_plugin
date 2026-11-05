@@ -11,11 +11,11 @@ import { ConversationStore } from "./conversationStore";
 import { isReadOnlyPlan } from "./coordinatorChat";
 import { commandEventData } from "../worker/worker";
 import { draftsForReview } from "../coordinator/review";
-import { checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, Verification, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
+import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
-import { runScope, userMessagesOf } from "./scope";
+import { runScope, userMessagesOf, userRequestOf } from "./scope";
 
 /**
  * The coordinator verifying a request before it calls it done: the approved
@@ -37,10 +37,10 @@ export class Verifier {
   }
 
   /** Does the combined answer cover the question? Undefined when the check itself failed; the answer is then sent as it is. */
-  async checkResearchAnswer(workspaceRoot: string, question: string, answer: string, signal: AbortSignal): Promise<{ answered: boolean; missing: string[] } | undefined> {
+  async checkResearchAnswer(workspaceRoot: string, question: string, answer: string, signal: AbortSignal): Promise<AnswerCheck | undefined> {
     try {
       const res = await checkAnswer(this.s.coordinatorProvider(workspaceRoot), question, answer, { signal });
-      this.host.log("info", `Checked the research answer: ${res.answered ? "it answers the question" : `still open: ${res.missing.join(" | ")}`}.`);
+      this.host.log("info", `Checked the research answer: ${res.answered ? "it answers the question" : res.missing.length ? `still open: ${res.missing.join(" | ")}` : "not confirmed, nothing named (manual review required)"}.`);
       return res;
     } catch (err) {
       if (signal.aborted) throw err;
@@ -80,6 +80,8 @@ export class Verifier {
       try {
         verification = await this.verifyOnce(conversationId, workspaceRoot, runId, hooks.checks, latest, round, abort.signal);
         if (verification.verified) return { outcome, verification };
+        // Nothing specific to fix: no fix-up tasks are invented, the user reviews the work.
+        if (verification.manualReview && verification.missing.length === 0) return { outcome, verification };
         if (round >= maxRounds) {
           await this.s.append(conversationId, {
             author: "coordinator",
@@ -161,7 +163,7 @@ export class Verifier {
     });
     // The newest draft of each file that is not rejected: what the user would get.
     const newest = new Map<string, PendingChange>();
-    for (const ch of run.changes ?? []) if (ch.status !== "rejected") newest.set(ch.path, ch);
+    for (const ch of run.changes ?? []) if (ch.status !== "rejected" && ch.status !== "reverted") newest.set(ch.path, ch);
     const ctx = {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,
@@ -185,9 +187,9 @@ export class Verifier {
     await this.s.append(conversationId, {
       author: "coordinator",
       runId,
-      tag: v.verified ? "verified" : "not verified",
+      tag: v.verified ? "verified" : v.manualReview ? "manual review required" : "not verified",
       tone: v.verified ? "success" : "warning",
-      text: `${v.verified ? "Verified: the request is done." : "Not verified yet."} ${v.evidence}${v.summary ? ` ${v.summary}` : ""}${left}`,
+      text: `${v.verified ? "Verified: the request is done." : "Not verified yet."} ${v.evidence}${v.summary ? ` ${v.summary}` : ""}${left}${v.manualReview && !v.missing.length ? `\n\n${MANUAL_REVIEW}` : ""}`,
       thought: v.thought,
       thinking: clip(v.thinking),
     });
@@ -252,11 +254,13 @@ export class Verifier {
     const run = await this.tasks.load(runId);
     const fileTree = await this.host.fileTree(workspaceRoot, signal).catch(() => undefined);
     const reports: VerifyTask[] = run.tasks.map((t) => ({ title: t.title, status: t.status.replace("_", " "), summary: t.summary ?? t.error ?? "" }));
+    // The user's own words are the instruction; the coordinator's model-written request only goes along fenced.
+    const userRequest = userRequestOf(run, (await this.conversations.load(conversationId)).entries);
     let result;
     try {
       result = await planRequest(
         this.s.coordinatorProvider(workspaceRoot, runId),
-        { request: fixUpRequest(run.request, round), fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks) },
+        { request: fixUpRequest(userRequest, round), planned: run.request, fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks) },
         { signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Fix-up plan retry ${n}: ${err}`) },
       );
     } catch (err) {

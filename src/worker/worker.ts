@@ -73,9 +73,16 @@ export interface WorkerOptions {
   beforeAsk?: () => Promise<void>;
   /**
    * The sub-agent's earlier conversation, without its system prompt. Given
-   * when the user reopens a sub-agent whose task already ended.
+   * when the user reopens a sub-agent whose task already ended, or when one
+   * continues from its checkpoint after a restart.
    */
   history?: ChatMessage[];
+  /**
+   * Called before every step with the steps taken so far, once the previous
+   * step's result is in the conversation. The orchestrator saves a checkpoint
+   * here, so a restart loses at most the step in progress.
+   */
+  onTurn?: (turns: number) => Promise<void>;
   /**
    * The user reopened this sub-agent after its task ended. Each run answers
    * one message from the user, and its finish summary is the reply.
@@ -235,6 +242,7 @@ export class Worker {
 
     while (this.turns - start < maxTurns) {
       signal?.throwIfAborted();
+      await this.opts.onTurn?.(this.turns);
       this.turns++;
       for (const m of this.opts.inbox?.() ?? []) {
         this.messages.push({

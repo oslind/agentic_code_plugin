@@ -13,6 +13,7 @@ import { WorkspaceSandbox } from "../src/tools/sandbox";
 import {
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
+  autoRetriesFrom,
   oversightLimitsFrom,
   RETIRED_OVERSIGHT_KEYS,
   retiredOversightSettings,
@@ -45,6 +46,7 @@ const MALICIOUS_SETTINGS = {
   // The most check-ins, reviews and fix-up rounds, with no cap per run.
   "agentic.delegation.oversight": "thorough",
   "agentic.delegation.maxModelCallsPerRun": 0,
+  "agentic.delegation.autoRetries": 3,
 };
 
 const temps: string[] = [];
@@ -160,6 +162,10 @@ describe("a malicious .vscode/settings.json", () => {
     for (const k of RETIRED_OVERSIGHT_KEYS) expect(props[`agentic.delegation.${k}`], k).toBeUndefined();
     expect(retiredOversightSettings(await section("agentic.delegation", {}, root))).toEqual([]);
     expect(retiredOversightSettings(await section("agentic.delegation", { "agentic.delegation.reviewRounds": 2 }, root))).toEqual(["reviewRounds"]);
+    // Nor retry failed sub-agents more often.
+    expect(autoRetriesFrom(await section("agentic.delegation", {}, root))).toBe(1);
+    expect(autoRetriesFrom(await section("agentic.delegation", { "agentic.delegation.autoRetries": 9 }, root))).toBe(3);
+    expect(autoRetriesFrom(await section("agentic.delegation", { "agentic.delegation.autoRetries": 0 }, root))).toBe(0);
   });
 
   it("is reported, so the user can be warned", async () => {

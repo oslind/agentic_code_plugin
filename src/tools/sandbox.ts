@@ -163,6 +163,18 @@ export class WorkspaceSandbox implements ProjectFiles {
   }
 
   /**
+   * Deletes one file, with the same rules as writing it: inside the
+   * workspace, never a protected file, never a folder. A link is removed
+   * itself; what it points to is left alone.
+   */
+  async deleteFile(relPath: string): Promise<void> {
+    const target = await this.resolveForWrite(relPath);
+    const stat = await fs.lstat(target);
+    if (stat.isDirectory()) throw new SandboxError(`'${relPath}' is a folder and is never deleted`);
+    await fs.unlink(target);
+  }
+
+  /**
    * Lists workspace files matching a glob. Symlinked directories are never
    * entered, and symlinked files are listed only if they point inside.
    */

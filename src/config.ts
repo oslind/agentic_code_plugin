@@ -5,6 +5,7 @@ import { CheckConfig } from "./checks/runner";
 import { safeLinkDirs } from "./changes/scratch";
 import { AutoApprove } from "./tools/policy";
 import {
+  autoRetriesFrom,
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
   legacyApiKeyFrom,
@@ -187,4 +188,9 @@ export function readOversightLimits(): OversightLimits {
 /** Retired oversight settings still in the user's settings, as full keys. */
 export function readRetiredOversightSettings(): string[] {
   return retiredOversightSettings(vscode.workspace.getConfiguration("agentic.delegation")).map((k) => `agentic.delegation.${k}`);
+}
+
+/** Times a failed sub-agent is retried automatically. User settings only, so a project cannot make a run call the model more. */
+export function readAutoRetries(): number {
+  return autoRetriesFrom(vscode.workspace.getConfiguration("agentic.delegation"));
 }

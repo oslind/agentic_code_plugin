@@ -47,7 +47,12 @@ export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens"] as const;
  * per-run cap on all model calls. A project could otherwise turn a run into
  * many more requests to your model server.
  */
-export const USER_ONLY_DELEGATION_KEYS = ["oversight", "maxModelCallsPerRun"] as const;
+export const USER_ONLY_DELEGATION_KEYS = ["oversight", "maxModelCallsPerRun", "autoRetries"] as const;
+
+/** Times a failed sub-agent is started again on its own, 0 (off) to 3, default 1. From user settings only: each retry calls the model again. */
+export function autoRetriesFrom(section: InspectableSection): number {
+  return Math.max(0, Math.min(3, Math.floor(userValue(section, "autoRetries", 1, isNumber))));
+}
 
 /**
  * Settings replaced by agentic.delegation.oversight. They are no longer read;

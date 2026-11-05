@@ -13,3 +13,6 @@ scripts/
 *.vsix
 .gitignore
 docs/
+e2e/
+tsconfig.e2e.json
+vitest.e2e.config.mts
