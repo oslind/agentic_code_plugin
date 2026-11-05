@@ -6,7 +6,7 @@ It is opt-in. `npm test` and CI never need a model server; they only run a self-
 
 ## Running it
 
-From the repo in WSL, with Ollama running:
+From the repo in WSL, with Ollama running. It needs Node 20 or newer: if `node --version` in a login shell says 12, run `nvm use 20` first.
 
 ```bash
 AGENTIC_E2E_MODEL=qwen3:8b npm run e2e
@@ -36,6 +36,7 @@ With Ollama, the model is unloaded at the end (`keep_alive: 0`) so it does not h
 | `AGENTIC_E2E_ONLY` | all | Comma-separated scenario names. |
 | `AGENTIC_E2E_PARALLEL` | `1` | Sub-agents at once. One GPU serves one request at a time anyway. |
 | `AGENTIC_E2E_STALL_MIN` | `3` | Fail as stalled when no model call runs and the chat has not changed for this many minutes. |
+| `AGENTIC_E2E_SILENCE_MIN` | `5` | Fail when one model request sends nothing back (not even thinking) for this many minutes. The first live run had a request hang for 27 minutes. |
 | `AGENTIC_E2E_TIMEOUT_MIN` | `30` | Fail a scenario that takes longer than this. |
 | `AGENTIC_E2E_RECORD` | off | `1`: a passing scenario's model calls become its recording in `e2e/recordings/`. |
 | `AGENTIC_E2E_KEEP_LOADED` | off | `1`: leave the model loaded afterwards. |

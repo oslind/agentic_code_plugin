@@ -68,6 +68,12 @@ export interface Scenario {
 export interface HarnessOptions {
   /** Fail as stalled when no model call is running and nothing changed for this long. */
   stallMs: number;
+  /**
+   * Fail when one model request has sent nothing back (not even thinking) for
+   * this long. The extension waits for ever by design, so a server that drops
+   * a request would otherwise only end at the scenario timeout. Unset: off.
+   */
+  silenceMs?: number;
   /** Fail when the whole scenario takes longer than this. */
   timeoutMs: number;
   /** Sub-agents running at once. One GPU usually means 1. */
@@ -269,7 +275,9 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
     const now = Date.now();
     const quiet = now - Math.max(lastChange, provider.lastActivity);
     if (stopped) return;
+    const silent = now - provider.lastActivity;
     if (provider.inFlight === 0 && quiet > opts.stallMs) stop(`stalled: no model call and no change in the chat for ${Math.round(quiet / 1000)} s`);
+    else if (provider.inFlight > 0 && opts.silenceMs && silent > opts.silenceMs) stop(`model request silent: call ${provider.calls.length} sent nothing back for ${Math.round(silent / 1000)} s (the server may have dropped it)`);
     else if (now - started > opts.timeoutMs) stop(`timed out after ${Math.round((now - started) / 1000)} s`);
   }, 1000);
 
