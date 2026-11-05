@@ -96,7 +96,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
       const recordingFile = path.join(RECORDINGS, `${scenario.name}.jsonl`);
       let provider;
       if (live) {
-        provider = liveProvider(live, log);
+        provider = liveProvider({ ...live, ...scenario.model }, log);
         const ctx = await ollamaContextLength(live.baseUrl, live.model);
         if (ctx && ctx < live.contextWindow) log(`warning: Ollama runs ${live.model} with a ${ctx}-token context, below AGENTIC_E2E_CONTEXT=${live.contextWindow}. Long prompts are cut off; see docs/e2e.md.`);
       } else {

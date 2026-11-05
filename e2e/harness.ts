@@ -20,7 +20,8 @@ import { ModelProvider } from "../src/providers/types";
 import { TaskStore } from "../src/state/taskStore";
 import { AutoApprove } from "../src/tools/policy";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
-import { oversightLimitsFrom } from "../src/userSettings";
+import { SkillService, TrustedFiles } from "../src/skills/service";
+import { autoCompactFrom, autoRetriesFrom, compactSubAgentsFrom, oversightLimitsFrom, skillSettingsFrom } from "../src/userSettings";
 import { RecordedCall, RecordingProvider } from "./providers";
 
 /** What a scenario's own expectations can look at once the prompt is dealt with. */
@@ -62,6 +63,16 @@ export interface Scenario {
   endStatus?: DoneBar["status"][];
   /** Whether the prompt must end with an answer from the coordinator (research answer or final reply). Default true. */
   endsWithAnswer?: boolean;
+  /** Model settings for this scenario only, such as a small context to force compaction. Applied by the suite. */
+  model?: { contextWindow?: number; maxOutputTokens?: number; structuredOutput?: "json_schema" | "json_object" | "none" };
+  /** Deny every approval card (commands, sensitive files), like a cautious user. Default: allow. */
+  deny?: boolean;
+  /** Press Stop this long after sub-agents start working on the first prompt, then go on with the next prompt. */
+  stopAfterMs?: number;
+  /** agentic.chat.coordinatorHistoryTokens for this scenario. Default: the extension's 12000. */
+  historyTokens?: number;
+  /** Trust the project's own skill files, as a user pressing "Use project skills" would. Default: not trusted. */
+  trustProjectSkills?: boolean;
   /** The scenario's own checks. Returns what went wrong; empty means it passed. */
   expect(run: ScenarioRun): Promise<string[]> | string[];
 }
@@ -129,10 +140,13 @@ function decisionFor(entry: ChatEntry, scenario: Scenario): { decision: Decision
     const checks = scenario.checks ?? [];
     return checks.length ? { decision: { kind: "checks", checks, remember: false }, label: "approved checks" } : { decision: { kind: "skip" }, label: "no checks" };
   }
-  if (entry.kind === "approval") return { decision: { kind: "allow" }, label: "allowed" };
+  if (entry.kind === "approval") return scenario.deny ? { decision: { kind: "deny" }, label: "denied" } : { decision: { kind: "allow" }, label: "allowed" };
   const text = scenario.answer ?? DEFAULT_ANSWER;
   return { decision: { kind: "answer", text }, label: text };
 }
+
+/** A user who has changed no settings: every user-only value is its default. */
+const NO_USER_SETTINGS = { inspect: () => undefined };
 
 export async function runScenario(scenario: Scenario, model: ModelProvider, opts: HarnessOptions): Promise<ScenarioResult> {
   const log = opts.log ?? (() => {});
@@ -158,6 +172,13 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
       };
     },
   };
+  // Built-in skills, no user skills, and the project's only if the scenario trusts them.
+  const trusted = new Map<string, TrustedFiles>();
+  const skills = new SkillService(path.join(tmp, "user-skills"), () => skillSettingsFrom(NO_USER_SETTINGS), {
+    get: (r) => trusted.get(r),
+    set: async (r, t) => void (t ? trusted.set(r, t) : trusted.delete(r)),
+  });
+  if (scenario.trustProjectSkills) await skills.trustProject(root);
   const runs = new Map<string, AbortController>();
   const maxTurns = 30;
   const host: ChatHost = {
@@ -181,6 +202,10 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
         maxParallel: opts.maxParallel,
         maxTurns,
         maxFixRounds: 2,
+        // The extension's defaults, as runCommands.ts passes them.
+        autoRetries: autoRetriesFrom(NO_USER_SETTINGS),
+        compactSteps: compactSubAgentsFrom(NO_USER_SETTINGS),
+        skills: hooks.skills,
         linkDirs: [],
         signal: abort.signal,
         terminal,
@@ -218,10 +243,13 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
       maxTasks: 12,
       maxResearchers: 8,
       maxResearchRounds: 3,
-      ...oversightLimitsFrom({ inspect: () => undefined }),
-      verify: scenario.verify ?? true,
-      verifyRounds: 2,
+      ...oversightLimitsFrom(NO_USER_SETTINGS),
+      ...(scenario.verify !== undefined ? { verify: scenario.verify } : {}),
     }),
+    coordinatorHistoryTokens: () => scenario.historyTokens ?? 12000,
+    autoCompact: () => autoCompactFrom(NO_USER_SETTINGS),
+    compactSubAgents: () => compactSubAgentsFrom(NO_USER_SETTINGS),
+    skills: (workspaceRoot) => skills.catalog(workspaceRoot),
     scratchLinkDirs: () => [],
     showChange: async () => {},
     closeChange: async () => {},
@@ -285,9 +313,28 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
   let transcript = "";
   let done: DoneBar | undefined;
   try {
-    for (const prompt of scenario.prompts) {
+    for (const [i, prompt] of scenario.prompts.entries()) {
       log(`user: ${prompt}`);
-      await controller.send(prompt);
+      // A user who presses Stop while sub-agents work on the first prompt.
+      let pressStop: ReturnType<typeof setInterval> | undefined;
+      if (i === 0 && scenario.stopAfterMs) {
+        let workingSince: number | undefined;
+        pressStop = setInterval(() => {
+          void controller.state().then((st) => {
+            if (!st.runningRunId) return;
+            workingSince ??= Date.now();
+            if (Date.now() - workingSince < scenario.stopAfterMs!) return;
+            clearInterval(pressStop);
+            log("user pressed Stop");
+            controller.cancel();
+          });
+        }, 1000);
+      }
+      try {
+        await controller.send(prompt);
+      } finally {
+        if (pressStop) clearInterval(pressStop);
+      }
       if (stopped) break;
     }
     let state = await controller.state();
