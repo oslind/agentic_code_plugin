@@ -23,6 +23,8 @@ export interface ChatEntry {
   tone?: "info" | "success" | "warning" | "error";
   /** The agent's own one-line reason for what it did. */
   thought?: string;
+  /** Set on a coordinator reply that stopped before it was complete. Shown as "cut off", never as a finished answer. */
+  cutOff?: boolean;
   /** The model's full thinking for this step, when it produced any. Shown collapsed. */
   thinking?: string;
   /** For a checks card: the proposed or chosen verification commands. */

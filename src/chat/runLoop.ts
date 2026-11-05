@@ -5,7 +5,7 @@ import { TaskStore } from "../state/taskStore";
 import { Run } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
-import { failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
+import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
 import { coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
@@ -266,7 +266,10 @@ export class RunLoop {
         let moreRounds = verifyRoundLimit(limits.verifyRounds);
         for (;;) {
           const review = limits.verify ? (answer: string) => this.verifier.checkResearchAnswer(c.workspaceRoot, text, answer, abort.signal) : undefined;
-          const open = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds);
+          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds);
+          // A cut-off answer is not a finished one, and the bar says so.
+          if (answered.cutOff) ended = { status: "partial", text: "Finished, but the answer was cut off before it was complete." };
+          const open = answered.open;
           if (!open) break;
           moreRounds--;
           await this.s.append(c.id, {
@@ -429,7 +432,7 @@ export class RunLoop {
     signal: AbortSignal,
     review?: (answer: string) => Promise<AnswerCheck | undefined>,
     canResearchMore = false,
-  ): Promise<string[] | undefined> {
+  ): Promise<{ open?: string[]; cutOff?: CutOff }> {
     this.s.busy = "Coordinator is combining the reports into an answer…";
     this.s.changed();
     const reports: ResearchReport[] = [];
@@ -446,13 +449,14 @@ export class RunLoop {
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
     // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
+    // Neither is a cut-off answer: it is unfinished whatever a check says, and the user is told so below.
     let check: AnswerCheck | undefined;
-    if (review && !result.fallback) {
+    if (review && !result.fallback && !result.cutOff) {
       this.s.busy = "Coordinator is checking that the answer covers your question…";
       this.s.changed();
       check = await review(result.text);
       signal.throwIfAborted();
-      if (check && !check.answered && check.missing.length && canResearchMore) return check.missing;
+      if (check && !check.answered && check.missing.length && canResearchMore) return { open: check.missing };
     }
     if (check) {
       await this.s.append(c.id, {
@@ -475,15 +479,20 @@ export class RunLoop {
         text: `The report from ${which} contains text that reads like orders to an AI, for example "ignore previous instructions". It may come from a file in the project that tries to steer the agents. It was treated as data, not followed, but check the answer below against the files yourself.`,
       });
     }
+    if (result.cutOff) {
+      this.host.log("warn", `The research answer is unfinished (${result.cutOff === "length" ? "stopped at the reply length limit" : "ends with a lead-in and nothing after it"}).`);
+      await this.s.append(c.id, { author: "system", tone: "warning", text: describeCutOff(result.cutOff, "The answer below") });
+    }
     await this.s.append(c.id, {
       author: "coordinator",
       kind: "answer",
       tag: "from research",
-      text: result.text,
+      ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
+      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text,
       thought: draft?.thought,
       thinking: clip(result.thinking ?? draft?.thinking),
     });
-    return undefined;
+    return { cutOff: result.cutOff };
   }
 
   /**
@@ -491,22 +500,24 @@ export class RunLoop {
    * always ends with an answer in words and not only the outcome list. If the
    * model gives nothing usable, the outcome above is the reply.
    */
-  async answerFromRun(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, verification?: Verification): Promise<void> {
+  async answerFromRun(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, verification?: Verification): Promise<CutOff | undefined> {
     this.s.busy = "Coordinator is writing its final reply…";
     // Stop ends this call too; the outcome above then stays the reply.
     const abort = new AbortController();
     this.s.abort = abort;
     this.s.changed();
     try {
-      await this.writeRunReply(conversationId, workspaceRoot, run, outcome, abort.signal, verification);
+      return await this.writeRunReply(conversationId, workspaceRoot, run, outcome, abort.signal, verification);
     } catch (err) {
       if (!abort.signal.aborted) throw err;
+      return undefined;
     } finally {
       if (this.s.abort === abort) this.s.abort = undefined;
     }
   }
 
-  async writeRunReply(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, signal: AbortSignal, verification?: Verification): Promise<void> {
+  /** Writes the final reply, and says whether it came out unfinished. */
+  async writeRunReply(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, signal: AbortSignal, verification?: Verification): Promise<CutOff | undefined> {
     const c = await this.conversations.load(conversationId);
     const question = [...runScope(c.entries, run.id)].reverse().find((e) => e.author === "user" && e.kind !== "direct")?.text ?? run.request;
     const changes = run.changes ?? [];
@@ -528,7 +539,7 @@ export class RunLoop {
       },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
-    if (!result || signal.aborted) return;
+    if (!result || signal.aborted) return undefined;
     if (result.suspicious.length) {
       const which = result.suspicious.map((n) => `"${run.tasks[n - 1]!.title}"`).join(", ");
       await this.s.append(conversationId, {
@@ -537,7 +548,17 @@ export class RunLoop {
         text: `The report from ${which} contains text that reads like orders to an AI. It was treated as data, not followed, but check the reply below against the drafts yourself.`,
       });
     }
-    await this.s.append(conversationId, { author: "coordinator", kind: "answer", tag: "final reply", runId: run.id, text: result.text, thinking: clip(result.thinking) });
+    if (result.cutOff) await this.s.append(conversationId, { author: "system", tone: "warning", runId: run.id, text: describeCutOff(result.cutOff, "The final reply below") });
+    await this.s.append(conversationId, {
+      author: "coordinator",
+      kind: "answer",
+      tag: "final reply",
+      ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
+      runId: run.id,
+      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text,
+      thinking: clip(result.thinking),
+    });
+    return result.cutOff;
   }
 
   /**
@@ -671,7 +692,10 @@ export class RunLoop {
         outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
       });
       // The outcome lists what happened; the coordinator's own reply says what it means. A stop skips it.
-      if (!this.s.stopping) await this.answerFromRun(conversationId, workspaceRoot, finished, outcome, verification);
+      if (!this.s.stopping && (await this.answerFromRun(conversationId, workspaceRoot, finished, outcome, verification))) {
+        // The work itself is as the outcome says; only the reply about it is unfinished, and the bar must not call it complete.
+        ended = { status: ended.status === "finished" ? "partial" : ended.status, text: `${ended.text} The final reply was cut off.` };
+      }
     } catch (err) {
       this.host.log("error", (err as Error).message);
       ended = { status: "failed", text: "Failed. See the message above." };

@@ -774,6 +774,7 @@
       el("div", { class: "msg-head" }, el("span", { class: "who" }, label), el("span", { class: "spacer" }), el("span", { class: "time" }, timeLabel(entry.time))),
       entry.thought && entry.thought !== entry.text ? el("div", { class: "thought" }, entry.thought) : null,
       entry.quote ? el("div", { class: "quote" }, entry.quote) : null,
+      entry.cutOff ? el("div", { class: "cut-off tone-warning" }, "⚠ Cut off: this reply stopped before it was complete.") : null,
       // The answer that combines the research reports is what the user asked for, so it is never folded.
       kind === "answer" ? markdown(entry.text) : longText("x:" + entry.id, entry.text, undefined, entry.author === "user"),
       entry.thinking && String(entry.thinking).trim() ? details("t:" + entry.id, "Thinking", el("pre", { class: "thinking-text" }, entry.thinking)) : null,

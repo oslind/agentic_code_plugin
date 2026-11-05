@@ -610,6 +610,12 @@ code,
   font-size: 12px;
 }
 
+/* A reply that stopped before it was complete. */
+.cut-off {
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* A sub-agent's question, quoted above the coordinator's answer to it. */
 .quote {
   font-size: 12px;

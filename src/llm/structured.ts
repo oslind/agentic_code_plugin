@@ -49,6 +49,8 @@ export function extractThinking(content: string, reasoning?: string): string | u
   return blocks.length ? blocks.join("\n\n") : undefined;
 }
 
+const CUT_OFF = "Your reply was cut off at the length limit before the JSON was complete. Think briefly and keep every field short.";
+
 export interface StructuredCallOptions<T> {
   provider: ModelProvider;
   messages: ChatMessage[];
@@ -94,6 +96,9 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
     if (thinking) options.onThinking?.(thinking);
 
     try {
+      // A reply stopped at the length limit is never used, even if what arrived happens to parse:
+      // a string in it (the reply to the user) may end mid-sentence.
+      if (reply.truncated) throw new SyntaxError(CUT_OFF);
       const parsed = schema.safeParse(extractJson(reply.content));
       if (parsed.success) {
         return parsed.data;
@@ -104,7 +109,8 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
     }
 
     messages.push(
-      { role: "assistant", content: reply.content },
+      // A cut-off reply is long by definition; sent back whole it would leave even less room for the next one.
+      { role: "assistant", content: reply.truncated ? `${reply.content.slice(0, 1000)} …(cut off)` : reply.content },
       {
         role: "user",
         content: `Your reply was not valid. Problem:\n${lastError}\n\nReply again with only the corrected JSON object. No prose, no code fences.`,

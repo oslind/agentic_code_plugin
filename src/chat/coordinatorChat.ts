@@ -2,6 +2,7 @@ import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { callStructured } from "../llm/structured";
 import { untrustedSection } from "../context/untrusted";
+import { endsInLeadIn, replyReserve } from "../llm/unfinished";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { ChatEntry, ChatMode } from "./types";
 
@@ -117,12 +118,10 @@ export interface CoordinatorContext {
   continuation?: string;
 }
 
-const REPLY_RESERVE = 2048;
-
 /** Builds the coordinator prompt: rules, project files, then as much recent conversation as fits. */
 export function buildCoordinatorMessages(ctx: CoordinatorContext, contextWindow: number): ChatMessage[] {
   const system = [base(researcherLimit(ctx.maxResearchers)), MODE_RULES[ctx.mode], EXAMPLE, ctx.answerFromResearch ? answerRule(Math.max(0, ctx.researchRoundsLeft ?? 0), researcherLimit(ctx.maxResearchers)) : ""].filter(Boolean).join("\n\n");
-  let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(system);
+  let budget = Math.max(1024, contextWindow - replyReserve(contextWindow)) - estimateTokens(system);
 
   // What is left after the history goes to the notes below (plan and project files).
   const room = budget;
@@ -220,6 +219,12 @@ export async function coordinatorTurn(
  *   even when the model calls its reply complete, unless the reply asks the
  *   user a question. qwen3:8b answered "I'll draft the usage guide and share
  *   it for your review" this way in the end-to-end suite.
+ * - "none" whose reply ends by announcing something it never writes ("Here's
+ *   what was changed:" and then nothing) is not an answer, whatever
+ *   "complete" says. qwen3:8b ended a JSON reply this way and the chat showed
+ *   it as the whole answer. It is handled like complete false, and the
+ *   unfinished reply is not shown. After research it stays "none": the answer
+ *   is written from the reports by its own call (synthesis.ts) anyway.
  * - After research, more research is only allowed while rounds are left, and
  *   "run" is never allowed. A plan for a question then means "answer from
  *   the reports".
@@ -248,9 +253,21 @@ export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterR
 
   // A change nobody was sent to make has not happened, whatever "complete" says, unless the reply asks the user something first.
   const unstartedChange = turn.action === "none" && turn.goal === "change" && !turn.reply.includes("?");
+  // A reply that stops after "…:" (checked by shape, not by words) is unfinished.
+  const leadIn = turn.action === "none" && !ctx.afterResearch && endsInLeadIn(turn.reply);
+  if (leadIn && user) {
+    turn = {
+      ...turn,
+      complete: false,
+      reply:
+        turn.goal === "change"
+          ? "My first reply stopped before it was complete, so I'll have the sub-agents do the work instead."
+          : "My first reply stopped before it was complete, so I'll have read-only sub-agents check the project and then answer in full.",
+    };
+  }
   if (turn.action === "none" && (turn.complete === false || unstartedChange) && user) {
     if (turn.goal === "change") {
-      const request = `${user}\n\n${turn.reply.trim()}`.slice(0, 3000);
+      const request = (leadIn ? user : `${user}\n\n${turn.reply.trim()}`).slice(0, 3000);
       return { ...turn, action: "plan", request: request.length >= 10 ? request : `${request} (as the user asked)` };
     }
     if (!ctx.canResearch) return limit();

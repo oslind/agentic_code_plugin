@@ -297,6 +297,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       reasoning: reasoning || undefined,
       promptTokens: json.usage?.prompt_tokens,
       completionTokens: json.usage?.completion_tokens,
+      ...(cutOff(json.choices?.[0]?.finish_reason) ? { truncated: true } : {}),
     };
   }
 }
@@ -326,12 +327,12 @@ export function retryAfter(header: string | null): number | undefined {
 }
 
 type Json = {
-  choices?: { message?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }[];
+  choices?: { message?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null }; finish_reason?: string | null }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
 type StreamChunk = {
-  choices?: { delta?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }[];
+  choices?: { delta?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null }; finish_reason?: string | null }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
   error?: { message?: string; type?: string; code?: string | number; status?: number } | string;
 };
@@ -376,6 +377,8 @@ class StreamResult {
   content = "";
   reasoning = "";
   sawContent = false;
+  /** The last finish_reason the server sent. */
+  finishReason?: string;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 
   constructor(private readonly onProgress?: (p: ChatProgress) => void) {}
@@ -391,14 +394,32 @@ class StreamResult {
   }
 
   finish(status: number): ChatResponse {
+    if (!this.sawContent && cutOff(this.finishReason)) {
+      // Asking again with the same limit ends the same way, so this is not retried.
+      throw new ProviderError(
+        `The model reached its reply length limit before it wrote any answer${this.reasoning ? " (it spent the limit thinking)" : ""}. Raise agentic.model.maxOutputTokens or agentic.model.contextWindow (and the server's context size to match), or ask for less at once.`,
+        status,
+        false,
+      );
+    }
     if (!this.sawContent) throw new ProviderError("Model server returned no message content", status, true);
     return {
       content: this.content,
       reasoning: this.reasoning || undefined,
       promptTokens: this.usage?.prompt_tokens,
       completionTokens: this.usage?.completion_tokens,
+      ...(cutOff(this.finishReason) ? { truncated: true } : {}),
     };
   }
+}
+
+/**
+ * Whether a finish_reason means the reply was stopped at a length limit.
+ * OpenAI, Ollama, vLLM and LM Studio send "length"; llama.cpp and some
+ * proxies send "max_tokens" or "max_output_tokens".
+ */
+export function cutOff(reason: string | null | undefined): boolean {
+  return typeof reason === "string" && /^(length|max_tokens|max_output_tokens)$/i.test(reason.trim());
 }
 
 /** Adds server-sent event lines ("data: {...}") to the result. */
@@ -425,6 +446,8 @@ function parseEvents(lines: string[], out: StreamResult, status: number): Stream
     }
     const thought = delta?.reasoning ?? delta?.reasoning_content;
     if (typeof thought === "string") out.reasoning += thought;
+    const reason = chunk.choices?.[0]?.finish_reason;
+    if (typeof reason === "string" && reason) out.finishReason = reason;
     if (chunk.usage) out.usage = chunk.usage;
     if (out.content.length + out.reasoning.length > MAX_REPLY_CHARS) throw tooLarge(status);
   }
