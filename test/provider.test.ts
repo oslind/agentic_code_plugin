@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   isTransientStreamError,
   Limiter,
+  liveContent,
   MAX_ERROR_BYTES,
   MAX_EVENT_CHARS,
   MAX_REPLY_CHARS,
@@ -140,6 +141,38 @@ describe("OpenAICompatibleProvider", () => {
     const res = await new OpenAICompatibleProvider(base, fn).chat({ messages: [] });
     expect(sent.stream).toBe(true);
     expect(res).toEqual({ content: '{"a":1}', reasoning: "Think first.", promptTokens: 12, completionTokens: 5 });
+  });
+
+  it("reports progress while it streams: queued, sent, thinking, then writing", async () => {
+    const fn = (async () =>
+      sse([
+        { choices: [{ delta: { reasoning: "Think " } }] },
+        { choices: [{ delta: { reasoning: "first." } }] },
+        { choices: [{ delta: { content: '{"a":' } }] },
+        { choices: [{ delta: { content: "1}" } }] },
+        "[DONE]",
+      ], 1000)) as unknown as typeof fetch;
+    const seen: { phase: string; reasoning: string; content: string }[] = [];
+    const res = await new OpenAICompatibleProvider(base, fn).chat({ messages: [], onProgress: (p) => seen.push({ ...p }) });
+    expect(res.content).toBe('{"a":1}');
+    expect(seen[0]).toEqual({ phase: "queued", reasoning: "", content: "" });
+    expect(seen[1]).toEqual({ phase: "waiting", reasoning: "", content: "" });
+    expect(seen.at(-1)).toEqual({ phase: "writing", reasoning: "Think first.", content: '{"a":1}' });
+    // A listener that throws never breaks the reply.
+    const again = await new OpenAICompatibleProvider(base, fn).chat({
+      messages: [],
+      onProgress: () => {
+        throw new Error("view gone");
+      },
+    });
+    expect(again.content).toBe('{"a":1}');
+  });
+
+  it("counts an open <think> block in the reply as thinking, and text after it as writing", () => {
+    expect(liveContent("<think>still going")).toBe(false);
+    expect(liveContent("<think>done</think>")).toBe(false);
+    expect(liveContent("<think>done</think>\n{")).toBe(true);
+    expect(liveContent("{")).toBe(true);
   });
 
   it("reads a plain JSON reply from a server that ignores stream, and can turn streaming off", async () => {
