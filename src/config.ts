@@ -12,6 +12,7 @@ import {
   USER_ONLY_SCRATCH_KEYS,
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
+  autoCompactFrom,
   legacyApiKeyFrom,
   maxConcurrentRequestsFrom,
   maxOutputTokensFrom,
@@ -190,6 +191,11 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
 /** Most tokens of earlier conversation sent with each coordinator message. User settings only, so a project cannot raise it. */
 export function readCoordinatorHistoryTokens(): number {
   return coordinatorHistoryTokensFrom(vscode.workspace.getConfiguration("agentic.chat"));
+}
+
+/** Whether the conversation is compacted on its own near the context limit. User settings only: it adds model calls. */
+export function readAutoCompact(): boolean {
+  return autoCompactFrom(vscode.workspace.getConfiguration("agentic.chat"));
 }
 
 /**

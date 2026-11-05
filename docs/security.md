@@ -94,4 +94,4 @@ Things to know:
 
 ## Settings a project cannot change
 
-These count only in your user settings (or Remote settings in WSL/SSH). A project's `.vscode/settings.json` or `.code-workspace` cannot set them, and the extension warns when one tries: the `agentic.autoApprove.*` switches, `agentic.model.baseUrl`, the API key (kept in VS Code's secret storage), model load limits, `agentic.chat.coordinatorHistoryTokens`, `agentic.delegation.oversight`, `agentic.delegation.maxModelCallsPerRun`, `agentic.delegation.autoRetries`, all `agentic.scratch.*` settings, and `agentic.commands.isolation`.
+These count only in your user settings (or Remote settings in WSL/SSH). A project's `.vscode/settings.json` or `.code-workspace` cannot set them, and the extension warns when one tries: the `agentic.autoApprove.*` switches, `agentic.model.baseUrl`, the API key (kept in VS Code's secret storage), model load limits, `agentic.chat.coordinatorHistoryTokens`, `agentic.chat.autoCompact`, `agentic.delegation.oversight`, `agentic.delegation.maxModelCallsPerRun`, `agentic.delegation.autoRetries`, all `agentic.scratch.*` settings, and `agentic.commands.isolation`.

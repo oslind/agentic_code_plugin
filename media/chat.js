@@ -252,6 +252,19 @@
         el("span", { class: "brand" }, "AGENTIC"),
         status,
         el("span", { class: "spacer" }),
+        state.current
+          ? el(
+              "button",
+              {
+                class: "icon-btn",
+                title: "Compact this conversation: the coordinator gets a short summary of the older messages instead of them, so a long chat keeps fitting the model's context. Every message stays here. You can also send /compact.",
+                "aria-label": "Compact conversation",
+                disabled: !!state.busy,
+                onclick: () => post({ type: "compact" }),
+              },
+              "⇊",
+            )
+          : null,
         el("button", { class: "icon-btn", title: "New task", "aria-label": "New task", disabled: !!state.busy, onclick: () => post({ type: "newTask" }) }, "+"),
         el("button", { class: "icon-btn" + (tab === "settings" ? " on" : ""), title: "Settings: oversight, auto-approval and checks", "aria-label": "Settings", onclick: () => (state.current ? setTab(tab === "settings" ? "overview" : "settings") : post({ type: "settings" })) }, "⚙"),
       ),
@@ -767,6 +780,7 @@
     if (kind === "consult") label = entry.author === "agent" ? who + " asks the coordinator" : "Coordinator → " + (entry.agentName || "sub-agent");
     if (kind === "checkin") label = "Coordinator · checked on " + (entry.agentName || "a sub-agent");
     if (kind === "command") label = who + " ran a command";
+    if (kind === "compact") label = "Conversation compacted";
     if (kind === "question" && entry.author === "coordinator" && entry.agentName) label = "Coordinator asks, for " + entry.agentName;
     return el(
       "div",
@@ -782,6 +796,9 @@
       kind === "outcome" && entry.runId ? outcomeActions(entry) : null,
       kind === "checks" ? checkList(entry) : null,
       commandBlock(entry),
+      kind === "compact" && entry.compaction && entry.compaction.summary
+        ? details("cs:" + entry.id, "What the coordinator remembers of the earlier messages", el("pre", { class: "thinking-text" }, String(entry.compaction.summary)))
+        : null,
       entry.decided ? el("div", { class: "decided" }, "✓ " + entry.decided) : null,
     );
   }

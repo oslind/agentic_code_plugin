@@ -100,10 +100,15 @@ export class ConversationStore {
   }
 }
 
-/** Drops the oldest sub-agent entries first, so the user's and coordinator's messages survive longest. */
+/**
+ * Drops the oldest sub-agent entries first, so the user's and coordinator's
+ * messages survive longest. The latest compaction note is always kept: it
+ * holds the summary that stands in for the oldest messages, the ones dropped first.
+ */
 export function trimEntries(entries: ChatEntry[], max: number): ChatEntry[] {
   let excess = entries.length - max;
   if (excess <= 0) return entries;
+  const latestCompact = [...entries].reverse().find((e) => e.kind === "compact" && !!e.compaction);
   const out: ChatEntry[] = [];
   for (const e of entries) {
     if (excess > 0 && e.author === "agent") {
@@ -112,5 +117,7 @@ export function trimEntries(entries: ChatEntry[], max: number): ChatEntry[] {
     }
     out.push(e);
   }
-  return excess > 0 ? out.slice(excess) : out;
+  if (excess <= 0) return out;
+  const rest = out.filter((e) => e !== latestCompact).slice(excess);
+  return latestCompact ? [latestCompact, ...rest] : rest;
 }

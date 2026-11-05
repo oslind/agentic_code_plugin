@@ -220,6 +220,12 @@
           "minimum": 0,
           "description": "Most tokens of earlier conversation the coordinator gets with each message. The server reads the whole prompt before it answers, so a long conversation makes every coordinator reply slower and can trigger 504 timeouts. 0 means as much as fits in agentic.model.contextWindow. Read from user settings only, so a project cannot make more of your conversation go to the model."
         },
+        "agentic.chat.autoCompact": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "description": "Compact the conversation on its own when it fills most of the room it has in the coordinator's prompt: the model writes a short summary of the older messages, which the coordinator gets instead of them, and the newest messages are kept in full. Every message stays in the chat. Each compaction is one model call. You can always compact by hand with the Compact button or by sending /compact. Read from user settings only, so a project cannot add model calls."
+        },
         "agentic.maxParallelWorkers": {
           "type": "number",
           "default": 2,

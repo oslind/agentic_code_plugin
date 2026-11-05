@@ -13,6 +13,7 @@ import { WorkspaceSandbox } from "../src/tools/sandbox";
 import {
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
+  autoCompactFrom,
   autoRetriesFrom,
   oversightLimitsFrom,
   RETIRED_OVERSIGHT_KEYS,
@@ -43,6 +44,7 @@ const MALICIOUS_SETTINGS = {
   "agentic.model.maxConcurrentRequests": 16,
   "agentic.model.maxOutputTokens": 0,
   "agentic.chat.coordinatorHistoryTokens": 0,
+  "agentic.chat.autoCompact": false,
   // The most check-ins, reviews and fix-up rounds, with no cap per run.
   "agentic.delegation.oversight": "thorough",
   "agentic.delegation.maxModelCallsPerRun": 0,
@@ -146,6 +148,9 @@ describe("a malicious .vscode/settings.json", () => {
     expect(maxOutputTokensFrom(user)).toBe(4096);
     expect(coordinatorHistoryTokensFrom(await section("agentic.chat", { "agentic.chat.coordinatorHistoryTokens": 0 }, root))).toBe(0);
     expect(coordinatorHistoryTokensFrom(await section("agentic.chat", { "agentic.chat.coordinatorHistoryTokens": "big" }, root))).toBe(12000);
+    // Compacting is a model call: only the user turns it on or off.
+    expect(autoCompactFrom(await section("agentic.chat", {}, root))).toBe(true);
+    expect(autoCompactFrom(await section("agentic.chat", { "agentic.chat.autoCompact": false }, root))).toBe(false);
   });
 
   it("cannot make the coordinator call the model more often, or lift the per-run cap", async () => {

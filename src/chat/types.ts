@@ -13,7 +13,7 @@ export interface ChatEntry {
   author: ChatAuthor;
   text: string;
   /** What the entry shows besides its text. A plan or outcome entry refers to a run. */
-  kind?: "message" | "plan" | "outcome" | "error" | "spawn" | "report" | "research" | "answer" | "checks" | "approval" | "question" | "direct" | "review" | "consult" | "checkin" | "command";
+  kind?: "message" | "plan" | "outcome" | "error" | "spawn" | "report" | "research" | "answer" | "checks" | "approval" | "question" | "direct" | "review" | "consult" | "checkin" | "command" | "compact";
   runId?: string;
   /** For agent entries: the task the sub-agent works on. */
   taskId?: string;
@@ -44,6 +44,13 @@ export interface ChatEntry {
   quote?: string;
   /** For a command entry: the command that ran, and the end of its output as plain text. The terminal has all of it. */
   command?: { line: string; output: string };
+  /**
+   * For a compaction note (kind "compact"): the summary the coordinator gets
+   * in place of the conversation before `keepFrom`, the id of the first entry
+   * it still gets in full. `messages` is how many messages the summary covers;
+   * `leftOut` how many of the oldest did not fit the summarizing call.
+   */
+  compaction?: { summary: string; keepFrom: string; messages: number; leftOut?: number };
   /** For a card that waits on the user: what was decided, once it was. */
   decided?: string;
 }
