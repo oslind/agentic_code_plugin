@@ -148,6 +148,7 @@ export function registerRunCommands(
       askCoordinator: hooks?.askCoordinator,
       reviewResult: hooks?.reviewResult,
       inbox: hooks?.inbox,
+      wrapProvider: hooks?.wrapProvider,
       onChange: () => tree.refresh(),
     });
     active.set(run.id, { abort, orchestrator });

@@ -49,6 +49,8 @@ export interface OrchestratorOptions {
   /** The coordinator reviews a sub-agent's report and drafts when it finishes, and may send it back. */
   reviewResult?: (task: Task, summary: string, drafts: string, signal: AbortSignal) => Promise<ReviewVerdict>;
   onChange?: () => void;
+  /** The model a task's sub-agent uses. By default `provider`; the chat wraps it to show each call live. */
+  wrapProvider?: (task: Task, provider: ModelProvider) => ModelProvider;
 }
 
 export interface RunOutcome {
@@ -69,7 +71,7 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges" | "askCoordinator" | "reviewResult" | "terminal";
+type Optional = "signal" | "onChange" | "askUser" | "inbox" | "approveCommand" | "onChanges" | "askCoordinator" | "reviewResult" | "terminal" | "wrapProvider";
 
 /**
  * Runs a planned run to completion, without git. Each sub-agent works on the
@@ -195,7 +197,7 @@ export class Orchestrator {
       const checkDir = () => scratch.sync(overlay.allChanges());
 
       worker = new Worker({
-        provider: this.o.provider,
+        provider: this.o.wrapProvider ? this.o.wrapProvider(task, this.o.provider) : this.o.provider,
         sandbox: overlay,
         checkDir,
         terminal: this.o.terminal,

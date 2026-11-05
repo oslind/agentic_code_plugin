@@ -17,7 +17,8 @@ import { acceptChange, changeKind, rejectChange } from "../changes/review";
 import { commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
-import { ResearchReport, synthesizeFindings } from "./synthesis";
+import { LiveItem, LiveTracker } from "./live";
+import { ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
 import { coordinatorTurn, CoordinatorResult, editingReason, isReadOnlyPlan, isGoAhead, isReadOnlyRequest, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
@@ -68,6 +69,12 @@ export interface ChatHost {
   showChange(runId: string, filePath: string): Promise<void>;
   /** Closes the editors showing a change once it is decided. */
   closeChange(runId: string, filePath: string): Promise<void>;
+  /**
+   * After drafts were written: opens the file itself when `open` is set, and
+   * returns a warning for each file that an editor holds with unsaved edits,
+   * since that editor still shows the old text.
+   */
+  afterAccept?(workspaceRoot: string, filePaths: string[], open: boolean): Promise<string[]>;
   /** Lets the user pick files to attach to a prompt. Returns paths relative to the folder, and only files inside it. */
   pickFiles?(workspaceRoot: string): Promise<string[]>;
 }
@@ -89,6 +96,8 @@ export interface RunHooks {
   attach?: (control: RunControl) => void;
   /** A task finished with file changes. They are pending until accepted here or by an auto-approve switch. */
   onChanges: (task: Task, changes: PendingChange[]) => Promise<void>;
+  /** The model a sub-agent uses, wrapped so the chat can show its calls live. */
+  wrapProvider?: (task: Task, provider: ModelProvider) => ModelProvider;
 }
 
 /** What the coordinator can do to a running sub-agent of a plan. */
@@ -110,7 +119,7 @@ interface Supervision {
 }
 
 /** What the user can do with a pending change from the chat. */
-export type ReviewAction = "show" | "accept" | "reject";
+export type ReviewAction = "show" | "open" | "accept" | "reject";
 
 /** What the user chose on a card that waited for them. */
 export type Decision =
@@ -167,6 +176,8 @@ export interface ChatViewState {
   dashboard?: DashboardView;
   /** The folder files are attached from before a conversation exists. */
   attachRoot?: string;
+  /** Model calls in flight, by "coordinator" or "runId:taskId": phase, elapsed time, tokens and the latest thought. */
+  live?: Record<string, LiveItem>;
 }
 
 /** The bar at the bottom of the chat once a prompt is dealt with: green when finished. */
@@ -271,6 +282,8 @@ export class ChatController {
   private readonly allowedCommands = new Map<string, Set<string>>();
   /** Conversations the user reopened with finished sub-agents, by "runId:taskId". */
   private readonly followUps = new Map<string, FollowUp>();
+  /** What every model call is doing right now, so a long "thinking" shows that it is still working. */
+  readonly live = new LiveTracker();
 
   constructor(
     private readonly conversations: ConversationStore,
@@ -285,6 +298,7 @@ export class ChatController {
 
   dispose(): void {
     this.stopEvents();
+    this.live.dispose();
     this.abort?.abort();
     for (const s of this.supervised.values()) s.abort.abort();
     for (const f of this.followUps.values()) f.abort.abort();
@@ -302,6 +316,11 @@ export class ChatController {
 
   private changed(): void {
     for (const l of this.listeners) l();
+  }
+
+  /** The model for the coordinator's own calls, shown live under "coordinator". */
+  private coordinatorProvider(workspaceRoot: string): ModelProvider {
+    return this.live.wrap(this.host.provider(workspaceRoot), "coordinator");
   }
 
   private async indexRuns(): Promise<void> {
@@ -380,6 +399,7 @@ export class ChatController {
           })
         : undefined,
       attachRoot: current ? undefined : this.attachRoot,
+      live: this.live.snapshot(),
     };
   }
 
@@ -504,10 +524,19 @@ export class ChatController {
       return;
     }
     const root = run.workspaceRoot && (await this.host.openFolder(run.workspaceRoot));
+    if (action === "open") {
+      // The written file itself, for an accepted draft.
+      if (!root) throw new Error(`${run.workspaceRoot ?? "This run's folder"} is not open in VS Code.`);
+      if (filePath && run.changes?.some((c) => c.path === filePath && c.status === "accepted")) await this.host.afterAccept?.(root, [filePath], true);
+      return;
+    }
     if (!root) throw new Error(`${run.workspaceRoot ?? "This run's folder"} is not open in VS Code, so nothing can be written.`);
     const targets = (run.changes ?? []).filter(
       (c) => c.status === "pending" && (filePath ? c.path === filePath : !taskId || c.taskId === taskId),
     );
+    const written: string[] = [];
+    const held: string[] = [];
+    const failed: string[] = [];
     for (const c of targets) {
       const key = `${runId}:${c.path}`;
       if (action === "reject") {
@@ -515,20 +544,40 @@ export class ChatController {
         this.changeNotes.delete(key);
       } else {
         // A second Accept after a "changed on disk" note means: overwrite.
-        const res = await acceptChange(this.tasks, runId, c.path, root, { overwrite: this.changeNotes.has(key) });
-        if (res.ok) this.changeNotes.delete(key);
-        else {
+        let res;
+        try {
+          res = await acceptChange(this.tasks, runId, c.path, root, { overwrite: this.changeNotes.has(key) });
+        } catch (err) {
+          // One file that cannot be written does not stop the others, and it says why on its card.
+          const message = `Could not write ${c.path}: ${(err as Error).message}`;
+          this.changeNotes.set(key, message);
+          this.host.log("error", message);
+          failed.push(message);
+          continue;
+        }
+        if (res.ok) {
+          this.changeNotes.delete(key);
+          written.push(c.path);
+        } else {
           this.changeNotes.set(key, res.message);
+          held.push(res.message);
           continue;
         }
       }
       await this.host.closeChange(runId, c.path).catch(() => undefined);
     }
-    if (conversationId && targets.length > 1) {
-      const n = targets.length;
+    // Each written file is announced from the store's log (see eventFeed). What was not written says why here,
+    // in the chat and not only on its card, so an Accept never looks like it did nothing.
+    const warnings = written.length ? ((await this.host.afterAccept?.(root, written, written.length === 1 && !!filePath).catch(() => [])) ?? []) : [];
+    if (conversationId && targets.length > 1 && (written.length || action === "reject")) {
+      const n = action === "accept" ? written.length : targets.length;
       await this.append(conversationId, { author: "system", runId, text: action === "accept" ? `Accepted ${n} draft(s) and wrote them to your project.` : `Rejected ${n} draft(s). Nothing was written for them.` });
     }
+    if (conversationId && action === "accept" && (held.length || failed.length || warnings.length)) {
+      await this.append(conversationId, { author: "system", runId, tone: "warning", text: [...held.map((m) => `Not written yet: ${m}`), ...failed, ...warnings].join("\n") });
+    }
     this.changed();
+    if (failed.length) throw new Error(failed.join(" "));
   }
 
   /**
@@ -597,7 +646,7 @@ export class ChatController {
     const f: FollowUp = { key, runId: run.id, taskId: task.id, title: task.title, conversationId, abort, overlay, scratch, published, replies: [], worker: undefined as unknown as Worker };
     const conversation = await this.conversations.load(conversationId);
     f.worker = new Worker({
-      provider: this.host.provider(workspaceRoot),
+      provider: this.live.wrap(this.host.provider(workspaceRoot), key),
       sandbox: overlay ?? disk,
       checkDir: overlay && scratch ? () => scratch.sync(overlay.allChanges()) : undefined,
       terminal: this.host.terminal?.(workspaceRoot),
@@ -863,7 +912,7 @@ export class ChatController {
     const scope = runScope(c.entries, run.id);
     const fresh = await this.tasks.load(run.id).catch(() => run);
     const decision = await superviseAgent(
-      this.host.provider(c.workspaceRoot),
+      this.coordinatorProvider(c.workspaceRoot),
       {
         userMessages: userMessagesOf(scope),
         request: run.request,
@@ -918,7 +967,7 @@ export class ChatController {
       let result;
       try {
         result = await answerSubAgent(
-          this.host.provider(c.workspaceRoot),
+          this.coordinatorProvider(c.workspaceRoot),
           {
             userMessages: userMessagesOf(scope),
             request: run.request,
@@ -985,7 +1034,7 @@ export class ChatController {
       let result;
       try {
         result = await reviewSubAgentResult(
-          this.host.provider(c.workspaceRoot),
+          this.coordinatorProvider(c.workspaceRoot),
           {
             userMessages: userMessagesOf(scope),
             request: run.request,
@@ -1033,6 +1082,7 @@ export class ChatController {
     const trusted = new Set(checks.map((c) => c.command));
     return {
       checks,
+      wrapProvider: (task, provider) => this.live.wrap(provider, `${runId}:${task.id}`),
       inbox: (taskId) => this.drainInbox(runId, taskId),
       askCoordinator: (task, question, signal) => this.consultCoordinator(conversationId, runId, task, question, signal),
       reviewResult: (task, summary, drafts, signal) => this.reviewResult(conversationId, runId, task, summary, drafts, signal),
@@ -1290,9 +1340,15 @@ export class ChatController {
     this.changed();
     let startRun: string | undefined;
     let ended: DoneBar = { status: "finished", text: "Finished" };
+    // Every research round of this message, and the coordinator's last reply when it chose to answer.
+    // Unless a plan follows, the prompt always ends with one answer that combines all the reports.
+    const researchRuns: string[] = [];
+    let planned = false;
+    let draft: { reply: string; thought?: string; thinking?: string } | undefined;
+    let limitReached = false;
     try {
       c = await this.conversations.load(c.id);
-      const provider = this.host.provider(c.workspaceRoot);
+      const provider = this.coordinatorProvider(c.workspaceRoot);
       this.host.log("info", `Coordinator using ${this.host.modelLabel(c.workspaceRoot)}`);
       const fileTree = await this.host.fileTree(c.workspaceRoot, abort.signal).catch(() => undefined);
       const pending = await this.pendingPlan(c);
@@ -1320,12 +1376,6 @@ export class ChatController {
       // (for example one per file) when the reports are too general to answer from.
       const maxRounds = researchRoundLimit(this.host.delegationLimits().maxResearchRounds);
       let round = 0;
-      // Every research round of this message, and the coordinator's last reply when it chose to answer.
-      // Unless a plan follows, the prompt always ends with one answer that combines all the reports.
-      const researchRuns: string[] = [];
-      let planned = false;
-      let draft: { reply: string; thought?: string; thinking?: string } | undefined;
-      let limitReached = false;
       const doResearch = async (t: CoordinatorResult): Promise<void> => {
         round++;
         researchRuns.push(await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined));
@@ -1333,19 +1383,28 @@ export class ChatController {
         this.busy = "Coordinator is reading the reports…";
         this.runningRunId = undefined;
         this.changed();
-        const answer = await coordinatorTurn(
-          provider,
-          {
-            mode: this.mode,
-            entries: c.entries,
-            fileTree,
-            answerFromResearch: true,
-            researchRoundsLeft: maxRounds - round,
-            maxResearchers: this.host.delegationLimits().maxResearchers,
-            historyTokens: this.host.coordinatorHistoryTokens?.(),
-          },
-          { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
-        );
+        let answer: CoordinatorResult;
+        try {
+          answer = await coordinatorTurn(
+            provider,
+            {
+              mode: this.mode,
+              entries: c.entries,
+              fileTree,
+              answerFromResearch: true,
+              researchRoundsLeft: maxRounds - round,
+              maxResearchers: this.host.delegationLimits().maxResearchers,
+              historyTokens: this.host.coordinatorHistoryTokens?.(),
+            },
+            { signal: abort.signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Coordinator retry ${n}: ${err}`) },
+          );
+        } catch (err) {
+          // A small model that fails the JSON turn after research must not cost the user the answer:
+          // the reports are there, so the answer is written from them below.
+          if (abort.signal.aborted) throw err;
+          this.host.log("warn", `The coordinator's reply after research round ${round} failed (${(err as Error).message}). Writing the answer from the reports instead.`);
+          return;
+        }
         this.host.log(
           "info",
           `Coordinator after research round ${round} of ${maxRounds} chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`,
@@ -1442,6 +1501,10 @@ export class ChatController {
       ended = abort.signal.aborted ? { status: "stopped", text: "Stopped" } : { status: "failed", text: "Failed. See the message above." };
       this.host.log("error", message);
       await this.append(c.id, { author: "system", kind: "error", text: message, tone: abort.signal.aborted ? "warning" : "error" });
+      // Research that finished before the failure still answers the question.
+      if (!abort.signal.aborted && researchRuns.length && !planned) {
+        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
+      }
     } finally {
       this.abort = undefined;
       this.busy = undefined;
@@ -1460,9 +1523,13 @@ export class ChatController {
    * Plan mode is the user switching to Act mode for this conversation.
    */
   async runPlan(runId: string): Promise<void> {
-    if (this.busy) return;
     const conversationId = this.runOwner.get(runId);
     if (!conversationId) return;
+    if (this.busy) {
+      // Never ignored without a word: the button looks like it did nothing otherwise.
+      await this.append(conversationId, { author: "system", tone: "warning", text: `The plan was not started because the chat is busy (${this.busy.replace(/…$/, "")}). Press "Run it" again when it is done.` });
+      return;
+    }
     const run = await this.tasks.load(runId);
     if (!isUnstarted(run)) {
       await this.append(conversationId, { author: "system", text: "That plan has already run. Retry tasks from the Tasks view.", tone: "warning" });
@@ -1501,7 +1568,8 @@ export class ChatController {
       const ok = outcome.failed.length === 0 && outcome.blocked.length === 0;
       const finished = await this.tasks.load(runId);
       const waitingReview = (finished.changes ?? []).filter((ch) => ch.status === "pending").length;
-      const review = waitingReview ? ` ${waitingReview} draft(s) await your review.` : "";
+      // The bar's live detail line counts the drafts; a count frozen in here would go stale after Accept.
+      const review = waitingReview ? " Drafts are waiting for your review." : "";
       const notDone = outcome.failed.length + outcome.blocked.length;
       ended = this.stopping
         ? { status: "stopped", text: `Stopped.${review}` }
@@ -1516,6 +1584,8 @@ export class ChatController {
         text: describeOutcome(finished, outcome, this.stopping),
         outcome: { changedFiles: changedFilesOf(finished), failed: outcome.failed.length + outcome.blocked.length },
       });
+      // The outcome lists what happened; the coordinator's own reply says what it means. A stop skips it.
+      if (!this.stopping) await this.answerFromRun(conversationId, workspaceRoot, finished, outcome);
     } catch (err) {
       this.host.log("error", (err as Error).message);
       ended = { status: "failed", text: "Failed. See the message above." };
@@ -1572,7 +1642,7 @@ export class ChatController {
         let worker: Worker | undefined;
         try {
           worker = new Worker({
-            provider,
+            provider: this.live.wrap(provider, `${run.id}:${task.id}`),
             sandbox,
             task,
             checks: [],
@@ -1632,7 +1702,7 @@ export class ChatController {
       }
     }
     const result = await synthesizeFindings(
-      this.host.provider(c.workspaceRoot),
+      this.coordinatorProvider(c.workspaceRoot),
       { question, reports, draft: draft?.reply, limitReached },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
@@ -1654,6 +1724,58 @@ export class ChatController {
       thought: draft?.thought,
       thinking: clip(result.thinking ?? draft?.thinking),
     });
+  }
+
+  /**
+   * The coordinator's final reply after a change run, so a finished run
+   * always ends with an answer in words and not only the outcome list. If the
+   * model gives nothing usable, the outcome above is the reply.
+   */
+  private async answerFromRun(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome): Promise<void> {
+    this.busy = "Coordinator is writing its final reply…";
+    // Stop ends this call too; the outcome above then stays the reply.
+    const abort = new AbortController();
+    this.abort = abort;
+    this.changed();
+    try {
+      await this.writeRunReply(conversationId, workspaceRoot, run, outcome, abort.signal);
+    } catch (err) {
+      if (!abort.signal.aborted) throw err;
+    } finally {
+      if (this.abort === abort) this.abort = undefined;
+    }
+  }
+
+  private async writeRunReply(conversationId: string, workspaceRoot: string, run: Run, outcome: RunOutcome, signal: AbortSignal): Promise<void> {
+    const c = await this.conversations.load(conversationId);
+    const question = [...runScope(c.entries, run.id)].reverse().find((e) => e.author === "user" && e.kind !== "direct")?.text ?? run.request;
+    const changes = run.changes ?? [];
+    const of = (status: string) => [...new Set(changes.filter((ch) => ch.status === status).map((ch) => ch.path))];
+    const result = await summarizeRun(
+      this.coordinatorProvider(workspaceRoot),
+      {
+        question,
+        request: run.request,
+        tasks: run.tasks.map((t) => ({
+          title: t.title,
+          status: outcome.blocked.includes(t.id) ? "did not start" : t.status.replace("_", " "),
+          text: t.summary ?? (t.error ? `No report: ${t.error}` : ""),
+          files: [...new Set(changes.filter((ch) => ch.taskId === t.id).map((ch) => ch.path))],
+        })),
+        drafts: { pending: of("pending"), accepted: of("accepted"), rejected: of("rejected") },
+      },
+      { signal, onError: (m) => this.host.log("warn", m) },
+    );
+    if (!result || signal.aborted) return;
+    if (result.suspicious.length) {
+      const which = result.suspicious.map((n) => `"${run.tasks[n - 1]!.title}"`).join(", ");
+      await this.append(conversationId, {
+        author: "system",
+        tone: "warning",
+        text: `The report from ${which} contains text that reads like orders to an AI. It was treated as data, not followed, but check the reply below against the drafts yourself.`,
+      });
+    }
+    await this.append(conversationId, { author: "coordinator", kind: "answer", tag: "final reply", runId: run.id, text: result.text, thinking: clip(result.thinking) });
   }
 
   /**

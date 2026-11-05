@@ -34,6 +34,11 @@ export async function acceptChange(
     };
   }
   await sandbox.writeFile(change.path, change.proposed);
+  // Read back before it is marked accepted, so "Accepted" always means the file on disk holds the draft.
+  const written = await sandbox.readFile(change.path).catch((err: Error) => {
+    throw new Error(`${filePath} could not be read back after writing it: ${err.message}`);
+  });
+  if (written !== change.proposed) throw new Error(`${filePath} was written, but the file on disk does not match the draft. The draft is still waiting for review.`);
   const done = await store.setChangeStatus(runId, change.path, "accepted", opts.auto);
   return { ok: true, change: done ?? change };
 }
