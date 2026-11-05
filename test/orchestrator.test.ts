@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acceptChange, changeKind, rejectChange, revertChange } from "../src/changes/review";
+import { acceptChange, changeKind, rejectChange, resolveConflict, revertChange } from "../src/changes/review";
 import { CheckConfig } from "../src/checks/runner";
 import { Orchestrator, OrchestratorOptions } from "../src/coordinator/orchestrator";
 import { ProviderError } from "../src/providers/openaiCompatible";
@@ -425,17 +425,92 @@ describe("reviewing changes", () => {
     expect((await acceptChange(store, runId, "a.txt", repo)).ok).toBe(false);
   });
 
-  it("does not overwrite a file the user changed meanwhile unless asked to", async () => {
+  it("does not overwrite a file the user changed meanwhile: the same lines are a conflict the user resolves", async () => {
     const runId = await proposedRun(
       { e: [read("README.md"), write("README.md", "agent version\n"), finish] },
       [task("e", ["README.md"])],
     );
     await writeFile(path.join(repo, "README.md"), "my newer version\n");
     const first = await acceptChange(store, runId, "README.md", repo);
-    expect(first).toMatchObject({ ok: false, reason: "changed_on_disk" });
+    expect(first).toMatchObject({ ok: false, reason: "conflict" });
     expect(onDisk("README.md")).toBe("my newer version\n");
-    expect((await acceptChange(store, runId, "README.md", repo, { overwrite: true })).ok).toBe(true);
+    // Held until the user picks, even with overwrite or an auto-approve switch.
+    expect(await acceptChange(store, runId, "README.md", repo, { overwrite: true, auto: true })).toMatchObject({ ok: false, reason: "conflict" });
+    const [held] = await changesOf(runId);
+    expect(held!.conflict).toMatchObject({ with: "disk", other: "my newer version\n" });
+    expect(held!.conflict!.markers).toContain("<<<<<<< Your file on disk\nmy newer version");
+    expect((await store.readLog(runId)).map((e) => e.type)).toContain("disk_conflict");
+
+    await resolveConflict(store, runId, "README.md", "draft");
+    expect(onDisk("README.md")).toBe("my newer version\n");
+    expect((await acceptChange(store, runId, "README.md", repo)).ok).toBe(true);
     expect(onDisk("README.md")).toBe("agent version\n");
+  });
+
+  it("keeps the file on disk, or both versions with markers, when the user picks that", async () => {
+    const runId = await proposedRun({ e: [write("README.md", "agent version\n"), finish] }, [task("e", ["README.md"])]);
+    await writeFile(path.join(repo, "README.md"), "mine\n");
+    await acceptChange(store, runId, "README.md", repo);
+    await resolveConflict(store, runId, "README.md", "other");
+    expect((await changesOf(runId))[0]).toMatchObject({ status: "rejected" });
+    expect(onDisk("README.md")).toBe("mine\n");
+
+    const again = await proposedRun({ e: [write("README.md", "agent version\n"), finish] }, [task("e", ["README.md"])]);
+    await writeFile(path.join(repo, "README.md"), "mine again\n");
+    await acceptChange(store, again, "README.md", repo);
+    await resolveConflict(store, again, "README.md", "both");
+    expect((await acceptChange(store, again, "README.md", repo)).ok).toBe(true);
+    expect(onDisk("README.md")).toBe("<<<<<<< Your file on disk\nmine again\n=======\nagent version\n>>>>>>> Draft by e\n");
+  });
+
+  it("combines a draft with a newer file on disk when they changed different lines", async () => {
+    await writeFile(path.join(repo, "notes.txt"), "a\nb\nc\nd\ne\n");
+    const runId = await proposedRun({ e: [read("notes.txt"), write("notes.txt", "a\nb\nc\nd\nE by agent\n"), finish] }, [task("e", ["notes.txt"])]);
+    await writeFile(path.join(repo, "notes.txt"), "A by me\nb\nc\nd\ne\n");
+    const res = await acceptChange(store, runId, "notes.txt", repo);
+    expect(res).toMatchObject({ ok: true, combined: true });
+    expect(onDisk("notes.txt")).toBe("A by me\nb\nc\nd\nE by agent\n");
+    expect((await changesOf(runId))[0]).toMatchObject({ status: "accepted", combinedWithDisk: true, proposed: "A by me\nb\nc\nd\nE by agent\n" });
+  });
+
+  it("combines two drafts of one file instead of letting the later one replace the earlier", async () => {
+    await writeFile(path.join(repo, "notes.txt"), "a\nb\nc\nd\ne\n");
+    // Two sub-agents that both may change notes.txt run at the same time (no plan repair here).
+    const runId = await proposedRun(
+      {
+        a: [read("notes.txt"), write("notes.txt", "A\nb\nc\nd\ne\n"), finish],
+        b: [read("notes.txt"), write("notes.txt", "a\nb\nc\nd\nE\n"), finish],
+      },
+      [task("a", ["notes.txt"]), task("b", ["notes.txt"])],
+    );
+    const changes = await changesOf(runId);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({ proposed: "A\nb\nc\nd\nE\n", original: "a\nb\nc\nd\ne\n", status: "pending" });
+    expect(changes[0]!.combinedWith).toHaveLength(1);
+    expect((await store.readLog(runId)).map((e) => e.type)).toContain("drafts_combined");
+    expect((await acceptChange(store, runId, "notes.txt", repo)).ok).toBe(true);
+    expect(onDisk("notes.txt")).toBe("A\nb\nc\nd\nE\n");
+  });
+
+  it("holds a conflict when two drafts change the same lines, and lets the user pick one", async () => {
+    const runId = await proposedRun(
+      { a: [write("README.md", "hello from a\nworld\n"), finish], b: [write("README.md", "hello from b\nworld\n"), finish] },
+      [task("a", ["README.md"]), task("b", ["README.md"])],
+    );
+    const [c] = await changesOf(runId);
+    expect(c!.conflict).toMatchObject({ with: "draft", regions: 1 });
+    const versions = [c!.proposed, c!.conflict!.other].sort();
+    expect(versions).toEqual(["hello from a\nworld\n", "hello from b\nworld\n"]);
+    expect((await store.readLog(runId)).map((e) => e.type)).toContain("drafts_conflict");
+    expect(await acceptChange(store, runId, "README.md", repo)).toMatchObject({ ok: false, reason: "conflict" });
+    expect(onDisk("README.md")).toBe("hello\nworld\n");
+
+    const other = c!.conflict!.other;
+    const otherTask = c!.conflict!.otherTaskId;
+    expect(await resolveConflict(store, runId, "README.md", "other")).toMatchObject({ proposed: other, taskId: otherTask, status: "pending" });
+    expect((await changesOf(runId))[0]!.conflict).toBeUndefined();
+    expect((await acceptChange(store, runId, "README.md", repo)).ok).toBe(true);
+    expect(onDisk("README.md")).toBe(other);
   });
 
   it("reverts an accepted edit to the text from before, and deletes a file the draft created", async () => {

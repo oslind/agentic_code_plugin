@@ -914,13 +914,41 @@
 
   // ---- Drafts ----
 
-  function review(c, action) {
-    post({ type: "review", runId: c.runId, action, path: c.path });
+  function review(c, action, choice) {
+    post({ type: "review", runId: c.runId, action, path: c.path, choice });
+  }
+
+  /** Why a conflicted draft waits, in words. */
+  function conflictText(c) {
+    const where = c.conflict.regions === 1 ? "one place" : `${c.conflict.regions} places`;
+    return c.conflict.with === "disk"
+      ? `Conflict: this file changed on disk after "${c.agentName}" read it, and both changed the same lines in ${where}. Nothing was written. Pick what to keep.`
+      : `Conflict: "${c.conflict.otherAgent}" and "${c.agentName}" changed the same lines in ${where}. Both drafts are kept. Pick what to keep.`;
+  }
+
+  /** The choices for a conflicted draft. Each one leaves a draft to Accept, except keeping your file, which rejects the draft. */
+  function conflictButtons(c) {
+    const disk = c.conflict.with === "disk";
+    return [
+      el("button", { class: "ghost", title: "Open both versions side by side", onclick: () => review(c, "show") }, "Compare"),
+      el("button", { class: "ghost", title: disk ? "Keep the file as it is on disk and reject this draft" : `Use the draft by "${c.conflict.otherAgent}" and drop the other one`, onclick: () => review(c, "resolve", "other") }, disk ? "Keep my file" : `Keep "${c.conflict.otherAgent}"`),
+      el("button", { class: "ghost", title: disk ? "Use the draft instead of the newer file on disk" : `Use the draft by "${c.agentName}" and drop the other one`, onclick: () => review(c, "resolve", "draft") }, disk ? "Keep the draft" : `Keep "${c.agentName}"`),
+      el(
+        "button",
+        {
+          class: "primary",
+          title: "Keep both versions with <<<<<<< / >>>>>>> markers around each conflict. After you accept, VS Code shows Accept Current / Accept Incoming above each one.",
+          onclick: () => review(c, "resolve", "both"),
+        },
+        "Keep both",
+      ),
+    ];
   }
 
   function draftCard(c, showAgent) {
     const isNew = c.kind === "new";
     const pending = c.state === "draft";
+    const conflict = pending && c.conflict;
     const dir = dirName(c.path);
     return el(
       "div",
@@ -931,12 +959,20 @@
         el("span", { class: "file-icon", "aria-hidden": "true" }, isNew ? "+" : "‹›"),
         el("button", { class: "file-link card-title", title: (isNew ? "Open the drafted new file: " : "Open the side-by-side diff: ") + c.path, onclick: () => review(c, "show") }, baseName(c.path)),
         el("span", { class: "spacer" }),
-        pill(DRAFT_TONE[c.state], c.state === "applied" && c.auto ? "Accepted (auto)" : DRAFT_LABEL[c.state]),
+        conflict ? pill("attention", "Conflict") : pill(DRAFT_TONE[c.state], c.state === "applied" && c.auto ? "Accepted (auto)" : DRAFT_LABEL[c.state]),
       ),
       dir ? el("div", { class: "path muted small", title: c.path }, dir + "/") : null,
       showAgent ? el("div", { class: "muted small" }, (isNew ? "New file · drafted by " : "Edit drafted by ") + c.agentName) : el("div", { class: "muted small" }, isNew ? "New file" : "Edit"),
-      c.note ? el("div", { class: "note tone-warning" }, c.note) : null,
-      el(
+      c.combinedWith && c.combinedWith.length ? el("div", { class: "muted small" }, "Combined with the draft by " + c.combinedWith.map((n) => `"${n}"`).join(", ")) : null,
+      c.combinedWithDisk ? el("div", { class: "muted small" }, "Combined with your newer file on disk") : null,
+      conflict ? el("div", { class: "note tone-warning" }, conflictText(c)) : c.note ? el("div", { class: "note tone-warning" }, c.note) : null,
+      pending && c.markers ? el("div", { class: "note tone-warning" }, "Has conflict markers. After you accept, VS Code shows Accept Current / Accept Incoming above each one, or edit the file by hand.") : null,
+      conflict
+        ? el("div", { class: "row conflict-actions" }, el("button", { class: "ghost danger", title: "Discard this draft. Nothing is written.", onclick: () => review(c, "reject") }, "Reject"), el("span", { class: "spacer" }), conflictButtons(c))
+        : null,
+      conflict
+        ? null
+        : el(
         "div",
         { class: "row-between" },
         el("span", { class: "counts" }, c.added ? el("span", { class: "add" }, "+" + c.added) : null, c.removed ? el("span", { class: "del" }, "−" + c.removed) : null),
@@ -979,6 +1015,7 @@
         { class: "section-head" },
         el("span", { class: "section-title" }, "Draft changes"),
         pending.length ? pill("attention", `${pending.length} awaiting review`) : null,
+        pending.some((c) => c.conflict) ? pill("attention", plural(pending.filter((c) => c.conflict).length, "conflict"), "Two versions changed the same lines. Pick what to keep on the card.") : null,
       ),
       el("div", { class: "muted small" }, "Nothing is written to your project until you accept it. Click a file to see its diff."),
       changes.length ? el("div", { class: "segmented" }, seg("file", "All files"), seg("agent", "By agent")) : null,
@@ -1002,7 +1039,13 @@
             { class: "sticky-bottom bulk" },
             el("button", { class: "ghost danger", onclick: () => all("reject") }, "Reject all"),
             el("span", { class: "spacer" }),
-            el("button", { class: "primary accept-all", onclick: () => all("accept") }, pending.length > 1 ? `Accept all ${pending.length} drafts` : "Accept draft"),
+            (() => {
+              // Conflicts wait for a pick, so Accept all leaves them out.
+              const ready = pending.filter((c) => !c.conflict).length;
+              return ready
+                ? el("button", { class: "primary accept-all", title: ready < pending.length ? "Drafts with a conflict wait until you pick what to keep" : undefined, onclick: () => all("accept") }, ready > 1 ? `Accept all ${ready} drafts` : "Accept draft")
+                : null;
+            })(),
           )
         : null,
     ];

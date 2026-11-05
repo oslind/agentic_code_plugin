@@ -369,7 +369,12 @@ export async function publishDrafts(
   for (const [p, text] of published) {
     if (run.changes?.some((c) => c.path === p && c.taskId === task.id && c.status === "accepted" && c.proposed === text)) overlay.rebase(p, text);
   }
-  const changes = overlay.pending(task.id).filter((c) => published.get(c.path) !== c.proposed);
+  const changes = overlay
+    .pending(task.id)
+    .filter((c) => published.get(c.path) !== c.proposed)
+    // What it was built on: its own last draft, or what it saw when it first wrote the file. A draft of the
+    // same file by another sub-agent that it never saw is then combined with it, not replaced (see combineDrafts).
+    .map((c) => ({ ...c, basis: published.has(c.path) ? published.get(c.path)! : overlay.basisOf(c.path) }));
   if (changes.length === 0) return [];
   await store.addChanges(runId, changes);
   for (const c of changes) published.set(c.path, c.proposed);

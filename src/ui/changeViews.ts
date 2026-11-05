@@ -22,7 +22,7 @@ export class ChangeViews implements vscode.TextDocumentContentProvider {
     return views;
   }
 
-  private uri(runId: string, filePath: string, side: "original" | "proposed"): vscode.Uri {
+  private uri(runId: string, filePath: string, side: "original" | "proposed" | "other"): vscode.Uri {
     // The file name stays last in the path so VS Code picks the right language and tab title.
     return vscode.Uri.from({ scheme: CHANGE_SCHEME, path: `/${filePath}`, query: new URLSearchParams({ run: runId, side }).toString() });
   }
@@ -33,7 +33,8 @@ export class ChangeViews implements vscode.TextDocumentContentProvider {
     const filePath = uri.path.replace(/^\//, "");
     const change = await this.find(runId, filePath);
     if (!change) return "";
-    return q.get("side") === "original" ? (change.original ?? "") : change.proposed;
+    const side = q.get("side");
+    return side === "original" ? (change.original ?? "") : side === "other" ? (change.conflict?.other ?? "") : change.proposed;
   }
 
   private async find(runId: string, filePath: string): Promise<PendingChange | undefined> {
@@ -48,6 +49,14 @@ export class ChangeViews implements vscode.TextDocumentContentProvider {
     if (!change) throw new Error(`No change to ${filePath} in this run.`);
     const proposed = this.uri(runId, filePath, "proposed");
     this.changed.fire(proposed);
+    if (change.status === "pending" && change.conflict) {
+      // A conflict shows the two versions side by side: the other draft (or the file on disk) and this draft.
+      const other = this.uri(runId, filePath, "other");
+      this.changed.fire(other);
+      const left = change.conflict.with === "disk" ? "your file on disk" : "other draft";
+      await vscode.commands.executeCommand("vscode.diff", other, proposed, `${filePath} (conflict: ${left} ↔ draft)`, { preview, preserveFocus: true });
+      return;
+    }
     if (changeKind(change) === "new") {
       const doc = await vscode.workspace.openTextDocument(proposed);
       await vscode.window.showTextDocument(doc, { preview, preserveFocus: true });
@@ -60,7 +69,7 @@ export class ChangeViews implements vscode.TextDocumentContentProvider {
 
   /** Closes the editors showing a change, once it is accepted or rejected. */
   async close(runId: string, filePath: string): Promise<void> {
-    const want = new Set([this.uri(runId, filePath, "proposed").toString(), this.uri(runId, filePath, "original").toString()]);
+    const want = new Set((["proposed", "original", "other"] as const).map((side) => this.uri(runId, filePath, side).toString()));
     const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => {
       const input = t.input;
       if (input instanceof vscode.TabInputText) return want.has(input.uri.toString());
