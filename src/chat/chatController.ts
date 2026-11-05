@@ -1,5 +1,5 @@
 import { TaskStore } from "../state/taskStore";
-import { RunEvent } from "../state/types";
+import { ConflictChoice, RunEvent } from "../state/types";
 import { Restarts } from "./restarts";
 import { AutoApprove } from "../tools/policy";
 import { Approvals } from "./approvals";
@@ -185,8 +185,8 @@ export class ChatController {
    * Shows, accepts or rejects a pending change from the chat. Without a path,
    * accepts or rejects every pending change of that run's task (or the whole run).
    */
-  review(runId: string, action: ReviewAction, filePath?: string, taskId?: string): Promise<void> {
-    return this.drafts.review(runId, action, filePath, taskId);
+  review(runId: string, action: ReviewAction, filePath?: string, taskId?: string, choice?: ConflictChoice): Promise<void> {
+    return this.drafts.review(runId, action, filePath, taskId, choice);
   }
 
   /**

@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import { resumeState } from "../state/resume";
 import { CheckConfig } from "../checks/runner";
 import { createProvider, readAutoRetries, readPermissions, readRunConfig } from "../config";
-import { acceptChange, rejectChange } from "../changes/review";
+import { acceptChange, rejectChange, resolveConflict } from "../changes/review";
 import { Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
 import { TaskStore } from "../state/taskStore";
@@ -281,6 +281,20 @@ export function registerRunCommands(
             if (!res.ok && res.reason === "changed_on_disk") {
               const again = await vscode.window.showQuickPick(["Overwrite", "Keep my version"], { placeHolder: res.message });
               if (again === "Overwrite") await acceptChange(store, run.id, pick.change.path, folder.uri.fsPath, { overwrite: true });
+            } else if (!res.ok && res.reason === "conflict") {
+              const pickSide = await vscode.window.showQuickPick(
+                [
+                  { label: "Keep both with conflict markers", choice: "both" as const },
+                  { label: "Keep the draft", choice: "draft" as const },
+                  { label: "Keep the other version", choice: "other" as const },
+                ],
+                { placeHolder: res.message },
+              );
+              if (pickSide) {
+                await resolveConflict(store, run.id, pick.change.path, pickSide.choice);
+                vscode.window.showInformationMessage(`${pick.change.path}: choice saved. Review the draft again to accept it.`);
+              }
+              return;
             } else if (!res.ok) vscode.window.showWarningMessage(res.message);
           }
           if (action === "Reject") await rejectChange(store, run.id, pick.change.path);

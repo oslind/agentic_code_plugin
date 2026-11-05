@@ -8,6 +8,8 @@ export interface DraftSnapshot {
   path: string;
   original: string | null;
   content: string;
+  /** What the draft was built on (see PendingChange.basis), so a resumed draft is still combined, not swapped in. */
+  basis?: string | null;
 }
 
 /**
@@ -22,6 +24,8 @@ export class OverlayFiles implements ProjectFiles {
   readonly writes = new Map<string, string>();
   /** The text on disk when a file was first written here; null if it did not exist. */
   private readonly originals = new Map<string, string | null>();
+  /** What this sub-agent saw when it first wrote a file: an earlier draft of the run, or the file on disk (null if none). */
+  private readonly bases = new Map<string, string | null>();
 
   constructor(
     private readonly disk: WorkspaceSandbox,
@@ -50,6 +54,7 @@ export class OverlayFiles implements ProjectFiles {
     // Confinement is checked against the real folder even though nothing is written yet.
     await this.disk.resolveForWrite(p);
     if (!this.originals.has(p)) this.originals.set(p, await this.disk.readFile(p).catch(() => null));
+    if (!this.bases.has(p)) this.bases.set(p, this.base.get(p) ?? this.originals.get(p) ?? null);
     this.writes.set(p, content);
   }
 
@@ -66,11 +71,17 @@ export class OverlayFiles implements ProjectFiles {
    */
   rebase(relPath: string, onDisk: string): void {
     this.originals.set(this.norm(relPath), onDisk);
+    this.bases.set(this.norm(relPath), onDisk);
+  }
+
+  /** The text this sub-agent's draft of `relPath` was built on. See {@link PendingChange.basis}. */
+  basisOf(relPath: string): string | null | undefined {
+    return this.bases.get(this.norm(relPath));
   }
 
   /** This sub-agent's writes with the text each file had before, so they can be restored after a restart. */
   snapshot(): DraftSnapshot[] {
-    return [...this.writes].map(([p, content]) => ({ path: p, original: this.originals.get(p) ?? null, content }));
+    return [...this.writes].map(([p, content]) => ({ path: p, original: this.originals.get(p) ?? null, content, basis: this.bases.get(p) }));
   }
 
   /**
@@ -82,6 +93,7 @@ export class OverlayFiles implements ProjectFiles {
       const p = this.norm(d.path);
       await this.disk.resolveForWrite(p);
       this.originals.set(p, d.original);
+      this.bases.set(p, d.basis !== undefined ? d.basis : (this.base.get(p) ?? d.original));
       this.writes.set(p, d.content);
     }
   }

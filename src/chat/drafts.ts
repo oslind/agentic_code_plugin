@@ -1,6 +1,6 @@
 import { TaskStore } from "../state/taskStore";
-import { Run } from "../state/types";
-import { acceptChange, rejectChange, revertChange } from "../changes/review";
+import { ConflictChoice, Run } from "../state/types";
+import { acceptChange, rejectChange, resolveConflict, revertChange } from "../changes/review";
 import { ConversationStore } from "./conversationStore";
 import { ChatHost } from "./host";
 import { ChatSession } from "./session";
@@ -24,11 +24,21 @@ export class Drafts {
    * Shows, accepts or rejects a pending change from the chat. Without a path,
    * accepts or rejects every pending change of that run's task (or the whole run).
    */
-  async review(runId: string, action: ReviewAction, filePath?: string, taskId?: string): Promise<void> {
+  async review(runId: string, action: ReviewAction, filePath?: string, taskId?: string, choice?: ConflictChoice): Promise<void> {
     const conversationId = this.s.runOwner.get(runId) ?? this.s.currentId;
     const run = await this.tasks.load(runId);
     if (action === "show") {
       if (filePath) await this.host.showChange(runId, filePath);
+      return;
+    }
+    if (action === "resolve") {
+      // Picking a side writes nothing: the result is a draft again (or, keeping the file on disk, a rejected one).
+      if (!filePath || !choice) return;
+      const done = await resolveConflict(this.tasks, runId, filePath, choice);
+      this.s.changeNotes.delete(`${runId}:${filePath}`);
+      if (done?.status === "rejected") await this.host.closeChange(runId, filePath).catch(() => undefined);
+      else if (done) await this.host.showChange(runId, filePath).catch(() => undefined);
+      this.s.changed();
       return;
     }
     const root = run.workspaceRoot && (await this.host.openFolder(run.workspaceRoot));
@@ -47,6 +57,7 @@ export class Drafts {
       (c) => c.status === "pending" && (filePath ? c.path === filePath : !taskId || c.taskId === taskId),
     );
     const written: string[] = [];
+    const combined: string[] = [];
     const held: string[] = [];
     const failed: string[] = [];
     for (const c of targets) {
@@ -70,6 +81,7 @@ export class Drafts {
         if (res.ok) {
           this.s.changeNotes.delete(key);
           written.push(c.path);
+          if (res.combined) combined.push(c.path);
         } else {
           this.s.changeNotes.set(key, res.message);
           held.push(res.message);
@@ -84,6 +96,13 @@ export class Drafts {
     if (conversationId && targets.length > 1 && (written.length || action === "reject")) {
       const n = action === "accept" ? written.length : targets.length;
       await this.s.append(conversationId, { author: "system", runId, text: action === "accept" ? `Accepted ${n} draft(s) and wrote them to your project.` : `Rejected ${n} draft(s). Nothing was written for them.` });
+    }
+    if (conversationId && combined.length) {
+      await this.s.append(conversationId, {
+        author: "system",
+        runId,
+        text: `${combined.join(", ")} had changed on disk since the sub-agent read ${combined.length === 1 ? "it" : "them"}. The changes did not touch the same lines, so the draft was combined with the newer version and nothing was lost.`,
+      });
     }
     if (conversationId && action === "accept" && (held.length || failed.length || warnings.length)) {
       await this.s.append(conversationId, { author: "system", runId, tone: "warning", text: [...held.map((m) => `Not written yet: ${m}`), ...failed, ...warnings].join("\n") });

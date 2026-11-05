@@ -4,6 +4,7 @@ import { CheckConfig } from "../checks/runner";
 import { AutoApprove } from "../tools/policy";
 import { parallelWaves } from "../coordinator/plan";
 import { changeKind } from "../changes/review";
+import { hasConflictMarkers } from "../changes/merge";
 import { ChatEntry, ChatMode, Conversation, ConversationSummary } from "./types";
 import { buildDashboard, DashboardView } from "./dashboard";
 import { DraftState, draftState, lineCounts } from "./lifecycle";
@@ -12,7 +13,7 @@ import { isUnstarted } from "./helpers";
 import type { ChatSession } from "./session";
 
 /** What the user can do with a pending change from the chat. */
-export type ReviewAction = "show" | "open" | "accept" | "reject" | "revert";
+export type ReviewAction = "show" | "open" | "accept" | "reject" | "resolve" | "revert";
 
 /** What the user chose on a card that waited for them. */
 export type Decision =
@@ -55,6 +56,14 @@ export interface ChangeView {
   auto?: boolean;
   /** Why the last Accept (or Revert) did not go through, e.g. the file changed on disk. */
   note?: string;
+  /** Other sub-agents whose drafts of this file were combined into this one, by name. */
+  combinedWith?: string[];
+  /** Combined with a newer version of the file on disk when it was accepted. */
+  combinedWithDisk?: boolean;
+  /** This draft and another version changed the same lines. It cannot be accepted until the user picks how to resolve it. */
+  conflict?: { with: "draft" | "disk"; otherAgent?: string; regions: number };
+  /** The draft still has conflict markers (the user chose to keep both versions). */
+  markers?: boolean;
   /** The newest accepted change of its file in this run: Revert puts the file back as it was before it. */
   revertable?: boolean;
 }
@@ -123,6 +132,7 @@ export async function buildViewState(
   for (const runId of current?.runIds ?? []) {
     const run = await s.tasks.load(runId).catch(() => undefined);
     if (!run) continue;
+    const titleOf = (taskId: string) => run.tasks.find((t) => t.id === taskId)?.title ?? taskId;
     plans[runId] = {
       kind: run.kind ?? "change",
       tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
@@ -132,7 +142,7 @@ export async function buildViewState(
       changes: (run.changes ?? []).map((ch) => ({
         path: ch.path,
         taskId: ch.taskId,
-        agentName: run.tasks.find((t) => t.id === ch.taskId)?.title ?? ch.taskId,
+        agentName: titleOf(ch.taskId),
         kind: changeKind(ch),
         status: ch.status,
         state: draftState(ch.status),
@@ -141,6 +151,10 @@ export async function buildViewState(
         // Accept and Revert notes are kept apart, so a Revert warning never turns the next Accept into an overwrite.
         note: ch.status === "pending" ? s.changeNotes.get(`${runId}:${ch.path}`) : ch === latestAccepted(run.changes, ch.path) ? s.changeNotes.get(`revert:${runId}:${ch.path}`) : undefined,
         revertable: ch === latestAccepted(run.changes, ch.path) || undefined,
+        combinedWith: ch.combinedWith?.map(titleOf),
+        combinedWithDisk: ch.combinedWithDisk,
+        conflict: ch.conflict && { with: ch.conflict.with, otherAgent: ch.conflict.otherTaskId && titleOf(ch.conflict.otherTaskId), regions: ch.conflict.regions },
+        markers: ch.status === "pending" && !ch.conflict && hasConflictMarkers(ch.proposed) ? true : undefined,
       })),
     };
   }

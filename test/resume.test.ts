@@ -113,7 +113,7 @@ describe("resuming after a restart", () => {
     await crashMidTask(run.id, [write("a.txt", "draft A")]);
     const cp = await store.loadCheckpoint(run.id, "a");
     expect(cp?.turns).toBe(1);
-    expect(cp?.drafts).toEqual([{ path: "a.txt", original: null, content: "draft A" }]);
+    expect(cp?.drafts).toEqual([{ path: "a.txt", original: null, content: "draft A", basis: null }]);
     expect(cp?.history.at(-1)?.content).toContain("a.txt");
     expect((await store.load(run.id)).tasks[0]!.status).toBe("running");
   });
