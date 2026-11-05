@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
+import { assignmentBlock } from "./assignment";
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { RunEvent, Task } from "../state/types";
@@ -356,8 +357,8 @@ export function buildSuperviseMessages(ctx: SuperviseContext, contextWindow: num
   const said = ctx.userMessages.slice(-4).map((m) => `- ${m.replace(/\s+/g, " ")}`).join("\n");
   const parts = [
     said ? `What the user asked (newest last):\n${fit(said, 800)}` : "",
-    `The work you planned: ${fit(ctx.request, 400)}`,
-    `The sub-agent: "${ctx.agent.title}". Its task: ${fit(ctx.agent.instructions, 400)}`,
+    // The plan is model-written and can echo planted text, so it is fenced too.
+    `The sub-agent you are looking at:\n${assignmentBlock({ request: ctx.request, title: ctx.agent.title, instructions: ctx.agent.instructions }, (t, max) => fit(t, Math.min(max, 400)) || undefined)}`,
     // Only the fixed wording is the coordinator's own observation; what the sub-agent did goes in the fence.
     routine ? `Why you look now: ${ctx.concern.detail}` : `What you noticed: ${CONCERN_LABEL[ctx.concern.kind]}. ${ctx.concern.detail}`,
     routine
@@ -371,7 +372,7 @@ export function buildSuperviseMessages(ctx: SuperviseContext, contextWindow: num
       : "",
     untrustedSection(
       "Its activity (its own thoughts and tool arguments are in it):",
-      `recent steps of sub-agent "${ctx.agent.title}"`,
+      "the sub-agent's recent steps",
       fit([ctx.concern.evidence, ctx.activity].filter(Boolean).join("\n"), 1500),
     ),
     `Decide with JSON only. ${DATA_REMINDER}`,

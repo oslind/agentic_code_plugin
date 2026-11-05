@@ -2,7 +2,7 @@
   "name": "agentic-code-plugin",
   "displayName": "Agentic Code",
   "description": "Coordinates a main agent and parallel sub-agents, tuned for small local models.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "publisher": "oslind",
   "license": "MIT",
   "repository": {
@@ -294,21 +294,32 @@
           "default": 2,
           "minimum": 0,
           "maximum": 5,
-          "description": "How often the coordinator may step in with one sub-agent while it works. Every step is watched without extra model calls; when a sub-agent seems stuck (the same call over and over, steps refused by the rules, many steps without a draft, checks that keep failing), the coordinator looks at it and lets it continue, sends it a note, or stops it (only after a note, and its drafts are kept). 0 turns this off. Sub-agents can always ask the coordinator questions."
+          "description": "How often the coordinator may step in with one sub-agent while it works. Every step is watched without extra model calls; when a sub-agent seems stuck (the same call over and over, steps refused by the rules, many steps without a draft, checks that keep failing), the coordinator looks at it and lets it continue, sends it a note, or stops it (only after a note, and its drafts are kept). 0 turns this off. Sub-agents can always ask the coordinator questions. Only your user settings count: a project cannot raise this.",
+          "scope": "machine"
         },
         "agentic.delegation.progressEvery": {
           "type": "number",
           "default": 8,
           "minimum": 0,
           "maximum": 40,
-          "description": "Every this many steps, the coordinator reads a sub-agent's progress (its thoughts are its reports) and sends it a note when it knows something useful the sub-agent does not: research findings, what other sub-agents found or changed, or a correction. It also looks soon after another sub-agent finishes. Each look is one model call. 0 turns regular looks off; looks when a sub-agent seems stuck are set by agentic.delegation.checkIns."
+          "description": "Every this many steps, the coordinator reads a sub-agent's progress (its thoughts are its reports) and sends it a note when it knows something useful the sub-agent does not: research findings, what other sub-agents found or changed, or a correction. It also looks soon after another sub-agent finishes. Each look is one model call. 0 turns regular looks off; looks when a sub-agent seems stuck are set by agentic.delegation.checkIns. Only your user settings count: a project cannot make the looks more frequent.",
+          "scope": "machine"
         },
         "agentic.delegation.reviewRounds": {
           "type": "number",
           "default": 1,
           "minimum": 0,
           "maximum": 3,
-          "description": "When a sub-agent finishes, the coordinator reads its report and drafts and checks them against the task and your request. If something is missing or wrong, it sends the sub-agent back with feedback, at most this many times per task. The checks still decide whether code works. 0 turns the review off."
+          "description": "When a sub-agent finishes, the coordinator reads its report and drafts and checks them against the task and your request. If something is missing or wrong, it sends the sub-agent back with feedback, at most this many times per task. The checks still decide whether code works. When it can no longer send a sub-agent back (sent back this many times, or too few steps left), it still reads the result, and if something is missing its drafts wait for you with its feedback. When a review cannot happen (the model gives no usable reply), the chat says the result is unreviewed. In both cases nothing is written automatically, even when auto-approve is on. 0 turns the review off. Only your user settings count: a project cannot raise this.",
+          "scope": "machine"
+        },
+        "agentic.delegation.maxModelCallsPerRun": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "Most model calls one run may make: every step of its sub-agents plus the coordinator's check-ins, progress looks, result reviews and answers to sub-agents. When a run reaches it, its sub-agents are stopped as if you pressed Stop, and their drafts are kept for your review (never written automatically). 0 means no limit. Only your user settings count: a project cannot raise this.",
+          "scope": "machine"
         },
         "agentic.delegation.maxResearchRounds": {
           "type": "number",

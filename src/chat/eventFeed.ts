@@ -154,6 +154,32 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
     }
     case "coordinator_review": {
       const name = `"${task?.title ?? event.taskId ?? "a sub-agent"}"`;
+      const research = data.research === true;
+      if (event.message === "unavailable" || event.message === "not_accepted") {
+        // Never shown as a pass: the user decides what happens to the drafts.
+        const yours = research ? "Its report is shown as it is; check it before relying on it." : "Its drafts wait for you under Drafts and are not written automatically, even with auto-approve on.";
+        const feedback = typeof data.feedback === "string" ? data.feedback.trim() : "";
+        const why =
+          event.message === "not_accepted"
+            ? `Reviewed ${name}'s result and it still falls short, but ${data.final === "out_of_turns" ? "it has no steps left" : "it was already sent back as often as allowed"}, so I could not send it back: ${feedback}`
+            : data.reason === "over_budget"
+              ? `I did not review ${name}'s result, because this run used its model-call budget (agentic.delegation.maxModelCallsPerRun).`
+              : data.reason === "unclear"
+                ? `My review of ${name}'s result was unclear (I asked for changes without saying which), so it counts as not reviewed.`
+                : `I could not review ${name}'s result (the model gave no usable reply), so it counts as not reviewed.`;
+        return {
+          author: "coordinator",
+          kind: "checkin",
+          runId: event.runId,
+          taskId: event.taskId,
+          agentName: task?.title ?? event.taskId,
+          tag: event.message === "not_accepted" ? "not accepted" : "review unavailable",
+          tone: "warning",
+          text: `${why} ${yours}`,
+          thought: typeof data.thought === "string" ? short(data.thought) : undefined,
+          thinking: typeof data.thinking === "string" && data.thinking.trim() ? data.thinking.trim() : undefined,
+        };
+      }
       const revise = event.message === "revise";
       const feedback = typeof data.feedback === "string" ? data.feedback.trim() : "";
       const adjusted = typeof data.adjusted === "string" ? ` (${data.adjusted})` : "";

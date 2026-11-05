@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
+import { assignmentBlock } from "./assignment";
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 
@@ -66,7 +67,7 @@ function bullets(lines: string[]): string {
   return lines.map((l) => `- ${l.replace(/\s+/g, " ").trim()}`).join("\n");
 }
 
-/** Builds the prompt. Trusted parts (the user's words, the plan) are plain; everything a model wrote is fenced. */
+/** Builds the prompt. Only the user's words are plain; everything a model wrote, the plan included, is fenced. */
 export function buildConsultMessages(ctx: ConsultContext, contextWindow: number): ChatMessage[] {
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(SYSTEM);
   const fit = (text: string | undefined, max: number): string | undefined => {
@@ -80,11 +81,9 @@ export function buildConsultMessages(ctx: ConsultContext, contextWindow: number)
   const recent = ctx.userMessages.slice(-6);
   const said = fit(bullets(recent), 1500);
   if (said) parts.push(`What the user said to you (newest last):\n${said}`);
-  parts.push(`The work you planned: ${fit(ctx.request, 600) ?? "(not recorded)"}`);
   const agent = ctx.agent;
-  parts.push(
-    `The sub-agent asking: "${agent.title}" (${agent.research ? "read-only researcher" : `may change: ${agent.fileScope.join(", ") || "nothing"}`}).\nIts task: ${fit(agent.instructions, 600) ?? ""}`,
-  );
+  // The plan is model-written and can echo planted text, so it is fenced too.
+  parts.push(`The sub-agent asking:\n${assignmentBlock({ request: ctx.request, ...agent }, (t, max) => fit(t, max === 400 ? 600 : max))}`);
 
   const untrusted: string[] = [];
   const earlier = fit(ctx.earlier, 800);
@@ -97,7 +96,7 @@ export function buildConsultMessages(ctx: ConsultContext, contextWindow: number)
   if (team) untrusted.push(dataBlock("what the other sub-agents are doing", team));
   if (untrusted.length) parts.push(`Your notes:\n${DATA_RULE}\n${untrusted.join("\n")}`);
 
-  const question = `${untrustedSection(`"${agent.title}" asks you:`, `question from sub-agent "${agent.title}"`, ctx.question)}\n\nAnswer it with JSON only. ${DATA_REMINDER}`;
+  const question = `${untrustedSection("The sub-agent asks you:", "the sub-agent's question", ctx.question)}\n\nAnswer it with JSON only. ${DATA_REMINDER}`;
   return [
     { role: "system", content: SYSTEM },
     { role: "user", content: `${parts.join("\n\n")}\n\n${question}` },

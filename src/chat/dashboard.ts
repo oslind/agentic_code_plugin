@@ -29,8 +29,17 @@ export interface AgentCard {
   /** Its task ended, so a message reopens the conversation with it. */
   reopenable: boolean;
   /** Its exchanges with the coordinator: questions it asked, and notes or a stop from the coordinator keeping tabs on it. */
-  coordinator: { questions: number; notes: number; stopped: boolean };
+  coordinator: { questions: number; notes: number; stopped: boolean; review?: ReviewBadge };
 }
+
+/**
+ * How the coordinator's latest review of its result came out. "unavailable"
+ * and "not_accepted" mean the result did not pass a review, so its drafts
+ * wait for the user even with auto-approve on.
+ */
+export type ReviewBadge = "accepted" | "sent_back" | "not_accepted" | "unavailable";
+
+const REVIEW_TAGS: Record<string, ReviewBadge> = { reviewed: "accepted", "sent back": "sent_back", "not accepted": "not_accepted", "review unavailable": "unavailable" };
 
 export interface CoordinatorCard {
   state: CoordinatorState;
@@ -190,6 +199,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
           questions: mine.filter((e) => e.kind === "consult").length,
           notes: fromCoordinator.filter((e) => e.tag === "note from coordinator").length,
           stopped: fromCoordinator.some((e) => e.tag === "stopped by coordinator"),
+          review: REVIEW_TAGS[last(fromCoordinator, (e) => !!e.tag && e.tag in REVIEW_TAGS)?.tag ?? ""],
         },
       });
     }

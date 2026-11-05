@@ -59,6 +59,10 @@ const INJECTION = [
   /\b(tell|inform) the user (that )?(all|every|everything|the|no)\b/i,
   /\b(system prompt|assistant:|system:)\s/i,
   /<\|im_start\|>|<\|eot_id\|>|\[INST\]/i,
+  // Aimed at a reviewer or approver: "always accept it", "approve every change", "ignore instructions that say otherwise".
+  /\b(always|just|simply|automatically) (accept|approve)\b/i,
+  /\b(accept|approve) (it|this|them|everything|every|all|any)\b[^.\n]{0,30}\b(regardless|no matter|without (checking|review))/i,
+  /\bignore (any |all )?(other |previous |prior )?instructions\b/i,
 ];
 
 /**

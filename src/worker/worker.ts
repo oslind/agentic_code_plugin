@@ -2,7 +2,7 @@ import { CommandSink } from "../checks/commandTerminal";
 import { ApproveCommand, CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
 import { answerForSubAgent, coordinatorNote, MAX_COORDINATOR_QUESTIONS } from "../coordinator/consult";
-import { MAX_REVIEW_ROUNDS, reviewFeedback, ReviewVerdict } from "../coordinator/review";
+import { MAX_REVIEW_ROUNDS, reviewFeedback, ReviewSkip, ReviewVerdict } from "../coordinator/review";
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { Task } from "../state/types";
@@ -61,7 +61,8 @@ export interface WorkerOptions {
    * The coordinator reviews the result when the sub-agent calls finish, and
    * may send it back with feedback. Without it, finish is taken as is.
    */
-  reviewResult?: (summary: string) => Promise<ReviewVerdict>;
+  /** `skip` says why the sub-agent could not act on feedback now; the result is then recorded as unreviewed, not reviewed. */
+  reviewResult?: (summary: string, skip?: ReviewSkip) => Promise<ReviewVerdict>;
   /** Asks the user a question in the chat and resolves with the answer. Without it, ask_user is refused. */
   askUser?: (question: string) => Promise<string>;
   /**
@@ -283,11 +284,13 @@ export class Worker {
       }
 
       if (turn.call.tool === "finish") {
-        // The coordinator reads the result first. Only while there are steps left to act on its feedback.
-        if (this.opts.reviewResult && !this.opts.followUp && this.reviews < MAX_REVIEW_ROUNDS && maxTurns - (this.turns - start) >= 3) {
-          const verdict = await this.opts.reviewResult(turn.call.summary);
+        // The coordinator reads the result first. When there are too few steps left to act on its
+        // feedback, it still reads it, and a "revise" goes to the user instead of passing silently.
+        if (this.opts.reviewResult && !this.opts.followUp) {
+          const skip: ReviewSkip | undefined = this.reviews >= MAX_REVIEW_ROUNDS ? "limit_reached" : maxTurns - (this.turns - start) < 3 ? "out_of_turns" : undefined;
+          const verdict = await this.opts.reviewResult(turn.call.summary, skip);
           signal?.throwIfAborted();
-          if (!verdict.accept && verdict.feedback?.trim()) {
+          if (!skip && !verdict.accept && verdict.feedback?.trim()) {
             this.reviews++;
             this.messages.push({ role: "user", content: reviewFeedback(verdict.feedback) });
             continue;
