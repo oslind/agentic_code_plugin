@@ -47,7 +47,7 @@ export const USER_ONLY_CHAT_KEYS = ["coordinatorHistoryTokens", "autoCompact"] a
  * per-run cap on all model calls. A project could otherwise turn a run into
  * many more requests to your model server.
  */
-export const USER_ONLY_DELEGATION_KEYS = ["oversight", "maxModelCallsPerRun", "autoRetries"] as const;
+export const USER_ONLY_DELEGATION_KEYS = ["oversight", "maxModelCallsPerRun", "autoRetries", "compactSubAgents"] as const;
 
 /** Times a failed sub-agent is started again on its own, 0 (off) to 3, default 1. From user settings only: each retry calls the model again. */
 export function autoRetriesFrom(section: InspectableSection): number {
@@ -121,6 +121,15 @@ export function coordinatorHistoryTokensFrom(section: InspectableSection): numbe
  */
 export function autoCompactFrom(section: InspectableSection): boolean {
   return userValue(section, "autoCompact", true, isBoolean);
+}
+
+/**
+ * Whether a sub-agent summarizes its older steps into notes (one model call)
+ * when its conversation nears the context limit, instead of only dropping
+ * them. Default on. From user settings only: each summary is a model call.
+ */
+export function compactSubAgentsFrom(section: InspectableSection): boolean {
+  return userValue(section, "compactSubAgents", true, isBoolean);
 }
 
 /** How closely the coordinator watches and checks its sub-agents. One setting instead of five overlapping ones. */

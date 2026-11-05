@@ -108,7 +108,7 @@ export class ConversationStore {
 export function trimEntries(entries: ChatEntry[], max: number): ChatEntry[] {
   let excess = entries.length - max;
   if (excess <= 0) return entries;
-  const latestCompact = [...entries].reverse().find((e) => e.kind === "compact" && !!e.compaction);
+  const latestCompact = [...entries].reverse().find((e) => e.kind === "compact" && e.author === "system" && !!e.compaction);
   const out: ChatEntry[] = [];
   for (const e of entries) {
     if (excess > 0 && e.author === "agent") {

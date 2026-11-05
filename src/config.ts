@@ -13,6 +13,7 @@ import {
   baseUrlFrom,
   coordinatorHistoryTokensFrom,
   autoCompactFrom,
+  compactSubAgentsFrom,
   legacyApiKeyFrom,
   maxConcurrentRequestsFrom,
   maxOutputTokensFrom,
@@ -196,6 +197,11 @@ export function readCoordinatorHistoryTokens(): number {
 /** Whether the conversation is compacted on its own near the context limit. User settings only: it adds model calls. */
 export function readAutoCompact(): boolean {
   return autoCompactFrom(vscode.workspace.getConfiguration("agentic.chat"));
+}
+
+/** Whether sub-agents summarize their older steps near the context limit. User settings only: it adds model calls. */
+export function readCompactSubAgents(): boolean {
+  return compactSubAgentsFrom(vscode.workspace.getConfiguration("agentic.delegation"));
 }
 
 /**

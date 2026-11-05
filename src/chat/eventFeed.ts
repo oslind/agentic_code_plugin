@@ -281,6 +281,16 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       const turns = typeof data.turns === "number" ? data.turns : 0;
       return agent({ text: `Picking up where I was cut off, after ${turns} step(s), with my conversation and drafts so far.`, tag: "resumed" });
     }
+    case "steps_compacted": {
+      const n = typeof data.messages === "number" ? data.messages : 0;
+      const notes = typeof data.notes === "string" ? data.notes : "";
+      return agent({
+        kind: "compact",
+        tag: "compacted",
+        text: `My conversation was getting too long for the model's context, so I summarized ${n} earlier message(s) (my steps and their results) into notes. The newest steps stay in full.`,
+        compaction: { summary: notes, keepFrom: "", messages: n },
+      });
+    }
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

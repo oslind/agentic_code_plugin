@@ -1058,6 +1058,7 @@
       coord && e.quote ? el("div", { class: "quote" }, e.quote) : null,
       longText("s:" + e.id, e.text, undefined, mine),
       commandBlock(e),
+      e.kind === "compact" && e.compaction && e.compaction.summary ? details("cs:" + e.id, "Its notes on the earlier steps", el("pre", { class: "thinking-text" }, String(e.compaction.summary))) : null,
       e.thinking ? details("t:" + e.id, "Thinking", el("pre", { class: "thinking-text" }, e.thinking)) : null,
       e.decided ? el("div", { class: "decided" }, "✓ " + e.decided) : null,
     );

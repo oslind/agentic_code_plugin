@@ -143,6 +143,7 @@ export class FollowUps {
       signal: abort.signal,
       readOnly: research,
       followUp: true,
+      compactSteps: this.host.compactSubAgents?.() ?? false,
       history,
       // Without a saved conversation (older runs), it gets what the chat shows of its work.
       context: history?.length ? undefined : earlierWork(task, conversation.entries, run.id),

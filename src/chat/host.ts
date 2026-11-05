@@ -66,6 +66,8 @@ export interface ChatHost {
   coordinatorHistoryTokens?(): number;
   /** Whether the conversation is compacted on its own when it nears the context limit. Unset: on. */
   autoCompact?(): boolean;
+  /** Whether sub-agents summarize their older steps near the context limit. Unset: off. */
+  compactSubAgents?(): boolean;
   /** Opens a pending change in VS Code: a new file as its own editor, an edit as a side-by-side diff. */
   showChange(runId: string, filePath: string): Promise<void>;
   /** Closes the editors showing a change once it is decided. */
