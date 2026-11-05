@@ -243,6 +243,10 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
       };
     case "change_rejected":
       return { author: "system", text: `Rejected the draft of ${event.message}. Nothing was written.` };
+    case "resumed": {
+      const turns = typeof data.turns === "number" ? data.turns : 0;
+      return agent({ text: `Picking up where I was cut off, after ${turns} step(s), with my conversation and drafts so far.`, tag: "resumed" });
+    }
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

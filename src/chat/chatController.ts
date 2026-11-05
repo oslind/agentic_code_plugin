@@ -7,7 +7,7 @@ import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
 import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
-import { latestAccepted, TaskStore } from "../state/taskStore";
+import { INTERRUPTED, latestAccepted, TaskStore } from "../state/taskStore";
 import { PendingChange, Run, RunEvent, Task, TaskStatus } from "../state/types";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { CommandSink } from "../checks/commandTerminal";
@@ -33,6 +33,7 @@ import { changedFilesOf, describeOutcome } from "./outcome";
 import { ChatEntry, ChatMode, Conversation, ConversationSummary } from "./types";
 import { buildDashboard, DashboardView } from "./dashboard";
 import { DraftState, draftState, lineCounts } from "./lifecycle";
+import { resumableTasks, resumeState } from "../state/resume";
 
 /** What the chat needs from VS Code. Kept small so the controller can be tested without it. */
 export interface ChatHost {
@@ -155,6 +156,13 @@ export interface PlanView {
   waves: number;
   /** Proposed file changes and what became of them. */
   changes: ChangeView[];
+  /**
+   * Set when the run can be resumed: "interrupted" when VS Code closed under
+   * it, "stopped" when it was stopped or left tasks unstarted. Unset while it runs.
+   */
+  resumable?: "interrupted" | "stopped";
+  /** Tasks a resume would run. */
+  tasksLeft?: number;
 }
 
 export interface ChangeView {
@@ -222,6 +230,20 @@ function title(text: string): string {
 
 function describePlan(run: Run): string {
   return run.tasks.map((t, i) => `${i + 1}. ${t.title} (files: ${t.fileScope.join(", ")})`).join("\n");
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function clipLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** An entry that waits for the user to decide. */
+function isCard(e: ChatEntry): boolean {
+  return e.kind === "checks" || e.kind === "approval" || e.kind === "question";
 }
 
 function isUnstarted(run: Run): boolean {
@@ -307,6 +329,8 @@ export class ChatController {
   private readonly changeNotes = new Map<string, string>();
   /** Commands the user allowed for the rest of a run, keyed by run id. */
   private readonly allowedCommands = new Map<string, Set<string>>();
+  /** Change runs a restart cut off, found when the chat started. */
+  private readonly interrupted: { runId: string; conversationId: string; request: string }[] = [];
   /** Conversations the user reopened with finished sub-agents, by "runId:taskId". */
   private readonly followUps = new Map<string, FollowUp>();
   /** What every model call is doing right now, so a long "thinking" shows that it is still working. */
@@ -382,18 +406,78 @@ export class ChatController {
   private async indexRuns(): Promise<void> {
     for (const s of await this.conversations.list()) {
       const c = await this.conversations.load(s.id).catch(() => undefined);
+      // Runs another VS Code window is working on right now: their cards are still live there.
+      const elsewhere = new Set<string>();
       for (const runId of c?.runIds ?? []) {
         this.runOwner.set(runId, s.id);
-        // Research that was cut off by a restart has no live sub-agent; mark it failed.
         const run = await this.tasks.load(runId).catch(() => undefined);
-        for (const t of run?.kind === "research" ? run.tasks.filter((x) => x.status === "running") : []) {
-          await this.tasks.setStatus(runId, t.id, "failed", "Interrupted by restart").catch(() => undefined);
+        if (!run) continue;
+        // Research that was cut off by a restart has no live sub-agent; mark it failed.
+        for (const t of run.kind === "research" ? run.tasks.filter((x) => x.status === "running") : []) {
+          await this.tasks.setStatus(runId, t.id, "failed", INTERRUPTED).catch(() => undefined);
         }
+        const state = resumeState(run, process.pid);
+        if (state === "elsewhere") elsewhere.add(runId);
+        if (state === "interrupted") await this.noteInterrupted(s.id, run).catch((err) => this.host.log("warn", `Could not mark run ${runId} as interrupted: ${(err as Error).message}`));
+      }
+      // Nothing in this window waits on a card from before it started, so those cards can no longer be answered.
+      if (c?.entries.some((e) => isCard(e) && !e.decided && !(e.runId && elsewhere.has(e.runId)))) {
+        await this.conversations
+          .update(s.id, (conv) => {
+            for (const e of conv.entries) if (isCard(e) && !e.decided && !(e.runId && elsewhere.has(e.runId))) e.decided = "Not answered: VS Code was closed";
+          })
+          .catch(() => undefined);
       }
     }
     this.currentId ??= (await this.conversations.list())[0]?.id;
     const current = this.currentId ? await this.conversations.load(this.currentId).catch(() => undefined) : undefined;
     if (current) this.mode = current.mode;
+  }
+
+  /**
+   * A change run VS Code closed under: its cut-off tasks are marked stopped,
+   * and the chat says what is kept and offers to resume.
+   */
+  private async noteInterrupted(conversationId: string, run: Run): Promise<void> {
+    const cut = await this.tasks.markInterrupted(run.id);
+    const after = await this.tasks.load(run.id);
+    const done = after.tasks.filter((t) => t.status === "done").length;
+    const drafts = (after.changes ?? []).filter((c) => c.status === "pending").length;
+    this.interrupted.push({ runId: run.id, conversationId, request: run.request });
+    await this.conversations.append(conversationId, {
+      author: "system",
+      runId: run.id,
+      tone: "warning",
+      tag: "interrupted",
+      text: [
+        `VS Code closed while this run was working${cut.length ? ` on ${plural(cut.length, "task")}` : ""}. ${done} of ${after.tasks.length} task(s) are done.`,
+        drafts ? `${plural(drafts, "draft")} are kept under Drafts for your review.` : "",
+        `Press "Resume" to continue where it stopped: sub-agents that were cut off pick up from their last step.`,
+      ].filter(Boolean).join(" "),
+    });
+  }
+
+  private resumeView(run: Run): Pick<PlanView, "resumable" | "tasksLeft"> {
+    if (this.runningRunId === run.id) return {};
+    const state = resumeState(run, process.pid);
+    if (state !== "interrupted" && state !== "stopped") return {};
+    return { resumable: state, tasksLeft: resumableTasks(run).length };
+  }
+
+  /** Whether a run was started from a chat conversation. */
+  owns(runId: string): boolean {
+    return this.runOwner.has(runId);
+  }
+
+  /** Change runs found cut off by a restart when the chat started, for the "Resume?" notification. */
+  async interruptedRuns(): Promise<{ runId: string; conversationId: string; request: string }[]> {
+    await this.ready;
+    const out = [];
+    for (const r of this.interrupted) {
+      const run = await this.tasks.load(r.runId).catch(() => undefined);
+      if (run && resumeState(run, process.pid) && this.runningRunId !== r.runId) out.push(r);
+    }
+    return out;
   }
 
   async state(): Promise<ChatViewState> {
@@ -413,6 +497,7 @@ export class ChatController {
         tasks: run.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, fileScope: t.fileScope, dependsOn: t.dependsOn })),
         started: !isUnstarted(run),
         waves: parallelWaves(run.tasks).length,
+        ...this.resumeView(run),
         changes: (run.changes ?? []).map((ch) => ({
           path: ch.path,
           taskId: ch.taskId,
@@ -1706,9 +1791,47 @@ export class ChatController {
     }
     const run = await this.tasks.load(runId);
     if (!isUnstarted(run)) {
+      if (resumeState(run, process.pid)) return this.resumeRun(runId);
       await this.append(conversationId, { author: "system", text: "That plan has already run. Retry tasks from the Tasks view.", tone: "warning" });
       return;
     }
+    await this.startRun(conversationId, run, false);
+  }
+
+  /**
+   * Continues a run that VS Code closed under, or that was stopped: the
+   * stopped sub-agents pick up their own conversation and drafts where they
+   * were, tasks that never started start now, and done tasks and every draft
+   * stay as they are. The user approves the checks again, as for any run.
+   */
+  async resumeRun(runId: string): Promise<void> {
+    await this.ready;
+    const conversationId = this.runOwner.get(runId);
+    if (!conversationId) return;
+    if (this.busy) {
+      await this.append(conversationId, { author: "system", tone: "warning", text: `The run was not resumed because the chat is busy (${this.busy.replace(/…$/, "")}). Press "Resume" again when it is done.` });
+      return;
+    }
+    const run = await this.tasks.load(runId);
+    const state = resumeState(run, process.pid);
+    if (state === "elsewhere") {
+      await this.append(conversationId, { author: "system", tone: "warning", text: "This run is still working in another VS Code window, so it was not resumed here." });
+      return;
+    }
+    if (!state) {
+      await this.append(conversationId, { author: "system", tone: "warning", text: "There is nothing left to resume in that run." });
+      return;
+    }
+    if (this.currentId !== conversationId) {
+      this.currentId = conversationId;
+      this.mode = (await this.conversations.load(conversationId)).mode;
+    }
+    await this.startRun(conversationId, run, true);
+  }
+
+  /** Runs a plan's sub-agents, or resumes the ones left, then verifies and reports. */
+  private async startRun(conversationId: string, run: Run, resume: boolean): Promise<void> {
+    const runId = run.id;
     if (this.mode !== "act") await this.setMode("act");
     // The plan's sub-agents may work on the same files; reopened conversations pass on what they found first.
     await this.endFollowUpsOf(conversationId);
@@ -1725,12 +1848,38 @@ export class ChatController {
         await this.append(conversationId, { author: "system", text: "The run was not started.", tone: "warning" });
         return;
       }
-      this.busy = `Sub-agents are working on ${run.tasks.length} task(s)…`;
-      this.changed();
-      await this.append(conversationId, {
-        author: "coordinator",
-        text: `Starting sub-agents for ${run.tasks.length} task(s). Each may only change its own files, and you review every change before it is written.`,
-      });
+      if (resume) {
+        // Checked again: the user may have answered the checks card after something else changed the run.
+        const left = resumableTasks(await this.tasks.load(runId));
+        if (left.length === 0 || resumeState(await this.tasks.load(runId), process.pid) === "elsewhere") {
+          await this.append(conversationId, { author: "system", text: "There is nothing left to resume in that run.", tone: "warning" });
+          return;
+        }
+        const again = await this.tasks.prepareResume(runId);
+        const current = await this.tasks.load(runId);
+        const done = current.tasks.filter((t) => t.status === "done").length;
+        const drafts = (current.changes ?? []).filter((c) => c.status === "pending").length;
+        this.busy = `Sub-agents are working on ${left.length} task(s) left…`;
+        this.changed();
+        await this.append(conversationId, {
+          author: "coordinator",
+          runId,
+          tag: "resumed",
+          text: [
+            `Resuming "${clipLine(run.request, 200)}": ${plural(left.length, "task")} left, ${done} of ${current.tasks.length} already done.`,
+            again.length ? `Sub-agents that were cut off continue from their last step with their own drafts.` : "",
+            drafts ? `${plural(drafts, "draft")} from before stay under Drafts for your review.` : "",
+            "Each may only change its own files, and you review every change before it is written.",
+          ].filter(Boolean).join(" "),
+        });
+      } else {
+        this.busy = `Sub-agents are working on ${run.tasks.length} task(s)…`;
+        this.changed();
+        await this.append(conversationId, {
+          author: "coordinator",
+          text: `Starting sub-agents for ${run.tasks.length} task(s). Each may only change its own files, and you review every change before it is written.`,
+        });
+      }
       this.supervise(runId, conversationId, this.host.researchLimits().maxTurns);
       const hooks = this.hooksFor(conversationId, runId, checks, workspaceRoot);
       let outcome = await this.host.runPlan(runId, hooks);

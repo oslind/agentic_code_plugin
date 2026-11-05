@@ -3,6 +3,13 @@ import { PendingChange } from "../state/types";
 import { normalizeWorkspacePath } from "../tools/paths";
 import { ProjectFiles, SandboxError, WorkspaceSandbox } from "../tools/sandbox";
 
+/** One draft of a sub-agent, as saved in its checkpoint. */
+export interface DraftSnapshot {
+  path: string;
+  original: string | null;
+  content: string;
+}
+
 /**
  * The project as one sub-agent sees it: the files on disk, plus changes that
  * earlier tasks of the run proposed, plus this sub-agent's own writes.
@@ -59,6 +66,24 @@ export class OverlayFiles implements ProjectFiles {
    */
   rebase(relPath: string, onDisk: string): void {
     this.originals.set(this.norm(relPath), onDisk);
+  }
+
+  /** This sub-agent's writes with the text each file had before, so they can be restored after a restart. */
+  snapshot(): DraftSnapshot[] {
+    return [...this.writes].map(([p, content]) => ({ path: p, original: this.originals.get(p) ?? null, content }));
+  }
+
+  /**
+   * Puts back writes saved by snapshot(), for a sub-agent that continues
+   * after VS Code restarted. Paths are checked like any write.
+   */
+  async restore(drafts: DraftSnapshot[]): Promise<void> {
+    for (const d of drafts) {
+      const p = this.norm(d.path);
+      await this.disk.resolveForWrite(p);
+      this.originals.set(p, d.original);
+      this.writes.set(p, d.content);
+    }
   }
 
   /** Every file this sub-agent and the tasks before it changed, with its current text. For checks. */
