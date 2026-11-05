@@ -144,6 +144,7 @@ export class FollowUps {
       readOnly: research,
       followUp: true,
       compactSteps: this.host.compactSubAgents?.() ?? false,
+      skills: await this.host.skills?.(workspaceRoot).catch(() => undefined),
       history,
       // Without a saved conversation (older runs), it gets what the chat shows of its work.
       context: history?.length ? undefined : earlierWork(task, conversation.entries, run.id),

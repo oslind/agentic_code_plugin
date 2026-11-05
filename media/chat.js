@@ -77,6 +77,8 @@
   }
 
   function setTab(t) {
+    // Skill files can change at any time, so Settings reads them again each time it opens.
+    if (t === "settings" && tab !== "settings") post({ type: "refreshSkills" });
     tab = t;
     persist();
     render();
@@ -601,7 +603,7 @@
         el("div", { class: "task-line" },
           el("span", { class: "icon" }, STATUS_ICON[t.status] || "○"),
           el("span", { class: "task-title" }, t.title),
-          el("span", { class: "task-meta", title: t.fileScope.join(", ") }, t.fileScope.length ? plural(t.fileScope.length, "file") : "read-only"),
+          el("span", { class: "task-meta", title: t.fileScope.join(", ") + (t.skills && t.skills.length ? "\nSkills: " + t.skills.join(", ") : "") }, (t.fileScope.length ? plural(t.fileScope.length, "file") : "read-only") + (t.skills && t.skills.length ? " · " + plural(t.skills.length, "skill") : "")),
         ),
         activityFold(entry.runId, t.id),
       ),
@@ -925,6 +927,7 @@
             "div",
             { class: "arow-more" },
             el("div", { class: "muted small" }, a.label + " · " + (a.fileScope.length ? "may change " + a.fileScope.join(", ") : "read-only")),
+            skillLine(a.skills),
             liveBox(agentKey(a)),
             exchangeLine(a),
             a.report ? details("rp:" + agentKey(a), "Report to the coordinator", longText("rpx:" + agentKey(a), a.report)) : null,
@@ -1010,6 +1013,7 @@
         el("div", { class: "activity" }, a.activity),
         liveBox(agentKey(a)),
         el("div", { class: "muted small", title: a.fileScope.join(", ") }, a.fileScope.length ? "May change: " + a.fileScope.join(", ") : "Read-only: it may not change any files."),
+        skillLine(a.skills),
       ),
       el(
         "div",
@@ -1200,6 +1204,83 @@
     ["thorough", "Thorough", "Progress every 4 steps, results sent back up to twice, up to four fix-up rounds. The most model calls."],
   ];
 
+  /** The skills a sub-agent was given or loaded. Clicking one opens its text. */
+  function skillLine(skills) {
+    if (!skills || !skills.length) return null;
+    return el(
+      "div",
+      { class: "skill-line small" },
+      el("span", { class: "muted" }, "Skills: "),
+      skills.map((n) => el("button", { class: "skill-chip", title: "Open this skill", onclick: () => post({ type: "openSkill", name: n }) }, n)),
+    );
+  }
+
+  const SKILL_SOURCE = { builtin: "built-in", user: "yours", project: "this project" };
+  const SKILL_ROLE = { coder: "coding", research: "research", coordinator: "planning" };
+
+  let skillsAsked = false;
+  function skillsCard() {
+    const sk = state.skills;
+    // Settings may be open from before a reload: ask once for the skills it has not got yet.
+    if (!sk && !skillsAsked) {
+      skillsAsked = true;
+      post({ type: "refreshSkills" });
+    }
+    const head = el(
+      "div",
+      { class: "card-head" },
+      el("span", { class: "card-title" }, "Skills"),
+      el("span", { class: "spacer" }),
+      el("button", { class: "ghost small", title: "Your own skills, used in every project", onclick: () => post({ type: "openSkillsFolder" }) }, "My skills folder"),
+    );
+    const intro = el("div", { class: "muted small" }, "Short how-tos the coordinator gives sub-agents for a kind of work. It picks up to two per task, and a sub-agent can load another itself. They add no model calls.");
+    if (!sk) return el("section", { class: "card perms" }, head, intro, el("div", { class: "muted small" }, "Reading skills…"));
+    if (!sk.enabled) return el("section", { class: "card perms" }, head, el("div", { class: "muted small" }, "Skills are off (agentic.skills.enabled in your user settings)."));
+    const groups = ["project", "user", "builtin"].map((src) => [src, sk.skills.filter((s) => s.source === src)]).filter(([, list]) => list.length);
+    const rows = groups.map(([src, list]) =>
+      el(
+        "div",
+        { class: "skill-group" },
+        el("div", { class: "small skill-group-title" }, SKILL_SOURCE[src]),
+        el(
+          "ul",
+          { class: "skill-list" },
+          list.map((s) =>
+            el(
+              "li",
+              {},
+              el("button", { class: "skill-chip", title: "Open this skill", onclick: () => post({ type: "openSkill", name: s.name }) }, s.name),
+              el("span", { class: "small" }, " " + s.description),
+              el("span", { class: "muted small" }, " · " + s.roles.map((r) => SKILL_ROLE[r] || r).join(", ") + (s.cut ? " · cut to fit" : "")),
+            ),
+          ),
+        ),
+      ),
+    );
+    const waiting = sk.waiting.length
+      ? el(
+          "div",
+          { class: "skill-waiting tone-attention" },
+          el("div", { class: "small" }, sk.waiting.some((w) => w.changed) ? "This project's skills changed since you trusted them, so they are not used until you trust them again:" : "This project has its own skills. They are not used until you trust them:"),
+          el("ul", { class: "skill-list" }, sk.waiting.map((w) => el("li", {}, el("code", {}, w.file), el("span", { class: "small" }, " " + w.description + (w.changed ? " (changed)" : ""))))),
+          el("div", { class: "muted small" }, "They were written by whoever wrote this repository. Read them first. Even when trusted they are passed to the models as data, and can never approve a command, change a setting or widen what a sub-agent may change."),
+          el("div", { class: "row end" }, el("button", { class: "primary small", onclick: () => post({ type: "trustSkills", value: true }) }, "Use this project's skills")),
+        )
+      : null;
+    const usingProject = sk.projectSkills === "ask" && sk.skills.some((s) => s.source === "project");
+    return el(
+      "section",
+      { class: "card perms" },
+      head,
+      intro,
+      waiting,
+      rows,
+      usingProject ? el("div", { class: "row end" }, el("button", { class: "linkish small", onclick: () => post({ type: "trustSkills", value: false }) }, "Stop using this project's skills")) : null,
+      sk.projectSkills === "off" ? el("div", { class: "muted small" }, "Project skills are off (agentic.skills.projectSkills).") : null,
+      sk.problems.length ? details("sk-problems", plural(sk.problems.length, "skill file") + " could not be used", el("ul", { class: "results" }, sk.problems.map((p) => el("li", { class: "small" }, el("code", {}, p.file), " " + p.error)))) : null,
+    );
+  }
+
   function settingsView() {
     const p = state.permissions || {};
     const level = state.oversight || "standard";
@@ -1230,6 +1311,7 @@
         lastChecks ? checkList(lastChecks) : el("div", { class: "muted small" }, "None yet. The first plan that runs here proposes commands found in the project."),
         results.length ? details("ck-results", "Recent results", el("ul", { class: "results" }, results.map((e) => el("li", { class: "tone-" + (e.tone || "info") }, el("span", { class: "result-icon" }, e.tone === "success" ? "✓" : "!"), el("span", { class: "result-text" }, e.agentName + ": " + e.text))))) : null,
       ),
+      skillsCard(),
       el("div", { class: "row end" }, el("button", { class: "linkish small", onclick: () => post({ type: "settings" }) }, "All settings…")),
     ];
   }

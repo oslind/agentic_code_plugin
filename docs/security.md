@@ -92,6 +92,17 @@ Things to know:
 - Tools the command needs must exist inside the container or sandbox, and `--network=none` breaks commands that download dependencies.
 - The setting counts in user settings only; a project's own settings cannot set or change it. An entry without `${command}` is ignored.
 
+## Skills
+
+Skill text reaches every sub-agent's prompt, so where it comes from matters:
+
+- Built-in skills ship with the extension. User skills are read from the extension's own storage folder (Agentic: Open my skills folder), never from a project or your home folder, and only plain `.md` files directly in it.
+- Project skills (`.agentic/skills/*.md`, `AGENTS.md`, `.clinerules`) are read through the workspace sandbox: links that lead outside the project and secret files are refused, files over 32 KB are skipped, and at most 30 files per folder are read. They are used only after the user trusts them in Settings. Trust is stored per folder with a sha256 of each file, so any change to a file needs trust again. `agentic.skills.projectSkills` set to `on` skips that step, and `off` never reads them.
+- Project skills are passed to models fenced in `<untrusted_data>` tags with the data rule, both in the planner's skill list and as text in a sub-agent's prompt. Every skill, trusted or not, comes with the rule that a skill is advice and never permission.
+- A skill cannot do anything a model could not already ask for. `load_skill` only returns text the extension already holds. Commands a skill mentions go through `run_command` or a check and the usual approval. A skill cannot approve a command, add a check, change the file scope or change a setting. A project skill never replaces a built-in or user skill: on a name clash it is renamed `project-<name>`.
+- Agents can never write `.agentic/` (it is protected), so a sub-agent cannot plant a project skill for a later run. It can still draft `AGENTS.md`, which you review like any other change, and a changed file needs trust again anyway.
+- Skill names and descriptions are cut to one line with control and invisible formatting characters removed, and bodies to about 600 tokens.
+
 ## Settings a project cannot change
 
-These count only in your user settings (or Remote settings in WSL/SSH). A project's `.vscode/settings.json` or `.code-workspace` cannot set them, and the extension warns when one tries: the `agentic.autoApprove.*` switches, `agentic.model.baseUrl`, the API key (kept in VS Code's secret storage), model load limits, `agentic.chat.coordinatorHistoryTokens`, `agentic.chat.autoCompact`, `agentic.delegation.oversight`, `agentic.delegation.maxModelCallsPerRun`, `agentic.delegation.autoRetries`, `agentic.delegation.compactSubAgents`, all `agentic.scratch.*` settings, and `agentic.commands.isolation`.
+These count only in your user settings (or Remote settings in WSL/SSH). A project's `.vscode/settings.json` or `.code-workspace` cannot set them, and the extension warns when one tries: the `agentic.autoApprove.*` switches, `agentic.model.baseUrl`, the API key (kept in VS Code's secret storage), model load limits, `agentic.chat.coordinatorHistoryTokens`, `agentic.chat.autoCompact`, `agentic.delegation.oversight`, `agentic.delegation.maxModelCallsPerRun`, `agentic.delegation.autoRetries`, `agentic.delegation.compactSubAgents`, all `agentic.scratch.*` settings, `agentic.commands.isolation`, `agentic.skills.enabled` and `agentic.skills.projectSkills`.

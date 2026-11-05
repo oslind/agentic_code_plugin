@@ -138,6 +138,32 @@ export class ChatController {
     this.s.changed();
   }
 
+  /** Reads the skills of the current conversation's folder again, for Settings. */
+  async refreshSkills(): Promise<void> {
+    if (!this.s.currentId || !this.host.skillsView) return;
+    const c = await this.conversations.load(this.s.currentId);
+    this.s.skills = { workspaceRoot: c.workspaceRoot, view: await this.host.skillsView(c.workspaceRoot) };
+    this.s.changed();
+  }
+
+  /** Trusts the current folder's own skill files as they are now, or stops using them. */
+  async trustProjectSkills(trust: boolean): Promise<void> {
+    if (!this.s.currentId || !this.host.trustProjectSkills) return;
+    const c = await this.conversations.load(this.s.currentId);
+    await this.host.trustProjectSkills(c.workspaceRoot, trust);
+    await this.refreshSkills();
+  }
+
+  async openSkill(name: string): Promise<void> {
+    if (!this.s.currentId || !this.host.openSkill) return;
+    const c = await this.conversations.load(this.s.currentId);
+    await this.host.openSkill(c.workspaceRoot, name);
+  }
+
+  async openSkillsFolder(): Promise<void> {
+    await this.host.openSkillsFolder?.();
+  }
+
   setMode(mode: ChatMode): Promise<void> {
     return this.s.setMode(mode);
   }

@@ -1,3 +1,4 @@
+import { SkillCatalog } from "../skills/catalog";
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
@@ -243,7 +244,7 @@ export class RunLoop {
         const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: t.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks },
+          { request: t.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks, skills: await this.skillsFor(c.workspaceRoot) },
           {
             signal: abort.signal,
             onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
@@ -350,6 +351,16 @@ export class RunLoop {
    * Starts a proposed plan. Running only happens in Act mode; pressing Run in
    * Plan mode is the user switching to Act mode for this conversation.
    */
+  /** The skills for a folder. A folder whose skills cannot be read just gets none. */
+  async skillsFor(workspaceRoot: string): Promise<SkillCatalog | undefined> {
+    try {
+      return await this.host.skills?.(workspaceRoot);
+    } catch (err) {
+      this.host.log("warn", `Could not read skills: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
   async runPlan(runId: string): Promise<void> {
     const conversationId = this.s.runOwner.get(runId);
     if (!conversationId) return;
@@ -395,6 +406,7 @@ export class RunLoop {
     this.s.changed();
 
     const sandbox = await WorkspaceSandbox.create(root);
+    const skills = await this.skillsFor(c.workspaceRoot);
     const { maxTurns, maxParallel } = this.host.researchLimits();
     const terminal = this.host.terminal?.(c.workspaceRoot);
     // Researchers' commands run in their own copy of the project, made when the first one runs.
@@ -423,6 +435,7 @@ export class RunLoop {
             signal,
             readOnly: true,
             compactSteps: this.host.compactSubAgents?.() ?? false,
+            skills,
             terminal,
             checkDir: () => scratch.sync(new Map()),
             context: learned ? untrustedSection("What earlier researchers found (build on it, do not repeat it):", "earlier research and sub-agent reports", learned) : undefined,
@@ -699,7 +712,7 @@ export class RunLoop {
         });
       }
       this.oversight.supervise(runId, conversationId, this.host.researchLimits().maxTurns);
-      const hooks = this.approvals.hooksFor(conversationId, runId, checks, workspaceRoot);
+      const hooks = { ...this.approvals.hooksFor(conversationId, runId, checks, workspaceRoot), skills: await this.skillsFor(workspaceRoot) };
       let outcome = await this.host.runPlan(runId, hooks);
       // Let sub-agent messages that are still queued land before the summary.
       await this.s.settle();

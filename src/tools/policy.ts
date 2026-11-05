@@ -244,6 +244,8 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "finish":
     case "ask_user":
     case "ask_coordinator":
+    case "load_skill":
+      // load_skill reads text the extension already holds: no file access, no command.
       return { verdict: "allow" };
     case "request_check": {
       const outside = commandLeavesProject(call.command);

@@ -2,11 +2,12 @@ import { ContextSection, estimateTokens, fitToBudget } from "../context/budget";
 import { untrustedSection } from "../context/untrusted";
 import { callStructured } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
+import { SkillCatalog, skillIndex, skillText, SKILL_RULE, MAX_TASK_SKILLS } from "../skills/catalog";
 import { DEFAULT_MAX_TASKS, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
 
 // Kept short on purpose: small models follow a few concrete rules and one
 // example better than a long policy document.
-const systemPrompt = (maxTasks: number) => `You are the coordinator of a team of coding agents. Split the user's request into small, focused tasks and delegate heavily.
+const systemPrompt = (maxTasks: number, skillExample?: string) => `You are the coordinator of a team of coding agents. Split the user's request into small, focused tasks and delegate heavily.
 
 Rules:
 - Up to ${maxTasks} tasks. Prefer more, smaller tasks over a few large ones: one task per file or module. Independent tasks run in parallel, and small tasks are easier for each agent to get right.
@@ -18,9 +19,9 @@ Rules:
 - Do not add tasks for running tests or reviewing; that happens automatically.
 - Set "changes": true only when a task creates or edits files. Tasks that read, explore, explain or summarise set "changes": false.
 - Start each instruction with what to do: "Add …", "Create …", "Read …", "Explain …".
-
+${skillExample !== undefined ? `- "skills" lists up to ${MAX_TASK_SKILLS} names from "Skills" that fit the task: a language or build skill for its files, and a task skill (tests, a fix, a refactor, docs). Use [] when none fits. Only use names from the list.\n` : ""}
 Reply with JSON only, in this shape:
-{"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"],"changes":true},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"],"changes":true}]}`;
+{"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"],"changes":true${skillExample !== undefined ? `,"skills":[${skillExample}]` : ""}},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"],"changes":true${skillExample !== undefined ? `,"skills":[]` : ""}}]}`;
 
 function taskLimit(input: PlanInput): number {
   return Math.max(1, Math.min(MAX_TASKS, Math.floor(input.maxTasks ?? DEFAULT_MAX_TASKS)));
@@ -43,6 +44,8 @@ export interface PlanInput {
   learned?: string;
   /** Most tasks the plan may have (agentic.delegation.maxTasks). */
   maxTasks?: number;
+  /** Skills the planner may give tasks, and its own planning skills. */
+  skills?: SkillCatalog;
 }
 
 export interface PlanResult {
@@ -84,7 +87,16 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
       wrap: (learned) => untrustedSection("What we know so far (from earlier research and sub-agent reports):", "earlier research and sub-agent reports", learned),
     });
   }
-  const system = systemPrompt(taskLimit(input));
+  const taskSkills = taskSkillsOf(input.skills);
+  if (taskSkills.length) {
+    sections.push({ name: "skills", text: `Skills (pick per task):\n${skillIndex(taskSkills)}`, priority: 60 });
+  }
+  const planning = input.skills?.forRole("coordinator") ?? [];
+  if (planning.length) {
+    sections.push({ name: "planning skills", text: `How to plan some kinds of requests:\n${SKILL_RULE}\n\n${planning.map(skillText).join("\n\n")}`, priority: 20 });
+  }
+  const example = taskSkills.length ? (taskSkills.some((s) => s.name === "javascript-typescript") ? `"javascript-typescript"` : "") : undefined;
+  const system = systemPrompt(taskLimit(input), example);
   const user = fitToBudget(sections, budget - estimateTokens(system));
   return {
     messages: [
@@ -115,5 +127,21 @@ export async function planRequest(
     onThinking: options.onThinking,
   });
   const repaired = repairPlan(plan);
-  return { ...repaired, droppedContext: dropped };
+  return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped };
+}
+
+/** Skills a task can be given: those for coding or research sub-agents. */
+function taskSkillsOf(catalog: SkillCatalog | undefined) {
+  return (catalog?.skills ?? []).filter((s) => s.roles.includes("coder") || s.roles.includes("research"));
+}
+
+/** Keeps only skill names that exist (a small model may invent one), at most MAX_TASK_SKILLS per task. */
+export function withKnownSkills(plan: Plan, catalog: SkillCatalog | undefined): Plan {
+  return {
+    tasks: plan.tasks.map((t) => {
+      const { skills, ...rest } = t;
+      const known = catalog ? catalog.pick(skills, ["coder", "research"]) : [];
+      return known.length ? { ...rest, skills: known } : rest;
+    }),
+  };
 }

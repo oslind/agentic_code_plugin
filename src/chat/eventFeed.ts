@@ -291,6 +291,14 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
         compaction: { summary: notes, keepFrom: "", messages: n },
       });
     }
+    case "skill": {
+      const name = typeof data.name === "string" ? data.name : event.message;
+      const from = data.source === "project" ? "this project's" : data.source === "user" ? "your" : "the built-in";
+      return agent({
+        text: data.given ? `Following ${from} skill "${name}", which the coordinator picked for this task.` : `Loaded ${from} skill "${name}".`,
+        tag: `skill ${name}`,
+      });
+    }
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

@@ -115,6 +115,10 @@
       {
         "command": "agentic.deleteRun",
         "title": "Agentic: Delete run from history"
+      },
+      {
+        "command": "agentic.openSkillsFolder",
+        "title": "Agentic: Open my skills folder"
       }
     ],
     "configuration": {
@@ -399,6 +403,28 @@
           },
           "default": [],
           "markdownDescription": "More files that may hold secrets, as globs relative to the project (for example `**/my-tokens.yml`). They are treated like the built-in list (`.env`, keys, `.npmrc`, cloud credentials and more): sub-agents cannot read, search or change them, and they are left out of the scratch copy. Patterns from your user settings and the project's settings are combined, so a project can add patterns but not remove yours. Protection goes by file name only: a secret in an ordinary-looking file (such as `config/local-development.json`) is readable unless a pattern matches it. See docs/security.md."
+        },
+        "agentic.skills.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Give sub-agents skills: short how-tos for a kind of work (running tests, fixing a failing test, refactoring, docs, reviews, C++, CMake, Make, JavaScript/TypeScript, Python). The planner picks up to two per task, and a sub-agent can load another with load_skill. Adds no model calls. Your own skills go in the folder opened by \"Agentic: Open my skills folder\". User settings only."
+        },
+        "agentic.skills.projectSkills": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "on",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Use a project's own skills (.agentic/skills/*.md, AGENTS.md, .clinerules) only after you trust them under Settings > Skills in the chat, and again after any of them changes.",
+            "Use a project's own skills without asking.",
+            "Never read a project's own skills."
+          ],
+          "default": "ask",
+          "scope": "machine",
+          "description": "How a project's own skill files are used. They are written by whoever wrote the repository, so they are always passed to models as fenced data and can never approve a command or change a setting. User settings only: a project cannot turn on its own skills."
         }
       }
     },

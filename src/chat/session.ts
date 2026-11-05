@@ -1,3 +1,4 @@
+import type { SkillsView } from "../skills/service";
 import { ModelProvider } from "../providers/types";
 import { Mutex } from "../util/mutex";
 import { TaskStore } from "../state/taskStore";
@@ -41,6 +42,8 @@ export class ChatSession {
   readonly allowedCommands = new Map<string, Set<string>>();
   /** What every model call is doing right now, so a long "thinking" shows that it is still working. */
   readonly live = new LiveTracker();
+  /** What Settings shows about skills, for the folder it was read for. Read again whenever Settings opens. */
+  skills?: { workspaceRoot: string; view: SkillsView };
 
   /** Sub-agent events are handled one at a time, so their messages keep their order. */
   readonly eventQueue = new Mutex();

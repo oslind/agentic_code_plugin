@@ -27,6 +27,11 @@ const taskSchema = z.object({
     .boolean()
     .optional()
     .describe("false if the task only reads files and reports back; true if it creates or edits files"),
+  skills: z
+    .array(z.string().max(60))
+    .max(6)
+    .optional()
+    .describe("Names of skills from the skill list that fit this task, at most 2"),
 });
 
 export type PlannedTask = z.infer<typeof taskSchema>;

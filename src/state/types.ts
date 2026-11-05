@@ -17,6 +17,8 @@ export interface Task {
   dependsOn: string[];
   /** Glob patterns the task may write to. */
   fileScope: string[];
+  /** Skills the planner gave this task. Their text is in the sub-agent's first message. */
+  skills?: string[];
   status: TaskStatus;
   attempts: number;
   changedFiles?: string[];

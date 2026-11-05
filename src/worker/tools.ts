@@ -119,6 +119,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         return { ok: true, output: call.summary };
       case "ask_user":
       case "ask_coordinator":
+      case "load_skill":
       case "request_check":
       case "run_command":
         // The worker handles these itself; they never reach here.

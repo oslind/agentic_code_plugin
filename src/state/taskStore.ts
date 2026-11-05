@@ -7,7 +7,7 @@ import { combineDrafts } from "../changes/combine";
 import { PendingChange, Run, RunEvent, Task, TaskCheckpoint, TaskStatus, TRANSITIONS } from "./types";
 
 export type NewTask = Pick<Task, "title" | "instructions"> &
-  Partial<Pick<Task, "id" | "parentId" | "dependsOn" | "fileScope">>;
+  Partial<Pick<Task, "id" | "parentId" | "dependsOn" | "fileScope" | "skills">>;
 
 /**
  * Saves runs as JSON on disk so they survive restarts and can be resumed.
@@ -152,6 +152,7 @@ export class TaskStore {
       parentId: t.parentId,
       dependsOn: t.dependsOn ?? [],
       fileScope: t.fileScope ?? [],
+      ...(t.skills?.length ? { skills: [...t.skills] } : {}),
       status: "pending",
       attempts: 0,
       createdAt: time,

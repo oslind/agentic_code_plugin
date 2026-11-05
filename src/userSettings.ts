@@ -92,6 +92,21 @@ export const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
 export const isString = (v: unknown): v is string => typeof v === "string";
 export const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+/**
+ * Keys under "agentic.skills". A project must not turn on its own skills
+ * (they would reach every sub-agent's prompt), so only user settings count.
+ */
+export const USER_ONLY_SKILL_KEYS = ["enabled", "projectSkills"] as const;
+
+/** Whether agents use skills, and how project skills are used. User settings only. */
+export function skillSettingsFrom(section: InspectableSection): { enabled: boolean; projectSkills: "ask" | "on" | "off" } {
+  const mode = userValue(section, "projectSkills", "ask", isString);
+  return {
+    enabled: userValue(section, "enabled", true, isBoolean),
+    projectSkills: mode === "on" || mode === "off" ? mode : "ask",
+  };
+}
+
 /** Most model requests at once, from user settings only. 1 to 16, default 1. */
 export function maxConcurrentRequestsFrom(section: InspectableSection): number {
   return Math.max(1, Math.min(16, Math.floor(userValue(section, "maxConcurrentRequests", 1, isNumber))));
