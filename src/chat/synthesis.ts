@@ -27,6 +27,8 @@ export interface SynthesisInput {
   draft?: string;
   /** Set when the coordinator wanted more research than the round limit allowed. */
   limitReached?: boolean;
+  /** Commands the researchers ran whose latest run failed, such as a failing test, from the run log. */
+  failedCommands?: FailedCommand[];
 }
 
 export interface SynthesisResult {
@@ -86,6 +88,17 @@ export function buildSynthesisMessages(input: SynthesisInput, contextWindow: num
   const head = [`The user's message:\n${input.question.trim()}`];
   if (input.draft?.trim()) head.push(`Your first short reply was (use it only as a hint):\n${input.draft.trim()}`);
   if (input.limitReached) head.push("The research round limit was reached, so no more sub-agents can be sent. Answer with what was found and list what is still unknown.");
+  // Run 3 of the e2e suite: researchers ran npm test, it failed, and the answer never said so.
+  const failed = input.failedCommands ?? [];
+  if (failed.length) {
+    // Command output comes from the project, so it is fenced.
+    head.push(
+      `Commands the sub-agents ran that failed (a fact from the run log). Mention each one briefly at the end under "Also found:", even when it is not what the user asked about, and never say all tests pass:\n${dataBlock(
+        "failed commands and the end of their output",
+        failed.map((c) => `$ ${c.line}${c.by ? `   (run by "${c.by}")` : ""}\n${c.output || "(no output)"}`).join("\n\n"),
+      )}`,
+    );
+  }
   const fixed = `${SYSTEM}\n\n${head.join("\n\n")}`;
   const budget = Math.max(1024, contextWindow - replyReserve(contextWindow)) - estimateTokens(fixed) - 100;
   const each = Math.max(MIN_REPORT_TOKENS, Math.floor(budget / Math.max(1, input.reports.length)));
