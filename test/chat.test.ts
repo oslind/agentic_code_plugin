@@ -1057,6 +1057,17 @@ describe("ChatController", () => {
     expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "There is one module, src/index.ts." });
   });
 
+  it("keeps a change request as a plan even when the planner marks its task as only reading", async () => {
+    // Run 4: "Write docs/usage.md" came back as a changes:false task, ran as research, and claimed it created the file.
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    const docsPlan = JSON.stringify({ tasks: [{ id: "docs", title: "Write usage documentation", instructions: "Write docs/usage.md.", dependsOn: [], fileScope: ["docs/usage.md"], changes: false }] });
+    const { controller } = setup([turn("I'll have it drafted.", "plan", "Write docs/usage.md with a usage guide.", { goal: "change" }), docsPlan], "plan");
+    await controller.send("Write docs/usage.md with a usage guide");
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => e.kind === "plan")).toBe(true);
+    expect(entries.some((e) => e.kind === "research")).toBe(false);
+  });
+
   it("first reads the code base, then plans a refactor that knows what research found", async () => {
     await fs.mkdir(path.join(dir, "ws"), { recursive: true });
     const refactorPlan = JSON.stringify({ tasks: [

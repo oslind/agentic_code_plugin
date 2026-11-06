@@ -254,7 +254,9 @@ export class RunLoop {
             onThinking: (x) => (planThinking = x),
           },
         );
-        if (isReadOnlyPlan(result.plan.tasks)) {
+        // A request the coordinator called a change stays a plan, whatever the planner marked: run 4 sent
+        // "Write docs/usage.md" as a read-only task (changes: false), which then claimed it created the file.
+        if (isReadOnlyPlan(result.plan.tasks) && t.goal !== "change") {
           if (afterResearch && round >= maxRounds) {
             // Every research round for this message is used; reading again would only loop.
             await this.s.append(c.id, { author: "system", tone: "warning", text: "The plan only read files, which the research already did, so nothing was started. Say what should change, for example which file to edit." });
