@@ -7,6 +7,7 @@ import { PendingChange, Task } from "../state/types";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { isCheckAutoApproved } from "../tools/policy";
 import { ConversationStore } from "./conversationStore";
+import { mergeSameFileTasks } from "../coordinator/plan";
 import { isReadOnlyPlan } from "./coordinatorChat";
 import { commandEventData } from "../worker/worker";
 import { draftsForReview } from "../coordinator/review";
@@ -333,10 +334,12 @@ export class Verifier {
       await this.s.append(conversationId, { author: "system", runId, tone: "warning", text: "The fix-up plan only read files and changed nothing, so it was not started. Say what should change to finish the request." });
       return [];
     }
+    // One sub-agent per file: two fix-up tasks on the same file undid each other's work in run 6E.
+    const planned = mergeSameFileTasks(result.plan.tasks);
     // New ids, so they never clash with the run's earlier tasks; dependencies point at the new ids.
     const taken = new Set(run.tasks.map((t) => t.id));
     const ids = new Map<string, string>();
-    for (const t of result.plan.tasks) {
+    for (const t of planned) {
       let id = `fix${round}-${t.id}`;
       for (let n = 2; taken.has(id); n++) id = `fix${round}-${t.id}-${n}`;
       taken.add(id);
@@ -344,9 +347,9 @@ export class Verifier {
     }
     const added = await this.tasks.addTasks(
       runId,
-      result.plan.tasks.map((t) => ({ ...t, id: ids.get(t.id)!, dependsOn: t.dependsOn.map((d) => ids.get(d)!).filter(Boolean) })),
+      planned.map((t) => ({ ...t, id: ids.get(t.id)!, dependsOn: t.dependsOn.map((d) => ids.get(d)!).filter(Boolean) })),
     );
-    for (const r of result.repairs) {
+    for (const r of result.repairs.filter((x) => ids.has(x.taskId) && ids.has(x.addedDependency))) {
       await this.tasks.log({ runId, taskId: ids.get(r.taskId), type: "plan_repair", message: `${ids.get(r.taskId)} now waits for ${ids.get(r.addedDependency)}: ${r.reason}` });
     }
     return added;

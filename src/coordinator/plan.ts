@@ -146,6 +146,31 @@ export function repairPlan(plan: Plan): { plan: Plan; repairs: Repair[] } {
   return { plan: { tasks }, repairs };
 }
 
+/**
+ * Joins tasks that write the same files into one task. Used for fix-up rounds: run 6E planned "Fix median"
+ * and "Revert average" on the same src/stats.js, and the two sub-agents undid each other until the run timed out.
+ * Tasks that only read (empty file scope) are left alone.
+ */
+export function mergeSameFileTasks(tasks: PlannedTask[]): PlannedTask[] {
+  const out: PlannedTask[] = [];
+  const into = new Map<string, string>();
+  for (const t of tasks) {
+    const host = t.fileScope.length ? out.find((o) => o.fileScope.length && scopesOverlap(o.fileScope, t.fileScope)) : undefined;
+    if (!host) {
+      out.push({ ...t, dependsOn: [...t.dependsOn], fileScope: [...t.fileScope] });
+      continue;
+    }
+    into.set(t.id, host.id);
+    host.instructions = `${host.instructions}\n\nAlso: ${t.instructions}`;
+    host.fileScope = [...new Set([...host.fileScope, ...t.fileScope])];
+    host.dependsOn = [...new Set([...host.dependsOn, ...t.dependsOn])];
+    if (t.skills?.length) host.skills = [...new Set([...(host.skills ?? []), ...t.skills])];
+    if (t.changes) host.changes = true;
+  }
+  for (const t of out) t.dependsOn = [...new Set(t.dependsOn.map((d) => into.get(d) ?? d))].filter((d) => d !== t.id);
+  return out;
+}
+
 /** Groups tasks into waves that can run at the same time. */
 export function parallelWaves(tasks: Pick<PlannedTask, "id" | "dependsOn">[]): string[][] {
   const remaining = new Map(tasks.map((t) => [t.id, new Set(t.dependsOn)]));

@@ -1,6 +1,6 @@
 import { ContextSection, estimateTokens, fitToBudget } from "../context/budget";
 import { untrustedSection } from "../context/untrusted";
-import { callStructured } from "../llm/structured";
+import { callStructured, PLAN_MAX_TOKENS } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
 import { SkillCatalog, skillIndex, skillText, SKILL_RULE, MAX_TASK_SKILLS } from "../skills/catalog";
 import { DEFAULT_MAX_TASKS, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
@@ -126,6 +126,7 @@ export async function planRequest(
 ): Promise<PlanResult> {
   const { messages, dropped } = buildPlannerMessages(input, provider.contextWindow);
   const plan = await callStructured({
+    maxTokens: PLAN_MAX_TOKENS,
     provider,
     messages,
     schema: planSchema.refine((p) => p.tasks.length <= taskLimit(input), {

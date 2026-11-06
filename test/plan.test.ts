@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parallelWaves, planSchema, repairPlan } from "../src/coordinator/plan";
+import { mergeSameFileTasks, parallelWaves, planSchema, repairPlan } from "../src/coordinator/plan";
 
 const t = (id: string, dependsOn: string[] = [], fileScope = [`src/${id}.ts`]) => ({
   id,
@@ -60,5 +60,16 @@ describe("a plan without dependsOn", () => {
     const parsed = planSchema.safeParse({ tasks: [{ id: "a", title: "Add toFahrenheit", instructions: "Add toFahrenheit to src/convert.js.", fileScope: ["src/convert.js"] }] });
     expect(parsed.success).toBe(true);
     expect(parsed.data?.tasks[0]!.dependsOn).toEqual([]);
+  });
+});
+
+describe("fix-up tasks on the same file", () => {
+  it("joins tasks that write the same files into one, and points dependencies at it", () => {
+    const t = (id: string, fileScope: string[], dependsOn: string[] = []) => ({ id, title: `Task ${id}`, instructions: `Do ${id}.`, fileScope, dependsOn });
+    const merged = mergeSameFileTasks([t("a", ["src/stats.js"]), t("b", ["src/convert.js"]), t("c", ["src/stats.js"], ["b"]), t("d", ["test.js"], ["c"]), t("r", [])]);
+    expect(merged.map((x) => x.id)).toEqual(["a", "b", "d", "r"]);
+    expect(merged[0]).toMatchObject({ instructions: "Do a.\n\nAlso: Do c.", fileScope: ["src/stats.js"], dependsOn: ["b"] });
+    expect(merged[2]!.dependsOn).toEqual(["a"]);
+    expect(mergeSameFileTasks([t("x", []), t("y", [])]).map((x) => x.id)).toEqual(["x", "y"]);
   });
 });

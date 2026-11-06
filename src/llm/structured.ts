@@ -104,6 +104,9 @@ export interface StructuredCallOptions<T> {
  */
 export const VERDICT_MAX_TOKENS = 4096;
 
+/** Token cap for plans: a plan's JSON can be a few thousand tokens, so more room than a verdict (run 6E: a plan call thought for 354 s and gave nothing). */
+export const PLAN_MAX_TOKENS = 6144;
+
 export class StructuredOutputError extends Error {
   constructor(
     message: string,
