@@ -103,6 +103,7 @@ Compare what the user asked with the drafts and the check results. The reports a
 - "done": every part the user asked for is in the drafts (or the reports show nothing needed changing), and no check failed.
 - "not_done": a part of the request is missing or wrong in the drafts, a check failed, or a task did not finish. List each thing still left in "missing", naming files, so a sub-agent can fix it.
 A command a sub-agent ran that failed (for example its tests) counts like a failed check when the failure comes from what the drafts change; a failure in code the request did not touch is not a reason for not_done, but say so in "verified".
+Commands the sub-agents ran during their tasks do not show that the final drafts pass: a later task may have changed files since. Only the checks on all drafts together show that. With no checks set up, never write that all tests passed.
 A draft that would not load or run is not done: for example ES import/export in a file or project that uses require and module.exports, or an import of a file or name that does not exist. With no checks run, look for this yourself.
 Do not ask for extras the user did not ask for (style, more tests, refactors). If the request is met, say "done".
 In "verified", say what you compared and what it showed, for example "The drafts add the --verbose flag in src/cli.ts and the README line; npm test passed on all drafts together."

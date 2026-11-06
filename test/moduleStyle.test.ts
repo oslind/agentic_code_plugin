@@ -17,7 +17,17 @@ describe("module style of drafts", () => {
     expect(moduleStyleProblems([{ path: "src/b.js", original: mixed, proposed: `${mixed}\n// more` }])).toEqual([]);
   });
 
-  it("puts the problem after the diffs, where review and verification read it, and verification is never done with it", () => {
+  it("flags a CommonJS draft with a syntax error, compiled but never run", () => {
+    // Run 5: new tests pasted after the closing brace of the tests object.
+    const tests = "const tests = {\n  a: () => 1,\n};\nmodule.exports = tests;\n";
+    const broken = tests.replace("};", "};\n  'median of odd array': () => 3,\n};");
+    expect(moduleStyleProblems([{ path: "test.js", original: tests, proposed: broken }])).toEqual([expect.stringMatching(/^test\.js has a syntax error/)]);
+    expect(moduleStyleProblems([{ path: "test.js", original: tests, proposed: "#!/usr/bin/env node\n" + tests }])).toEqual([]);
+    // Never run: a draft that would throw or loop when run still only compiles.
+    expect(moduleStyleProblems([{ path: "x.js", original: null, proposed: "while (true) {}\nthrow new Error('x');\n" }])).toEqual([]);
+  });
+
+it("puts the problem after the diffs, where review and verification read it, and verification is never done with it", () => {
     const drafts = draftsForReview([{ path: "src/thermostat.js", original: cjs, proposed: mixed }]);
     const problems = draftProblemsOf(drafts);
     expect(problems).toHaveLength(1);
