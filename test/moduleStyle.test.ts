@@ -27,7 +27,7 @@ describe("module style of drafts", () => {
     expect(moduleStyleProblems([{ path: "x.js", original: null, proposed: "while (true) {}\nthrow new Error('x');\n" }])).toEqual([]);
   });
 
-it("puts the problem after the diffs, where review and verification read it, and verification is never done with it", () => {
+  it("puts the problem after the diffs, where review and verification read it, and verification is never done with it", () => {
     const drafts = draftsForReview([{ path: "src/thermostat.js", original: cjs, proposed: mixed }]);
     const problems = draftProblemsOf(drafts);
     expect(problems).toHaveLength(1);
