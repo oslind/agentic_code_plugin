@@ -50,6 +50,11 @@ export class Oversight {
   readonly reviewRounds = new Map<string, number>();
   /** How each sub-agent's latest result came out of review, by "runId:taskId". An unreviewed result is never auto-accepted. */
   readonly reviewOutcomes = new Map<string, ReviewOutcome>();
+
+  /** The review outcome of each task of a run, for the team list the coordinator reads. */
+  private reviewOf(runId: string): (taskId: string) => ReviewOutcome | undefined {
+    return (taskId) => this.reviewOutcomes.get(`${runId}:${taskId}`);
+  }
   /**
    * A run used its model-call budget. Its sub-agents are stopped as with
    * Stop (drafts kept for review, never written automatically), and the
@@ -138,7 +143,7 @@ export class Oversight {
         activity: s.monitor.describe(task.id),
         notesSent,
         learned: learnedSoFar(scope) ?? fresh.briefing,
-        team: s.monitor.teamStatus(fresh.tasks, task.id),
+        team: s.monitor.teamStatus(fresh.tasks, task.id, this.reviewOf(run.id)),
       },
       { signal: s.abort.signal },
     );
@@ -178,7 +183,7 @@ export class Oversight {
     try {
       const c = await this.conversations.load(conversationId);
       const run = await this.tasks.load(runId);
-      const team = this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id);
+      const team = this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id, this.reviewOf(runId));
       // Only what belongs to this run: earlier, unrelated tasks in the same conversation stay out of reach.
       const scope = runScope(c.entries, runId);
       let result;
@@ -278,7 +283,7 @@ export class Oversight {
             summary,
             drafts,
             learned: learnedSoFar(scope) ?? run.briefing,
-            team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id),
+            team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id, this.reviewOf(runId)),
             round,
             final,
           },

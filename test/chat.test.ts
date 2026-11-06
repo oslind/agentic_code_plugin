@@ -569,7 +569,7 @@ describe("ChatController", () => {
       expect(fixPrompt).toMatch(/fix-up round 1/);
       expect(fixPrompt).toMatch(/<untrusted_data[^>]*>[\s\S]*Add GET \/users\/:id to src\/api.ts/);
       // The instruction is the user's own message; the coordinator's model-written request only goes along fenced.
-      expect(fixPrompt).toMatch(/Request:\nFinish the user's request. The user wrote:\nadd users/);
+      expect(fixPrompt).toMatch(/Request:\nThis is fix-up round 1\.[\s\S]*the user's request was:\nadd users/);
       expect(fixPrompt).toMatch(/<untrusted_data source="the coordinator's summary of the request">\nAdd a User model and an API that uses it./);
       expect(fixPrompt.replace(/<untrusted_data[\s\S]*?<\/untrusted_data>/g, "")).not.toMatch(/Add a User model and an API/);
       expect(run.userRequest).toBe("add users");

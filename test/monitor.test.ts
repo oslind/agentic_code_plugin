@@ -93,6 +93,9 @@ describe("AgentMonitor", () => {
     expect(m.notesSent("a")).toBe(1);
     const team = m.teamStatus([a, b], "a")!;
     expect(team).toBe('- "b" (read-only): done, reported: The API lives in src/api.ts.');
+    expect(m.teamStatus([a, b], "a", () => "not_accepted")).toMatch(/done, its drafts did NOT pass review, so they fix nothing, reported/);
+    expect(m.teamStatus([a, b], "a", () => "accepted")).toMatch(/done, its review accepted its drafts, reported/);
+    expect(m.teamStatus([a, b], "a", () => "off")).toBe(team);
   });
 });
 

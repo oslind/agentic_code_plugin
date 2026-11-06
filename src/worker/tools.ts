@@ -1,3 +1,4 @@
+import { moduleStyleProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
@@ -90,9 +91,11 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const partial = stoppedEarly ? `\n[search stopped after reading ${MAX_SEARCH_TOTAL_BYTES / (1024 * 1024)} MB; use a narrower glob]` : "";
         return { ok: true, output: (hits.length ? hits.join("\n") : `No matches for '${call.query}'.`) + partial };
       }
-      case "write_file":
+      case "write_file": {
+        const before = /\.(c|m)?js$/i.test(call.path) ? await ctx.sandbox.readFile(call.path).catch(() => null) : null;
         await ctx.sandbox.writeFile(call.path, call.content);
-        return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`), wrote: call.path };
+        return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`) + loadWarning(call.path, before, call.content), wrote: call.path };
+      }
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
         let { search, replace } = call;
@@ -120,8 +123,9 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
                 : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once.`,
           };
         }
-        await ctx.sandbox.writeFile(call.path, text.replace(search, () => replace));
-        return { ok: true, output: draftNote(call.path, "edit") + note, wrote: call.path };
+        const edited = text.replace(search, () => replace);
+        await ctx.sandbox.writeFile(call.path, edited);
+        return { ok: true, output: draftNote(call.path, "edit") + note + loadWarning(call.path, text, edited), wrote: call.path };
       }
       case "run_check": {
         const check = ctx.checks.find((c) => c.name === call.name);
@@ -143,6 +147,15 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
   } catch (err) {
     return { ok: false, output: (err as Error).message };
   }
+}
+
+/**
+ * A warning when a JavaScript draft can no longer load and could before. Run 6 left half of an old
+ * function after the closing brace of a replace_in_file edit; nothing told the sub-agent until review.
+ */
+export function loadWarning(path: string, before: string | null, after: string): string {
+  const problems = moduleStyleProblems([{ path, original: before, proposed: after }]);
+  return problems.length ? `\nWarning: ${problems.join(" ")} Read the file and fix it before you finish.` : "";
 }
 
 /**

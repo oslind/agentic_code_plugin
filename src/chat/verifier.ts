@@ -301,14 +301,19 @@ export class Verifier {
     this.s.changed();
     const run = await this.tasks.load(runId);
     const fileTree = await this.host.fileTree(workspaceRoot, signal).catch(() => undefined);
-    const reports: VerifyTask[] = run.tasks.map((t) => ({ title: t.title, status: t.status.replace("_", " "), summary: t.summary ?? t.error ?? "" }));
+    // Each task's drafts with their state, so the planner sees what is finished and what still needs work.
+    const draftsOf = (id: string) => (run.changes ?? []).filter((c) => c.taskId === id).map((c) => `${c.path} ${c.status}`);
+    const reports: VerifyTask[] = run.tasks.map((t) => {
+      const drafts = draftsOf(t.id);
+      return { title: t.title, status: `${t.status.replace("_", " ")}${drafts.length ? `; drafts: ${drafts.join(", ")}` : "; no drafts"}`, summary: t.summary ?? t.error ?? "" };
+    });
     // The user's own words are the instruction; the coordinator's model-written request only goes along fenced.
     const userRequest = userRequestOf(run, (await this.conversations.load(conversationId)).entries);
     let result;
     try {
       result = await planRequest(
         this.s.coordinatorProvider(workspaceRoot, runId),
-        { request: fixUpRequest(userRequest, round), planned: run.request, fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, this.host.delegationLimits().maxTasks), skills: await this.host.skills?.(workspaceRoot).catch(() => undefined) },
+        { request: fixUpRequest(userRequest, round, v.missing.length), planned: run.request, fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, Math.max(1, v.missing.length), this.host.delegationLimits().maxTasks), skills: await this.host.skills?.(workspaceRoot).catch(() => undefined) },
         { signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Fix-up plan retry ${n}: ${err}`) },
       );
     } catch (err) {

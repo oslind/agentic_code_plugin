@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { loadWarning } from "../src/worker/tools";
 import { draftProblemsOf, moduleStyleProblems } from "../src/changes/moduleStyle";
 import { draftsForReview } from "../src/coordinator/review";
 import { guardVerification } from "../src/coordinator/verify";
@@ -35,5 +36,16 @@ describe("module style of drafts", () => {
     expect(v.verified).toBe(false);
     expect(v.missing[0]).toMatch(/src\/thermostat\.js uses both/);
     expect(draftProblemsOf(draftsForReview([{ path: "src/x.js", original: cjs, proposed: cjs }]))).toEqual([]);
+  });
+});
+
+describe("warning a sub-agent right after a write that breaks a file", () => {
+  it("warns when an edit leaves code after the closing brace, and not for files that already had the problem", () => {
+    const before = "function toC(f) {\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toC };\n";
+    const after = "function toC(f) {\n  return (f - 32) / 1.8;\n}\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toC };\n";
+    expect(loadWarning("convert.js", before, after)).toMatch(/^\nWarning: convert\.js has a syntax error[\s\S]*fix it before you finish\.$/);
+    expect(loadWarning("convert.js", after, after + "\n")).toBe("");
+    expect(loadWarning("convert.js", null, before)).toBe("");
+    expect(loadWarning("notes.md", null, "}")).toBe("");
   });
 });
