@@ -16,3 +16,5 @@ Every run of the end-to-end suite against a local model adds a line here (writte
 | 2026-11-06 18:58 | qwen3-8b-16k | e2e: parallel-changes, dependent-changes, stop-then-continue, no-json-mode | 2/4 passed, 90.5 min, unloaded qwen3-8b-16k |
 | 2026-11-06 19:27 | qwen3-8b-16k | e2e: parallel-changes, stop-then-continue | 1/2 passed, 28.3 min, unloaded qwen3-8b-16k |
 | 2026-11-06 19:57 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
+| 2026-11-06 20:30 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
+| 2026-11-06 20:50 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 19.8 min, unloaded qwen3-8b-16k |
