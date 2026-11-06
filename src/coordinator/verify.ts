@@ -4,6 +4,7 @@ import { toPlainText } from "../checks/terminalText";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE } from "../context/untrusted";
 import { callStructured } from "../llm/structured";
+import { draftProblemsOf } from "../changes/moduleStyle";
 import { ChatMessage, ModelProvider } from "../providers/types";
 
 /**
@@ -186,18 +187,19 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
  * stays not verified and asks for the user's review: a reviewer that says
  * "not done" is never turned into "verified" because it could not say why.
  */
-export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks">): Omit<Verification, "thinking"> {
+export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string }): Omit<Verification, "thinking"> {
   const failed = ctx.checks.filter((c) => !c.passed && !c.skipped);
   const unfinished = ctx.tasks.filter((t) => t.unfinished !== undefined);
   let missing = d.missing.map((m) => m.replace(/\s+/g, " ").trim()).filter((m) => m.length >= 5);
   const forced: string[] = [
+    ...draftProblemsOf(ctx.drafts ?? ""),
     ...failed.map((c) => `Make the "${checkName(c.name)}" check pass on all drafts together.`),
     ...unfinished.map((t) => `Finish "${t.title}", which did not complete${t.unfinished ? `: ${t.unfinished.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
   ];
   const evidence = checkEvidence(ctx.checks);
   const summary = d.verified.trim();
   if (forced.length) {
-    const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : "a task did not finish"}, so it is not.` : undefined;
+    const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : unfinished.length ? "a task did not finish" : "a draft cannot load"}, so it is not.` : undefined;
     missing = [...forced, ...missing.filter((m) => !forced.includes(m))].slice(0, 6);
     return { verified: false, evidence, summary, missing, thought: d.thought, adjusted };
   }

@@ -1,4 +1,5 @@
 import { TaskStore } from "../state/taskStore";
+import { draftProblemsOf } from "../changes/moduleStyle";
 import { Run, RunEvent, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { CoordinatorReply } from "../worker/worker";
@@ -291,6 +292,9 @@ export class Oversight {
       signal.throwIfAborted();
       // It asked for changes without saying which: that is no review at all, so the user decides.
       if (result.adjusted) return await unreviewed("unclear", { thought: result.thought, thinking: clip(result.thinking) });
+      // A draft that cannot load is never accepted, whatever the model said (run 4 and 5 accepted an ES import in a CommonJS file).
+      const problems = draftProblemsOf(drafts);
+      if (result.verdict === "accept" && problems.length) result = { ...result, verdict: "revise", feedback: problems.join("\n") };
       const revise = result.verdict === "revise";
       const outcome: ReviewOutcome = !revise ? "accepted" : final ? "not_accepted" : "sent_back";
       if (outcome === "sent_back") this.reviewRounds.set(key, round + 1);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { lineDiff } from "../changes/lineDiff";
 import { estimateTokens, truncateToTokens } from "../context/budget";
+import { DRAFT_PROBLEMS_HEADING, moduleStyleProblems } from "../changes/moduleStyle";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
@@ -88,6 +89,7 @@ export interface ReviewContext {
 const SYSTEM = `You are the coordinator of a team of coding sub-agents. You gave each one a task. A sub-agent says it is done. Before its result goes to the user, check it against its task and what the user asked.
 - "accept": the result does what its task asks. It does not have to be perfect.
 - "revise": a part of the task is clearly missing or wrong, the drafts do not match what the report claims, the drafts go against what the user asked, or a research report does not answer its question. Write in feedback exactly what to fix or add, naming files.
+Judge the drafts, not the wording of the report: when the drafts are right and only the report has a typo or a wrong number, accept and mention it in feedback.
 A report that says a file was created or changed while there are no drafts is false: nothing was written. Then use "revise".
 Output of a command the sub-agent ran is evidence: never ask it to change its report so it contradicts that output, or to repeat what an earlier, different report said.
 Also check that the drafts fit the rest of the project: the same module style as the other files (require/module.exports or import/export), and imports of files and names that exist. A draft that would not load is wrong.
@@ -112,8 +114,11 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
     const cut = body.length > per ? `${body.slice(0, per)}\n[… cut, ${body.length - per} more characters]` : body;
     return `## ${c.path}\n${cut}`;
   });
-  const text = parts.join("\n\n");
-  return text.length > maxChars ? `${text.slice(0, maxChars)}\n[… cut]` : text;
+  const joined = parts.join("\n\n");
+  const text = joined.length > maxChars ? `${joined.slice(0, maxChars)}\n[… cut]` : joined;
+  // Facts found by rule go last and are never cut, so a review or verification cannot miss them.
+  const problems = moduleStyleProblems(changes);
+  return problems.length ? `${text}\n\n${DRAFT_PROBLEMS_HEADING}\n${problems.map((p) => `- ${p}`).join("\n")}` : text;
 }
 
 /** Builds the review prompt. Trusted parts are plain; everything a model wrote is fenced. */
