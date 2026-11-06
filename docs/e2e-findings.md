@@ -43,6 +43,28 @@ Passed: command-use and draft-for-review (both failed in run 1), project-skill-t
 | question-then-answer | "Change how much night mode lowers the target" gave no amount; the coordinator planned without asking, and sub-agents tried 2, 1.5, then 3. The harness also wrongly required the second prompt's reply to repeat the first prompt's test failure. | Harness fixed. **Asking when an amount is missing is still open.** |
 | research-not-change | Researchers ran npm test (failed), and the answer never said so. | Research answers now get the failed commands and mention them. |
 
+## Run 4: b90369d, all 18 scenarios: 13 of 18 passed
+
+The run 3 fixes held for verify-fix, long-conversation and stop-then-continue. New fixes after it:
+
+| Scenario | What happened | Fix |
+| --- | --- | --- |
+| dependent-changes | An ES import went into a CommonJS file again; review and verification saw only the diff. | Reviews and verification see small files whole. |
+| question-then-answer | The coordinator asked for the amount and planned in the same reply; verification passed although the sub-agent's npm test failed (no checks set up). | Never plan in the same reply as a question; verification sees failed commands. |
+| research-not-change | A code question answered from file names alone. | Code questions need research. |
+| draft-for-review | "Write docs/usage.md" came back from the planner as read-only, ran as research and claimed it created the file. | A change request stays a plan; reviews reject claimed files with no drafts. |
+| project-skill-trusted | The coordinator rewrote 273.15 as 27.3.15 for the planner. | The planner gets the user's own words. |
+
+## Run 5: 2845de7, all 18 scenarios: 15 of 18 passed
+
+| Scenario | What happened | Fix |
+| --- | --- | --- |
+| dependent-changes | A correct config.js was blocked over a typo in the report; a review accepted an ES import in a CommonJS file with the whole file in view. | Drafts that mix module styles are rejected by rule; reviews judge drafts, not report typos. |
+| stop-then-continue | test.js got tests pasted after the closing brace; verification called an earlier test run a pass. | CommonJS drafts with a syntax error are rejected by rule (compiled, never run); earlier test runs do not count. |
+| no-json-mode | Without structured output the worker wrote `\\n` in replace_in_file search text, so nothing matched for 30 minutes. | Written-out `\n` is read as line breaks when only that matches, and the error says so. |
+
+Also seen: some worker calls ran about 350 s and returned nothing, which made a few scenarios slow.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
