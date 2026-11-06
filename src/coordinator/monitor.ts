@@ -2,7 +2,7 @@ import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { assignmentBlock } from "./assignment";
-import { callStructured } from "../llm/structured";
+import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { RunEvent, Task } from "../state/types";
 
@@ -335,6 +335,7 @@ const SUPERVISE_SYSTEM = `You are the coordinator of a team of coding sub-agents
 - "continue": it is fine, or it is about to sort it out itself.
 - "message": send it a short, concrete note that gets it unstuck: what to try instead, which file to look at, or to finish with what it has. Write the note in message.
 - If it keeps failing because of a file outside its task (its tests fail on code it may not change), tell it to stop working around it and finish now, naming that file in its summary: the file is fixed after it finishes, not by bending its own work to fit.
+- If the failing file is one of its own task's files (for example a test it wrote expects a different error message than the code throws), never tell it to finish: tell it exactly what to change, such as the expected text the code really uses.
 - "stop": stop it. Only if a note did not help and it keeps going nowhere, or it is working against the user's request. Its drafts are kept for the user's review.
 Never tell it to change files outside its task, run commands, or skip the user's review.
 Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Its report alone proves nothing; never tell a sub-agent a file is already fixed otherwise.
@@ -404,6 +405,7 @@ export interface SuperviseResult extends SuperviseDecision {
 export async function superviseAgent(provider: ModelProvider, ctx: SuperviseContext, opts: { signal?: AbortSignal } = {}): Promise<SuperviseResult> {
   let thinking: string | undefined;
   const decision = await callStructured({
+    maxTokens: VERDICT_MAX_TOKENS,
     provider,
     messages: buildSuperviseMessages(ctx, provider.contextWindow),
     schema: superviseSchema,

@@ -93,7 +93,16 @@ export interface StructuredCallOptions<T> {
   onAttempt?: (attempt: number, error?: string) => void;
   /** Called with the model's thinking for each reply that has any. */
   onThinking?: (thinking: string) => void;
+  /** Longest reply, in tokens, for this call (the provider's own caps still apply). */
+  maxTokens?: number;
 }
+
+/**
+ * Token cap for the coordinator's short verdicts (review, supervision, verification, consults). Their JSON
+ * is a few hundred tokens; in e2e runs 5 and 6, qwen3:8b sometimes thought until the 8192-token cap
+ * (about 6 minutes) and gave nothing. With this cap such a call ends sooner and is retried without thinking.
+ */
+export const VERDICT_MAX_TOKENS = 4096;
 
 export class StructuredOutputError extends Error {
   constructor(
@@ -121,7 +130,7 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     options.onAttempt?.(attempt, attempt > 0 ? lastError : undefined);
-    const reply = await provider.chat({ messages, jsonSchema: { name: schemaName, schema: jsonSchema }, signal });
+    const reply = await provider.chat({ messages, jsonSchema: { name: schemaName, schema: jsonSchema }, signal, maxTokens: options.maxTokens });
     lastReply = reply.content;
     const thinking = extractThinking(reply.content, reply.reasoning);
     if (thinking) options.onThinking?.(thinking);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { callStructured, extractJson, StructuredOutputError } from "../src/llm/structured";
+import { reviewSubAgentResult } from "../src/coordinator/review";
+import { callStructured, extractJson, StructuredOutputError, VERDICT_MAX_TOKENS } from "../src/llm/structured";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] } {
@@ -53,6 +54,15 @@ describe("callStructured", () => {
     const out = await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x" });
     expect(out).toEqual({ files: ["a.ts"] });
     expect(p.requests[0]?.jsonSchema?.schema).toMatchObject({ type: "object" });
+  });
+
+  it("passes a per-call token cap, and the coordinator's verdicts use one", async () => {
+    const p = scripted(['{"files":["a.ts"]}']);
+    await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x", maxTokens: VERDICT_MAX_TOKENS });
+    expect(p.requests[0]?.maxTokens).toBe(4096);
+    const r = scripted(['{"verdict":"accept","feedback":"ok"}']);
+    await reviewSubAgentResult(r, { userMessages: ["add median"], request: "add median", agent: { title: "Add median", instructions: "Add median", fileScope: ["src/stats.js"], research: false }, summary: "done", drafts: "", round: 0 });
+    expect(r.requests[0]?.maxTokens).toBe(VERDICT_MAX_TOKENS);
   });
 
   it("feeds the validation error back and retries", async () => {

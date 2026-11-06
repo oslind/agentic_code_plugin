@@ -2,7 +2,7 @@ import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { assignmentBlock } from "./assignment";
-import { callStructured } from "../llm/structured";
+import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 
 /**
@@ -115,6 +115,7 @@ export async function answerSubAgent(
 ): Promise<ConsultResult> {
   let thinking: string | undefined;
   const reply = await callStructured({
+    maxTokens: VERDICT_MAX_TOKENS,
     provider,
     messages: buildConsultMessages(ctx, provider.contextWindow),
     schema: consultAnswerSchema,

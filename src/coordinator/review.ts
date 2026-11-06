@@ -3,7 +3,7 @@ import { lineDiff } from "../changes/lineDiff";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { DRAFT_PROBLEMS_HEADING, moduleStyleProblems } from "../changes/moduleStyle";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
-import { callStructured } from "../llm/structured";
+import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { PendingChange } from "../state/types";
@@ -90,6 +90,7 @@ const SYSTEM = `You are the coordinator of a team of coding sub-agents. You gave
 - "accept": the result does what its task asks. It does not have to be perfect.
 - "revise": a part of the task is clearly missing or wrong, the drafts do not match what the report claims, the drafts go against what the user asked, or a research report does not answer its question. Write in feedback exactly what to fix or add, naming files.
 For each new or changed function, try one or two small inputs in your head (for a list: an odd and an even length) and check what it returns. A draft that also rewrites code its task did not ask for (another function, a bug it noticed) is "revise": ask it to undo that part and mention the bug in its report instead.
+If your feedback asks for any fix, the verdict is "revise", never "accept". When the sub-agent's new tests and the code disagree on a detail the user did not name (an error message, a wording), the test is wrong: ask it to fix the test, not the code. Keep to what you asked in your earlier review unless the drafts changed.
 Judge the drafts, not the wording of the report: when the drafts are right and only the report has a typo or a wrong number, accept and mention it in feedback.
 A report that says a file was created or changed while there are no drafts is false: nothing was written. Then use "revise".
 Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Never accept a missing change because "another sub-agent already fixed it" otherwise.
@@ -182,6 +183,7 @@ export function guardReview(d: ReviewDecision): ReviewDecision & { adjusted?: st
 export async function reviewSubAgentResult(provider: ModelProvider, ctx: ReviewContext, opts: { signal?: AbortSignal } = {}): Promise<ReviewResult> {
   let thinking: string | undefined;
   const decision = await callStructured({
+    maxTokens: VERDICT_MAX_TOKENS,
     provider,
     messages: buildReviewMessages(ctx, provider.contextWindow),
     schema: reviewSchema,

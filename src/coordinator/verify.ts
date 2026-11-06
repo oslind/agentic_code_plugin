@@ -3,7 +3,7 @@ import { CheckResult } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE } from "../context/untrusted";
-import { callStructured } from "../llm/structured";
+import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { draftProblemsOf } from "../changes/moduleStyle";
 import { ChatMessage, ModelProvider } from "../providers/types";
 
@@ -110,6 +110,7 @@ Compare what the user asked with the drafts and the check results. The reports a
 - "done": every part the user asked for is in the drafts (or the reports show nothing needed changing), and no check failed.
 - "not_done": a part of the request is missing or wrong in the drafts, a check failed, or a task did not finish. List each thing still left in "missing", naming files, so a sub-agent can fix it.
 A command a sub-agent ran that failed (for example its tests) counts like a failed check only when the evidence says the drafts caused it. A failure that was there before the request is never missing work and never a reason for not_done: name it in "verified" so the user hears about it.
+When a new test and the code disagree on a detail the user did not name (an error message, a wording), the test is what is wrong: name the test as missing work, never ask to change the code to fit it.
 Commands the sub-agents ran during their tasks do not show that the final drafts pass: a later task may have changed files since. Only the checks on all drafts together show that. With no checks set up, never write that all tests passed.
 A draft that would not load or run is not done: for example ES import/export in a file or project that uses require and module.exports, or an import of a file or name that does not exist. With no checks run, look for this yourself.
 Do not ask for extras the user did not ask for (style, more tests, refactors). If the request is met, say "done".
@@ -229,6 +230,7 @@ export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "c
 export async function verifyRun(provider: ModelProvider, ctx: VerifyContext, opts: { signal?: AbortSignal } = {}): Promise<Verification> {
   let thinking: string | undefined;
   const decision = await callStructured({
+    maxTokens: VERDICT_MAX_TOKENS,
     provider,
     messages: buildVerifyMessages(ctx, provider.contextWindow),
     schema: verifySchema,
@@ -321,6 +323,7 @@ export function buildAnswerCheckMessages(question: string, answer: string, conte
 /** One model call: does the combined research answer cover the question? "No" is never taken as yes, even with nothing named. */
 export async function checkAnswer(provider: ModelProvider, question: string, answer: string, opts: { signal?: AbortSignal } = {}): Promise<AnswerCheck> {
   const d = await callStructured({
+    maxTokens: VERDICT_MAX_TOKENS,
     provider,
     messages: buildAnswerCheckMessages(question, answer, provider.contextWindow),
     schema: answerCheckSchema,
