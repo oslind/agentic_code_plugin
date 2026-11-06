@@ -50,6 +50,17 @@ describe("coordinator review of a result", () => {
     expect(await reviewSubAgentResult(provider, ctx)).toMatchObject({ verdict: "revise", feedback: "Also export the Email type from src/model.ts." });
   });
 
+  it("shows a small edited file whole after its diff, so a reviewer sees what the change must fit", () => {
+    // Run 4: an ES import was accepted in a file whose other lines use module.exports, which the diff hid.
+    const original = "const DEFAULT_TARGET = 21;\nfunction t() { return DEFAULT_TARGET; }\nmodule.exports = { t };\n";
+    const proposed = original.replace("const DEFAULT_TARGET = 21;", "import { DEFAULT_TARGET } from './config.js';");
+    const shown = draftsForReview([{ path: "src/thermostat.js", original, proposed }]);
+    expect(shown).toMatch(/\+ import \{ DEFAULT_TARGET \}[\s\S]*The whole file with the change:[\s\S]*module\.exports = \{ t \}/);
+    // A big file keeps only its diff.
+    const big = "line\n".repeat(3000);
+    expect(draftsForReview([{ path: "big.js", original: big, proposed: `${big}one more\n` }])).not.toMatch(/The whole file/);
+  });
+
   it("cuts long drafts and fences the feedback for the sub-agent", () => {
     const long = draftsForReview([{ path: "big.ts", original: null, proposed: "x\n".repeat(5000) }], 1000);
     expect(long.length).toBeLessThan(1100);

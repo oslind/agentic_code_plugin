@@ -99,6 +99,7 @@ const SYSTEM = `You are the coordinator of a team of coding sub-agents. They say
 Compare what the user asked with the drafts and the check results. The reports are only claims; the drafts and the checks are the evidence.
 - "done": every part the user asked for is in the drafts (or the reports show nothing needed changing), and no check failed.
 - "not_done": a part of the request is missing or wrong in the drafts, a check failed, or a task did not finish. List each thing still left in "missing", naming files, so a sub-agent can fix it.
+A draft that would not load or run is not done: for example ES import/export in a file or project that uses require and module.exports, or an import of a file or name that does not exist. With no checks run, look for this yourself.
 Do not ask for extras the user did not ask for (style, more tests, refactors). If the request is met, say "done".
 In "verified", say what you compared and what it showed, for example "The drafts add the --verbose flag in src/cli.ts and the README line; npm test passed on all drafts together."
 
