@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadWarning } from "../src/worker/tools";
-import { draftProblemsOf, moduleStyleProblems } from "../src/changes/moduleStyle";
+import { draftProblemsOf, moduleStyleProblems, undefinedExports } from "../src/changes/moduleStyle";
 import { draftsForReview } from "../src/coordinator/review";
 import { guardVerification } from "../src/coordinator/verify";
 
@@ -47,5 +47,27 @@ describe("warning a sub-agent right after a write that breaks a file", () => {
     expect(loadWarning("convert.js", after, after + "\n")).toBe("");
     expect(loadWarning("convert.js", null, before)).toBe("");
     expect(loadWarning("notes.md", null, "}")).toBe("");
+  });
+});
+
+describe("exports of names a file never defines", () => {
+  it("finds a name in module.exports or export { } that is defined nowhere, and nothing else", () => {
+    expect(undefinedExports("function toC(f) { return f; }\nmodule.exports = { toC, toKelvin };\n")).toEqual(["toKelvin"]);
+    expect(undefinedExports("const toK = (c) => c + 273.15;\nfunction toC(f) { return f; }\nmodule.exports = { toC, toK };\n")).toEqual([]);
+    expect(undefinedExports("const { a } = require('./x');\nmodule.exports = { a, b: a };\n")).toEqual([]);
+    expect(undefinedExports("// toKelvin later\nmodule.exports = { toKelvin };\n")).toEqual(["toKelvin"]);
+    expect(undefinedExports("function median(xs) {}\nexport { median, mode };\n")).toEqual(["mode"]);
+    expect(undefinedExports("export { a } from './a.js';\n")).toEqual([]);
+    expect(undefinedExports("obj.toKelvin = 1;\nmodule.exports = { toKelvin };\n")).toEqual(["toKelvin"]);
+  });
+
+  it("makes a draft that adds such an export a problem, and the write warns about it", () => {
+    const before = "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toCelsius };\n";
+    const after = before.replace("{ toCelsius }", "{ toCelsius, toKelvin }");
+    expect(moduleStyleProblems([{ path: "src/convert.js", original: before, proposed: after }])).toEqual([
+      "src/convert.js exports toKelvin but never defines it, so loading it throws a ReferenceError. Write the missing code.",
+    ]);
+    expect(loadWarning("src/convert.js", before, after)).toMatch(/Warning: src\/convert\.js exports toKelvin but never defines it/);
+    expect(moduleStyleProblems([{ path: "src/convert.js", original: after, proposed: after + "\n" }])).toEqual([]);
   });
 });

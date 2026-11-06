@@ -40,6 +40,16 @@ describe("verification rules", () => {
     expect(v.missing[0]).toMatch(/Finish "Add docs".*Checks failed: test/);
   });
 
+  it("never calls work done when a task's review did not accept its drafts, and shows that to the judge", () => {
+    const kelvin = { title: "Add toKelvin", status: "done", summary: "Added toKelvin.", notAccepted: "The toKelvin function is missing from src/convert.js." };
+    const v = guardVerification({ verdict: "done", verified: "All three changes are in.", missing: [] }, { checks: [], tasks: [done, kelvin] });
+    expect(v.verified).toBe(false);
+    expect(v.missing).toEqual(['Finish "Add toKelvin": its review did not accept its drafts: The toKelvin function is missing from src/convert.js.']);
+    expect(v.adjusted).toMatch(/review did not accept/);
+    const messages = buildVerifyMessages({ userMessages: ["add toKelvin"], request: "add toKelvin", tasks: [kelvin], drafts: "", checks: [], round: 0 }, 8192);
+    expect(messages.map((m) => m.content).join("\n")).toMatch(/<untrusted_data[^>]*>[^<]*Its review did NOT accept its drafts: The toKelvin function is missing/);
+  });
+
   it('never turns "not done" with nothing usable named into verified: it asks for manual review', () => {
     const v = guardVerification({ verdict: "not_done", verified: "Hmm.", missing: ["  ", "no"] }, { checks: [pass("test")], tasks: [done] });
     expect(v).toMatchObject({ verified: false, manualReview: true, missing: [] });

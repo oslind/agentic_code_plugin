@@ -55,6 +55,8 @@ export interface VerifyTask {
   summary: string;
   /** Set for a task of the latest round that did not finish, with why. */
   unfinished?: string;
+  /** Set for a task of the latest round whose review did not accept its drafts, with the review's feedback. Untrusted. */
+  notAccepted?: string;
 }
 
 export interface VerifyContext {
@@ -172,7 +174,8 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   const evidence: string[] = [];
   const each = Math.max(150, Math.floor(1200 / Math.max(1, ctx.tasks.length)));
   ctx.tasks.forEach((t, i) => {
-    evidence.push(dataBlock(`task ${i + 1} (${t.status}): its title and its sub-agent's report`, `Title: ${t.title.replace(/\s+/g, " ").slice(0, 120)}\nReport: ${fit(t.summary, each) ?? "(no report)"}`));
+    const review = t.notAccepted !== undefined ? `\nIts review did NOT accept its drafts: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 300)}` : "";
+    evidence.push(dataBlock(`task ${i + 1} (${t.status}): its title and its sub-agent's report`, `Title: ${t.title.replace(/\s+/g, " ").slice(0, 120)}\nReport: ${fit(t.summary, each) ?? "(no report)"}${review}`));
   });
   evidence.push(dataBlock("all drafts of the run", fit(ctx.drafts, 3000) ?? "(no drafts: no files were changed)"));
   ctx.checks.forEach((c, i) => {
@@ -207,16 +210,19 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
 export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string }): Omit<Verification, "thinking"> {
   const failed = ctx.checks.filter((c) => !c.passed && !c.skipped);
   const unfinished = ctx.tasks.filter((t) => t.unfinished !== undefined);
+  // Run 6D: verification called the run done while the toKelvin task's review had said the function was missing.
+  const rejected = ctx.tasks.filter((t) => t.unfinished === undefined && t.notAccepted !== undefined);
   let missing = d.missing.map((m) => m.replace(/\s+/g, " ").trim()).filter((m) => m.length >= 5);
   const forced: string[] = [
     ...draftProblemsOf(ctx.drafts ?? ""),
     ...failed.map((c) => `Make the "${checkName(c.name)}" check pass on all drafts together.`),
     ...unfinished.map((t) => `Finish "${t.title}", which did not complete${t.unfinished ? `: ${t.unfinished.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
+    ...rejected.map((t) => `Finish "${t.title}": its review did not accept its drafts${t.notAccepted ? `: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
   ];
   const evidence = checkEvidence(ctx.checks);
   const summary = d.verified.trim();
   if (forced.length) {
-    const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : unfinished.length ? "a task did not finish" : "a draft cannot load"}, so it is not.` : undefined;
+    const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : unfinished.length ? "a task did not finish" : rejected.length ? "a task's review did not accept its drafts" : "a draft cannot load"}, so it is not.` : undefined;
     missing = [...forced, ...missing.filter((m) => !forced.includes(m))].slice(0, 6);
     return { verified: false, evidence, summary, missing, thought: d.thought, adjusted };
   }

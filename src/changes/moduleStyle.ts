@@ -33,6 +33,27 @@ export function scriptSyntaxError(text: string): string | undefined {
 }
 
 /**
+ * Names a file exports that it never defines: `module.exports = { a, b }` or `export { a, b }` shorthand
+ * whose name appears nowhere else in the file. Node throws a ReferenceError when it loads such a file.
+ * Run 6D: a sub-agent's only edit added toKelvin to module.exports without writing the function.
+ * Read by rule, never run. Only plain names are checked; `a: b`, `a as b` and spreads are left alone.
+ */
+export function undefinedExports(text: string): string[] {
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const lists = [...code.matchAll(/\bmodule\.exports\s*=\s*\{([^{}]*)\}/g), ...code.matchAll(/^\s*export\s*\{([^{}]*)\}\s*(?!from)/gm)];
+  const missing: string[] = [];
+  for (const m of lists) {
+    const rest = code.slice(0, m.index) + code.slice(m.index! + m[0].length);
+    for (const part of m[1]!.split(",")) {
+      const name = part.trim();
+      if (!/^[A-Za-z_$][\w$]*$/.test(name) || missing.includes(name)) continue;
+      if (!new RegExp(`(^|[^\\w$.])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(rest)) missing.push(name);
+    }
+  }
+  return missing;
+}
+
+/**
  * One line per JavaScript draft that cannot load and did not have that problem before: it mixes the two
  * module styles, or (as a CommonJS file) it has a syntax error. Run 5 accepted a test.js with its new
  * tests pasted after the closing brace.
@@ -43,6 +64,11 @@ export function moduleStyleProblems(changes: { path: string; original: string | 
     if (!/\.(c|m)?js$/i.test(c.path)) continue;
     if (mixes(c.proposed) && !(c.original !== null && mixes(c.original))) {
       problems.push(`${c.path} uses both import/export and require/module.exports, so Node cannot load it. Use one module style, the one the rest of the file and project uses.`);
+      continue;
+    }
+    const undefinedNow = undefinedExports(c.proposed).filter((n) => c.original === null || !undefinedExports(c.original).includes(n));
+    if (undefinedNow.length) {
+      problems.push(`${c.path} exports ${undefinedNow.join(", ")} but never defines ${undefinedNow.length === 1 ? "it" : "them"}, so loading it throws a ReferenceError. Write the missing code.`);
       continue;
     }
     if (/\.mjs$/i.test(c.path)) continue;

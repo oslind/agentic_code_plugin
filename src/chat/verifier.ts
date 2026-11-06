@@ -153,6 +153,13 @@ export class Verifier {
     signal.throwIfAborted();
     const run = await this.tasks.load(runId);
     const c = await this.conversations.load(conversationId);
+    // The latest review of each task: one that ended "not accepted" (sent back as often as allowed) holds "done".
+    const reviews = new Map<string, string>();
+    for (const e of await this.tasks.readLog(runId).catch(() => [])) {
+      if (e.type !== "coordinator_review" || !e.taskId) continue;
+      if (e.message === "not_accepted") reviews.set(e.taskId, typeof e.data?.feedback === "string" ? e.data.feedback : "");
+      else reviews.delete(e.taskId);
+    }
     const tasks: VerifyTask[] = run.tasks.map((t) => {
       const notStarted = t.status === "pending";
       return {
@@ -160,6 +167,7 @@ export class Verifier {
         status: notStarted ? "did not start" : t.status.replace("_", " "),
         summary: t.summary ?? (t.error ? `No report: ${t.error}` : ""),
         unfinished: latest.has(t.id) && t.status !== "done" ? (notStarted ? "a task it depends on did not finish" : (t.error ?? t.status)) : undefined,
+        notAccepted: latest.has(t.id) ? reviews.get(t.id) : undefined,
       };
     });
     // The newest draft of each file that is not rejected: what the user would get.
