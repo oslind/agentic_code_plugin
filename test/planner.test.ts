@@ -43,6 +43,14 @@ describe("task limit", () => {
 });
 
 describe("buildPlannerMessages", () => {
+  it("gives the planner the user's own words when the coordinator's request differs", () => {
+    // Run 4: the coordinator wrote "27.3.15" for the user's 273.15.
+    const user = "Add toKelvin(celsius) to src/convert.js that returns celsius + 273.15";
+    const text = buildPlannerMessages({ request: "Add toKelvin returning celsius + 27.3.15", userWords: user }, 16384).messages.map((m) => m.content).join("\n");
+    expect(text).toMatch(/The user's own words[\s\S]*celsius \+ 273\.15/);
+    expect(buildPlannerMessages({ request: user, userWords: user }, 16384).messages.map((m) => m.content).join("\n")).not.toMatch(/The user's own words/);
+  });
+
   it("drops the file tree when the context window is tiny", () => {
     const tree = Array.from({ length: 5000 }, (_, i) => `file${i}.ts`).join("\n");
     const { messages, dropped } = buildPlannerMessages({ request: "x", fileTree: tree }, 6000);

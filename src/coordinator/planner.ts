@@ -36,6 +36,11 @@ export interface PlanInput {
    * it is fenced as data and never treated as instructions.
    */
   planned?: string;
+  /**
+   * The user's own message the request comes from. Trusted. The coordinator's rewrite can garble it: run 4
+   * turned "273.15" into "27.3.15", and the plan then said 27.315.
+   */
+  userWords?: string;
   /** Compact file listing of the workspace. Truncated to fit if needed. */
   fileTree?: string;
   /** Extra context such as README or package.json excerpts, lowest priority. */
@@ -65,6 +70,13 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   const sections: ContextSection[] = [
     { name: "request", text: `Request:\n${input.request}`, priority: 100, required: true },
   ];
+  if (input.userWords?.trim() && input.userWords.trim() !== input.request.trim()) {
+    sections.push({
+      name: "user",
+      text: `The user's own words (where the request above differs from them, for example in a number, a name or a file, follow the user's words):\n${input.userWords.trim().slice(0, 3000)}`,
+      priority: 95,
+    });
+  }
   if (input.planned?.trim()) {
     sections.push({
       name: "planned",

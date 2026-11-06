@@ -247,7 +247,7 @@ export class RunLoop {
         const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: t.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks, skills: await this.skillsFor(c.workspaceRoot) },
+          { request: t.request, userWords: userRequest, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks, skills: await this.skillsFor(c.workspaceRoot) },
           {
             signal: abort.signal,
             onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
