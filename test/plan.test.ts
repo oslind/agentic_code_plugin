@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSameFileTasks, parallelWaves, planSchema, repairPlan } from "../src/coordinator/plan";
+import { mergeSameFileTasks, offTargetTasks, parallelWaves, planSchema, repairPlan } from "../src/coordinator/plan";
 
 const t = (id: string, dependsOn: string[] = [], fileScope = [`src/${id}.ts`]) => ({
   id,
@@ -71,5 +71,16 @@ describe("fix-up tasks on the same file", () => {
     expect(merged[0]).toMatchObject({ instructions: expect.stringMatching(/^Do a\.\n\nAlso \(planned as a separate task[^)]*follow the user's request[^)]*\): Do c\.$/), fileScope: ["src/stats.js"], dependsOn: ["b"] });
     expect(merged[2]!.dependsOn).toEqual(["a"]);
     expect(mergeSameFileTasks([t("x", []), t("y", [])]).map((x) => x.id)).toEqual(["x", "y"]);
+  });
+});
+
+describe("fix-up tasks the missing work does not ask for", () => {
+  const t = (id: string, fileScope: string[]) => ({ id, title: `Task ${id}`, instructions: `Do ${id}.`, fileScope, dependsOn: [] });
+  it("finds tasks on files the missing work never names, but only when another task's files are named", () => {
+    const tasks = [t("median", ["src/stats.js"]), t("away", ["src/thermostat.js", "test.js"]), t("read", [])];
+    expect(offTargetTasks(tasks, ["Fix the duplicate median function in src/stats.js"]).map((x) => x.id)).toEqual(["away"]);
+    expect(offTargetTasks(tasks, ["Remove the second median in stats.js"]).map((x) => x.id)).toEqual(["away"]);
+    expect(offTargetTasks(tasks, ["Fix the duplicate median function"])).toEqual([]);
+    expect(offTargetTasks([t("a", ["src/**"])], ["fix src/stats.js"])).toEqual([]);
   });
 });

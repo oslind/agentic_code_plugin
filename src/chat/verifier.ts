@@ -7,7 +7,7 @@ import { PendingChange, Task } from "../state/types";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { isCheckAutoApproved } from "../tools/policy";
 import { ConversationStore } from "./conversationStore";
-import { mergeSameFileTasks } from "../coordinator/plan";
+import { mergeSameFileTasks, offTargetTasks } from "../coordinator/plan";
 import { isReadOnlyPlan } from "./coordinatorChat";
 import { commandEventData } from "../worker/worker";
 import { draftsForReview } from "../coordinator/review";
@@ -335,7 +335,9 @@ export class Verifier {
       return [];
     }
     // One sub-agent per file: two fix-up tasks on the same file undid each other's work in run 6E.
-    const planned = mergeSameFileTasks(result.plan.tasks);
+    const offTarget = new Set(offTargetTasks(result.plan.tasks, v.missing).map((t) => t.id));
+    if (offTarget.size) this.host.log("info", `Fix-up plan: left out ${offTarget.size} task(s) whose files the missing work does not name.`);
+    const planned = mergeSameFileTasks(result.plan.tasks.filter((t) => !offTarget.has(t.id)).map((t) => ({ ...t, dependsOn: t.dependsOn.filter((d) => !offTarget.has(d)) })));
     // New ids, so they never clash with the run's earlier tasks; dependencies point at the new ids.
     const taken = new Set(run.tasks.map((t) => t.id));
     const ids = new Map<string, string>();

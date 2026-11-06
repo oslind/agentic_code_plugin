@@ -171,6 +171,21 @@ export function mergeSameFileTasks(tasks: PlannedTask[]): PlannedTask[] {
   return out;
 }
 
+/**
+ * Fix-up tasks that touch none of the files the missing work names, when other tasks do. Run 6H's fix-up plan
+ * added "Fix 'away' mode test" next to the one thing verification found missing (a duplicate median in stats.js).
+ * When no task's files are named, nothing is dropped: the missing work may not name files at all.
+ */
+export function offTargetTasks(tasks: PlannedTask[], missing: string[]): PlannedTask[] {
+  const text = missing.join("\n").toLowerCase();
+  const named = (t: PlannedTask) => t.fileScope.some((f) => {
+    const plain = f.replace(/\/\*\*?$|\*.*$/, "").toLowerCase();
+    const base = plain.split("/").pop() ?? "";
+    return (plain.length > 0 && text.includes(plain)) || (base.length > 2 && text.includes(base));
+  });
+  return tasks.some(named) ? tasks.filter((t) => t.fileScope.length > 0 && !named(t)) : [];
+}
+
 /** Groups tasks into waves that can run at the same time. */
 export function parallelWaves(tasks: Pick<PlannedTask, "id" | "dependsOn">[]): string[][] {
   const remaining = new Map(tasks.map((t) => [t.id, new Set(t.dependsOn)]));

@@ -155,7 +155,10 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
  */
 export function loadWarning(path: string, before: string | null, after: string): string {
   const problems = moduleStyleProblems([{ path, original: before, proposed: after }]);
-  return problems.length ? `\nWarning: ${problems.join(" ")} Read the file and fix it before you finish.` : "";
+  if (!problems.length) return "";
+  // Run 6H: a 15-line stats.js got seven replace_in_file patches, each making it worse. A small file is easier to write whole.
+  const small = after.split("\n").length <= 80;
+  return `\nWarning: ${problems.join(" ")} ${small ? `Read the whole file with read_file, then write it again whole with write_file, correct from top to bottom, instead of patching it further.` : "Read the file and fix it before you finish."}`;
 }
 
 /**

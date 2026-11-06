@@ -43,10 +43,12 @@ describe("warning a sub-agent right after a write that breaks a file", () => {
   it("warns when an edit leaves code after the closing brace, and not for files that already had the problem", () => {
     const before = "function toC(f) {\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toC };\n";
     const after = "function toC(f) {\n  return (f - 32) / 1.8;\n}\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toC };\n";
-    expect(loadWarning("convert.js", before, after)).toMatch(/^\nWarning: convert\.js has a syntax error[\s\S]*fix it before you finish\.$/);
+    expect(loadWarning("convert.js", before, after)).toMatch(/^\nWarning: convert\.js has a syntax error[\s\S]*write it again whole with write_file[\s\S]*instead of patching it further\.$/);
     expect(loadWarning("convert.js", after, after + "\n")).toBe("");
     expect(loadWarning("convert.js", null, before)).toBe("");
     expect(loadWarning("notes.md", null, "}")).toBe("");
+    const big = "// line\n".repeat(100);
+    expect(loadWarning("convert.js", big + before, big + after)).toMatch(/Read the file and fix it before you finish\.$/);
   });
 });
 
