@@ -17,7 +17,8 @@ const taskSchema = z.object({
     .min(10)
     .max(1200)
     .describe("What the worker must do, written so it can be done without seeing the other tasks"),
-  dependsOn: z.array(z.string()).describe("ids of tasks that must finish first"),
+  // Defaults to none: a one-task plan without it was rejected four times in e2e run 6.
+  dependsOn: z.array(z.string()).default([]).describe("ids of tasks that must finish first"),
   fileScope: z
     .array(z.string())
     .min(1)

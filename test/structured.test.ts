@@ -19,6 +19,12 @@ function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] 
 }
 
 describe("extractJson", () => {
+  it("takes the first complete value when stray braces or text follow it", () => {
+    // e2e run 6 without structured output: a valid plan with one "}" too many, four times.
+    expect(extractJson('{"tasks":[{"id":"a","note":"a } in a string"}]}}')).toEqual({ tasks: [{ id: "a", note: "a } in a string" }] });
+    expect(extractJson('Here it is: {"a":"x \\" }"} and that is all.')).toEqual({ a: 'x " }' });
+  });
+
   it("parses plain JSON", () => {
     expect(extractJson('{"a":1}')).toEqual({ a: 1 });
   });

@@ -33,6 +33,16 @@ export function extractJson(raw: string): unknown {
   if (start === -1) {
     throw new SyntaxError("No JSON found in reply");
   }
+  // The first complete value, so text or stray closing braces after it do not matter: run 6 without
+  // structured output got a valid plan followed by one "}" too many, four times in a row.
+  const first = firstValueEnd(text, start);
+  if (first !== undefined) {
+    try {
+      return JSON.parse(text.slice(start, first + 1));
+    } catch {
+      // Not valid after all; try the widest span below.
+    }
+  }
   const open = text[start];
   const close = open === "{" ? "}" : "]";
   const end = text.lastIndexOf(close);
@@ -40,6 +50,27 @@ export function extractJson(raw: string): unknown {
     throw new SyntaxError("Unterminated JSON in reply");
   }
   return JSON.parse(text.slice(start, end + 1));
+}
+
+/** Index of the bracket that closes the JSON value opening at `start`, skipping strings; undefined if it never closes. */
+function firstValueEnd(text: string, start: number): number | undefined {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return undefined;
 }
 
 /** The model's thinking: what the server returned separately, or the text of <think> blocks in the reply. */
