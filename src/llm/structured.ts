@@ -113,7 +113,9 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
       { role: "assistant", content: reply.truncated ? `${reply.content.slice(0, 1000)} …(cut off)` : reply.content },
       {
         role: "user",
-        content: `Your reply was not valid. Problem:\n${lastError}\n\nReply again with only the corrected JSON object. No prose, no code fences.`,
+        // After a cut-off, "/no_think" asks Qwen3 models to answer without thinking (other models read it as plain text).
+        // In the e2e runs, qwen3:8b sometimes thought until the 8192-token cap (about 6 minutes on Oskar's GPU) and gave nothing.
+        content: `Your reply was not valid. Problem:\n${lastError}\n\nReply again with only the corrected JSON object. No prose, no code fences.${reply.truncated ? " /no_think" : ""}`,
       },
     );
   }
