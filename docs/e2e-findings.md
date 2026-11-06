@@ -65,10 +65,32 @@ The run 3 fixes held for verify-fix, long-conversation and stop-then-continue. N
 
 Also seen: some worker calls ran about 350 s and returned nothing, which made a few scenarios slow.
 
+## Run 6: phases A to F on the newest fixes after each phase
+
+| Phase | Commit | Result |
+| --- | --- | --- |
+| A | 47cad0a | 0 of 3 (the run 5 failures, each on a new cause) |
+| B | 47cad0a | 14 of 15 (regression check; parallel-changes failed) |
+| C | 34b9c5b | 2 of 4: dependent-changes passed for the first time, no-json-mode passed |
+| D | 0dd9fc3 | 1 of 2: stop-then-continue passed |
+| E | c85ff3e | 0 of 1: parallel-changes |
+
+Every scenario passed at least once in run 6 except parallel-changes, which failed in phases B to E on a different cause each time.
+
+| Where | What happened | Fix |
+| --- | --- | --- |
+| Verification | Chased a test that was failing before the change. | Failed commands are rerun on a copy without drafts; failures that were there before are not missing work. |
+| Fix-up rounds | Re-planned all three tasks when one was left; later made two tasks on the same file that undid each other. | The planner leads with the count of what is left and is capped at it; tasks on the same file are merged. |
+| Supervisor and reviews | Said a file was "already fixed by another sub-agent" when that draft had failed review; asked to undo a change the diff no longer had; accepted while asking for a fix. | The team list says whose drafts passed review; reviews judge only the current diff; feedback that asks for a fix means revise. |
+| Sub-agents | An edit left half an old function after the closing brace; another only added `toKelvin` to `module.exports`. | write_file and replace_in_file warn when a JS file stops loading; exports of names defined nowhere count as a draft problem (read by rule, never run). |
+| Verification | Called a run done while a task's review had said the function was missing. | A task whose latest review ended "not accepted" holds "done" and becomes missing work. |
+| Tests vs code | Verification asked to change the code to fit a test's made-up error message. | When a test and the code disagree on a detail the user did not name, the test is fixed. |
+| Slow calls | Review, verification and plan calls sometimes thought for about 6 minutes and returned nothing. | Token caps: 4096 for verdicts, 6144 for plans; the retry asks for no thinking. Worker calls are not capped. |
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
-2. The verification judge says "verified" for a change that broke the module format (ESM in CommonJS).
-3. Reviews send back correct work with nonsense requests.
-4. A reply cut off at the 8192 cap gives the user no visible sign; the step is retried quietly.
-5. Final replies of parallel runs can contradict themselves.
+2. Reviews sometimes send back correct work with nonsense requests.
+3. A reply cut off at the 8192 cap gives the user no visible sign; the step is retried quietly.
+4. Final replies of parallel runs can contradict themselves.
+5. Worker calls can still think for about 6 minutes with nothing to show; parallel-changes is close to the 30-minute limit.
