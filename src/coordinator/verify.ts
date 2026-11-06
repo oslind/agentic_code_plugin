@@ -69,8 +69,15 @@ export interface VerifyContext {
   checks: CheckResult[];
   /** Fix-up rounds already done for this request. */
   round: number;
-  /** Commands the sub-agents ran (such as npm test) whose latest run failed. Their output is untrusted. */
+  /**
+   * Commands the sub-agents ran (such as npm test) whose latest run failed, and that passed or failed
+   * differently on the project without the drafts: the drafts caused it. Their output is untrusted.
+   */
   failedCommands?: { line: string; output: string }[];
+  /** Commands that failed the same way on the project without the drafts: there before the request. */
+  preexistingFailures?: { line: string; output: string }[];
+  /** Failed commands that could not be compared with the project without the drafts (not approved, or nothing to compare). */
+  uncomparedFailures?: { line: string; output: string }[];
 }
 
 /** Why the user has to look at the work themselves when verification could not name anything to fix. */
@@ -102,7 +109,7 @@ const SYSTEM = `You are the coordinator of a team of coding sub-agents. They say
 Compare what the user asked with the drafts and the check results. The reports are only claims; the drafts and the checks are the evidence.
 - "done": every part the user asked for is in the drafts (or the reports show nothing needed changing), and no check failed.
 - "not_done": a part of the request is missing or wrong in the drafts, a check failed, or a task did not finish. List each thing still left in "missing", naming files, so a sub-agent can fix it.
-A command a sub-agent ran that failed (for example its tests) counts like a failed check when the failure comes from what the drafts change; a failure in code the request did not touch is not a reason for not_done, but say so in "verified".
+A command a sub-agent ran that failed (for example its tests) counts like a failed check only when the evidence says the drafts caused it. A failure that was there before the request is never missing work and never a reason for not_done: name it in "verified" so the user hears about it.
 Commands the sub-agents ran during their tasks do not show that the final drafts pass: a later task may have changed files since. Only the checks on all drafts together show that. With no checks set up, never write that all tests passed.
 A draft that would not load or run is not done: for example ES import/export in a file or project that uses require and module.exports, or an import of a file or name that does not exist. With no checks run, look for this yourself.
 Do not ask for extras the user did not ask for (style, more tests, refactors). If the request is met, say "done".
@@ -171,8 +178,16 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
     if (!c.passed && !c.skipped) evidence.push(dataBlock(`output of failed check ${i + 1}`, fit(checkTail(c), 600) ?? "(no output)"));
   });
   // Run 4: with no checks set up, a run was verified "done" although the sub-agent's own npm test failed on its change.
-  (ctx.failedCommands ?? []).slice(0, 3).forEach((c, i) => {
-    evidence.push(dataBlock(`command ${i + 1} a sub-agent ran, whose latest run failed: ${c.line.replace(/\s+/g, " ").slice(0, 120)}`, fit(c.output, 400) ?? "(no output)"));
+  // Run 6: a test that had always failed, outside the request, was sent back as missing until the run timed out.
+  // So each failure says whether it also happens on the project without the drafts.
+  const commandLine = (c: { line: string }) => c.line.replace(/\s+/g, " ").slice(0, 120);
+  const failures = [
+    ...(ctx.failedCommands ?? []).map((c) => ({ c, how: "fails with the drafts and not (or not like this) without them: the drafts caused it" })),
+    ...(ctx.preexistingFailures ?? []).map((c) => ({ c, how: "fails the same way on the project without the drafts: it was there before this request, so it is not missing work" })),
+    ...(ctx.uncomparedFailures ?? []).map((c) => ({ c, how: "could not be compared with the project without the drafts: count it only if the drafts clearly cause it" })),
+  ].slice(0, 3);
+  failures.forEach(({ c, how }, i) => {
+    evidence.push(`Command ${i + 1} a sub-agent ran failed the last time it ran. It ${how}. Its line and the end of its output:\n${dataBlock(`failed command ${i + 1}`, `$ ${commandLine(c)}\n${fit(c.output, 400) ?? "(no output)"}`)}`);
   });
   parts.push(`The evidence:\n${DATA_RULE}\n${evidence.join("\n")}`);
   parts.push(`Decide with JSON only. ${DATA_REMINDER}`);

@@ -10,11 +10,12 @@ import { ConversationStore } from "./conversationStore";
 import { isReadOnlyPlan } from "./coordinatorChat";
 import { commandEventData } from "../worker/worker";
 import { draftsForReview } from "../coordinator/review";
-import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
+import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
-import { failedCommandsOf } from "./synthesis";
+import { FailedCommand, failedCommandsOf } from "./synthesis";
+import { failedBefore } from "../checks/failures";
 import { runScope, userMessagesOf, userRequestOf } from "./scope";
 
 /**
@@ -171,7 +172,7 @@ export class Verifier {
       drafts: draftsForReview([...newest.values()]),
       checks: results,
       round,
-      failedCommands: failedCommandsOf(runScope(c.entries, runId)),
+      ...(await this.compareWithProject(conversationId, workspaceRoot, runId, failedCommandsOf(runScope(c.entries, runId)), checks, signal)),
     };
     let v: Verification;
     try {
@@ -232,8 +233,54 @@ export class Verifier {
     }
   }
 
+  /**
+   * Commands the sub-agents ran that failed, split by whether the drafts caused the failure. Each one runs
+   * again on a copy of the project without the drafts (with the same approval as a check): the failures that
+   * show there too were there before the request. Run 6 sent fix-ups after a test that had always failed,
+   * outside the request, until it timed out. Commands that are also checks are left out: the checks cover them.
+   */
+  async compareWithProject(
+    conversationId: string,
+    workspaceRoot: string,
+    runId: string,
+    failed: FailedCommand[],
+    checks: CheckConfig[],
+    signal: AbortSignal,
+  ): Promise<Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures">> {
+    const own = failed.filter((f) => !checks.some((k) => k.command === f.line)).slice(0, 2);
+    if (!own.length) return {};
+    const root = await this.host.openFolder(workspaceRoot);
+    if (!root) return { uncomparedFailures: own };
+    const scratch = new ScratchCopy(root, [`baseline-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    const caused: FailedCommand[] = [];
+    const preexisting: FailedCommand[] = [];
+    const uncompared: FailedCommand[] = [];
+    try {
+      const base = await runAllChecks(
+        own.map((f, i) => ({ name: `baseline ${i + 1}`, command: f.line })),
+        () => scratch.sync(new Map()),
+        signal,
+        (check) => this.approveVerifyCheck(conversationId, runId, check, new Set(), "to see whether it failed already before the drafts (a failure that was there before is not this request's to fix)"),
+        this.host.terminal?.(workspaceRoot),
+      );
+      own.forEach((f, i) => {
+        const b = base[i];
+        const verdict = !b || b.skipped ? "unknown" : failedBefore(f.output, b);
+        (verdict === "before" ? preexisting : verdict === "new" ? caused : uncompared).push(f);
+      });
+    } catch (err) {
+      if (signal.aborted) throw err;
+      this.host.log("warn", `Could not run the failed commands on the project without the drafts: ${(err as Error).message}`);
+      uncompared.push(...own.filter((f) => !caused.includes(f) && !preexisting.includes(f)));
+    } finally {
+      await scratch.remove().catch(() => undefined);
+    }
+    if (preexisting.length) this.host.log("info", `Failed already without the drafts, so not this request's to fix: ${preexisting.map((f) => f.line).join(", ")}.`);
+    return { failedCommands: caused, preexistingFailures: preexisting, uncomparedFailures: uncompared };
+  }
+
   /** Same rule as a sub-agent's checks: approved checks run when "Run commands" is on or allowed for this run, otherwise the user is asked. */
-  async approveVerifyCheck(conversationId: string, runId: string, check: CheckConfig, trusted: ReadonlySet<string>): Promise<boolean> {
+  async approveVerifyCheck(conversationId: string, runId: string, check: CheckConfig, trusted: ReadonlySet<string>, purpose?: string): Promise<boolean> {
     if (isCheckAutoApproved(this.host.permissions().commands, trusted, check.command) || this.s.allowedFor(runId).has(check.command)) return true;
     const { decision } = await this.s.waitFor(conversationId, {
       author: "coordinator",
@@ -241,7 +288,7 @@ export class Verifier {
       runId,
       rememberable: true,
       rememberLabel: "Allow for the rest of this run",
-      text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify the work with all drafts together. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+      text: `I'd like to run \`${check.command}\` ${purpose ? `on the project without the drafts, ${purpose}` : `(check "${check.name}") to verify the work with all drafts together`}. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
     });
     if (decision?.kind !== "allow") return false;
     if (decision.remember) this.s.allowedFor(runId).add(check.command);

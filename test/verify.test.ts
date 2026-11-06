@@ -106,7 +106,10 @@ describe("verification rules", () => {
     // Run 4: verified "done" with no checks, although the sub-agent's own npm test failed on its change.
     const failedCommands = [{ line: "npm test", output: "FAIL night is 3 lower\n19 !== 18" }];
     const user = buildVerifyMessages({ userMessages: ["lower it"], request: "Lower it", tasks: [done], drafts: "", checks: [], round: 0, failedCommands }, 8192)[1]!.content;
-    expect(user).toMatch(/<untrusted_data source="command 1 a sub-agent ran, whose latest run failed: npm test">\nFAIL night is 3 lower\n19 !== 18/);
+    expect(user).toMatch(/Command 1 a sub-agent ran failed the last time it ran\. It fails with the drafts and not[^\n]*the drafts caused it\.[^\n]*\n<untrusted_data source="failed command 1">\n\$ npm test\nFAIL night is 3 lower\n19 !== 18/);
+    // Run 6: a failure that was there before the request is shown as such, never as missing work.
+    const before = buildVerifyMessages({ userMessages: ["x"], request: "X", tasks: [done], drafts: "", checks: [], round: 0, preexistingFailures: failedCommands }, 8192)[1]!.content;
+    expect(before).toMatch(/It fails the same way on the project without the drafts: it was there before this request/);
   });
 
   it("fences check names in the verifier prompt, never plain", () => {
