@@ -194,6 +194,7 @@ Rules:
 - Paths are relative to the project root.
 - ${COMMAND_RULES}
 ${withSkills ? `${skillRules()}\n` : ""}- After changing code, run the tests or a build with run_command or run_check before you finish, when the project has them.
+- If tests or a build fail because of a file you may not change, do not bend your own files (or the tests) to fit it, and do not keep retrying: call finish and say which file is wrong and what fails, so the coordinator can have it fixed.
 - Only use request_check if you changed code and none of the available checks covers it. Never for documentation, config text or other changes that have nothing to test. Approved checks also run when your task is verified.
 - You were given only part of what the coordinator knows. If you need context you were not given (what the user meant, what research found, what another sub-agent is doing, which approach to take), use ask_coordinator before guessing. Do not ask it what you can read in the files yourself.
 - Only use ask_user if you truly cannot continue without the user's decision. Never use it to ask for review or feedback ("Anything to change?", "Let me wait for your review"): the user reviews every draft after you call finish, and can message you then.
