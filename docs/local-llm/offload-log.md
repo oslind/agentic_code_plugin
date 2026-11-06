@@ -18,3 +18,4 @@ Every run of the end-to-end suite against a local model adds a line here (writte
 | 2026-11-06 19:57 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
 | 2026-11-06 20:30 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
 | 2026-11-06 20:50 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 19.8 min, unloaded qwen3-8b-16k |
+| 2026-11-06 21:15 | qwen3-8b-16k | e2e: parallel-changes (run 6 phase G, stopped on Oskar's pause after about 24 min; written by hand) | not finished, unloaded qwen3-8b-16k |
