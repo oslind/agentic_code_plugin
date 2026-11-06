@@ -383,7 +383,10 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
       else if (!allowed.includes(done.status)) failures.push(`ended as "${done.status}" (${done.text}), expected ${allowed.join(" or ")}`);
       for (const e of entries.filter((x) => x.kind === "error")) failures.push(`error in the chat: ${e.text.slice(0, 300)}`);
       // A command that failed the last time it ran must not be hidden from the user (qwen once said "No failures").
-      const failedCommands = failedCommandsOf(entries);
+      // Only the last prompt's commands, as the final reply of a run only covers that run's own: run 3's
+      // question-then-answer failed on a test failure from the first prompt, already reported there.
+      const lastPrompt = entries.map((e) => e.author === "user" && e.text === scenario.prompts.at(-1)).lastIndexOf(true);
+      const failedCommands = failedCommandsOf(entries.slice(Math.max(0, lastPrompt)));
       if (lastCoordinator?.kind === "answer" && failedCommands.length && !/fail|error|did not pass|not pass/i.test(lastCoordinator.text)) {
         failures.push(`the last answer does not mention that ${failedCommands.map((c) => `\`${c.line}\``).join(", ")} failed: ${lastCoordinator.text.slice(0, 300)}`);
       }
