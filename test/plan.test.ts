@@ -57,7 +57,7 @@ describe("repairPlan", () => {
 describe("a plan without dependsOn", () => {
   it("reads a missing dependsOn as no dependencies", () => {
     // e2e run 6 without structured output: a one-task plan without dependsOn was rejected four times.
-    const parsed = planSchema.safeParse({ tasks: [{ id: "a", title: "A", instructions: "Add toFahrenheit to src/convert.js.", fileScope: ["src/convert.js"] }] });
+    const parsed = planSchema.safeParse({ tasks: [{ id: "a", title: "Add toFahrenheit", instructions: "Add toFahrenheit to src/convert.js.", fileScope: ["src/convert.js"] }] });
     expect(parsed.success).toBe(true);
     expect(parsed.data?.tasks[0]!.dependsOn).toEqual([]);
   });
