@@ -68,6 +68,8 @@ export interface VerifyContext {
   checks: CheckResult[];
   /** Fix-up rounds already done for this request. */
   round: number;
+  /** Commands the sub-agents ran (such as npm test) whose latest run failed. Their output is untrusted. */
+  failedCommands?: { line: string; output: string }[];
 }
 
 /** Why the user has to look at the work themselves when verification could not name anything to fix. */
@@ -99,6 +101,7 @@ const SYSTEM = `You are the coordinator of a team of coding sub-agents. They say
 Compare what the user asked with the drafts and the check results. The reports are only claims; the drafts and the checks are the evidence.
 - "done": every part the user asked for is in the drafts (or the reports show nothing needed changing), and no check failed.
 - "not_done": a part of the request is missing or wrong in the drafts, a check failed, or a task did not finish. List each thing still left in "missing", naming files, so a sub-agent can fix it.
+A command a sub-agent ran that failed (for example its tests) counts like a failed check when the failure comes from what the drafts change; a failure in code the request did not touch is not a reason for not_done, but say so in "verified".
 A draft that would not load or run is not done: for example ES import/export in a file or project that uses require and module.exports, or an import of a file or name that does not exist. With no checks run, look for this yourself.
 Do not ask for extras the user did not ask for (style, more tests, refactors). If the request is met, say "done".
 In "verified", say what you compared and what it showed, for example "The drafts add the --verbose flag in src/cli.ts and the README line; npm test passed on all drafts together."
@@ -164,6 +167,10 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   evidence.push(dataBlock("all drafts of the run", fit(ctx.drafts, 3000) ?? "(no drafts: no files were changed)"));
   ctx.checks.forEach((c, i) => {
     if (!c.passed && !c.skipped) evidence.push(dataBlock(`output of failed check ${i + 1}`, fit(checkTail(c), 600) ?? "(no output)"));
+  });
+  // Run 4: with no checks set up, a run was verified "done" although the sub-agent's own npm test failed on its change.
+  (ctx.failedCommands ?? []).slice(0, 3).forEach((c, i) => {
+    evidence.push(dataBlock(`command ${i + 1} a sub-agent ran, whose latest run failed: ${c.line.replace(/\s+/g, " ").slice(0, 120)}`, fit(c.output, 400) ?? "(no output)"));
   });
   parts.push(`The evidence:\n${DATA_RULE}\n${evidence.join("\n")}`);
   parts.push(`Decide with JSON only. ${DATA_REMINDER}`);

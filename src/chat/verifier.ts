@@ -14,6 +14,7 @@ import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpReque
 import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
+import { failedCommandsOf } from "./synthesis";
 import { runScope, userMessagesOf, userRequestOf } from "./scope";
 
 /**
@@ -170,6 +171,7 @@ export class Verifier {
       drafts: draftsForReview([...newest.values()]),
       checks: results,
       round,
+      failedCommands: failedCommandsOf(runScope(c.entries, runId)),
     };
     let v: Verification;
     try {
