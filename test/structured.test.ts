@@ -59,7 +59,7 @@ describe("callStructured", () => {
   it("passes a per-call token cap, and the coordinator's verdicts use one", async () => {
     const p = scripted(['{"files":["a.ts"]}']);
     await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x", maxTokens: VERDICT_MAX_TOKENS });
-    expect(p.requests[0]?.maxTokens).toBe(4096);
+    expect(p.requests[0]?.maxTokens).toBe(VERDICT_MAX_TOKENS);
     const r = scripted(['{"verdict":"accept","feedback":"ok"}']);
     await reviewSubAgentResult(r, { userMessages: ["add median"], request: "add median", agent: { title: "Add median", instructions: "Add median", fileScope: ["src/stats.js"], research: false }, summary: "done", drafts: "", round: 0 });
     expect(r.requests[0]?.maxTokens).toBe(VERDICT_MAX_TOKENS);

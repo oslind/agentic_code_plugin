@@ -102,10 +102,10 @@ export interface StructuredCallOptions<T> {
  * is a few hundred tokens; in e2e runs 5 and 6, qwen3:8b sometimes thought until the 8192-token cap
  * (about 6 minutes) and gave nothing. With this cap such a call ends sooner and is retried without thinking.
  */
-export const VERDICT_MAX_TOKENS = 4096;
+export const VERDICT_MAX_TOKENS = 3072;
 
-/** Token cap for plans: a plan's JSON can be a few thousand tokens, so more room than a verdict (run 6E: a plan call thought for 354 s and gave nothing). */
-export const PLAN_MAX_TOKENS = 6144;
+/** Token cap for plans: a plan's JSON is longer than a verdict (run 6E: a plan call thought for 354 s and gave nothing; 6F: 266 s at a 6144 cap). */
+export const PLAN_MAX_TOKENS = 4096;
 
 export class StructuredOutputError extends Error {
   constructor(

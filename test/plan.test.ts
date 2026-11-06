@@ -68,7 +68,7 @@ describe("fix-up tasks on the same file", () => {
     const t = (id: string, fileScope: string[], dependsOn: string[] = []) => ({ id, title: `Task ${id}`, instructions: `Do ${id}.`, fileScope, dependsOn });
     const merged = mergeSameFileTasks([t("a", ["src/stats.js"]), t("b", ["src/convert.js"]), t("c", ["src/stats.js"], ["b"]), t("d", ["test.js"], ["c"]), t("r", [])]);
     expect(merged.map((x) => x.id)).toEqual(["a", "b", "d", "r"]);
-    expect(merged[0]).toMatchObject({ instructions: "Do a.\n\nAlso: Do c.", fileScope: ["src/stats.js"], dependsOn: ["b"] });
+    expect(merged[0]).toMatchObject({ instructions: expect.stringMatching(/^Do a\.\n\nAlso \(planned as a separate task[^)]*follow the user's request[^)]*\): Do c\.$/), fileScope: ["src/stats.js"], dependsOn: ["b"] });
     expect(merged[2]!.dependsOn).toEqual(["a"]);
     expect(mergeSameFileTasks([t("x", []), t("y", [])]).map((x) => x.id)).toEqual(["x", "y"]);
   });

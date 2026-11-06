@@ -161,7 +161,7 @@ export function mergeSameFileTasks(tasks: PlannedTask[]): PlannedTask[] {
       continue;
     }
     into.set(t.id, host.id);
-    host.instructions = `${host.instructions}\n\nAlso: ${t.instructions}`;
+    host.instructions = `${host.instructions}\n\nAlso (planned as a separate task on the same file; where the two disagree, follow the user's request and leave code it did not ask about as it is): ${t.instructions}`;
     host.fileScope = [...new Set([...host.fileScope, ...t.fileScope])];
     host.dependsOn = [...new Set([...host.dependsOn, ...t.dependsOn])];
     if (t.skills?.length) host.skills = [...new Set([...(host.skills ?? []), ...t.skills])];
