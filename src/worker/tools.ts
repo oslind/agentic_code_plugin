@@ -95,18 +95,33 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`), wrote: call.path };
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
-        const count = text.split(call.search).length - 1;
+        let { search, replace } = call;
+        let count = occurrences(text, search);
+        let note = "";
+        // Without structured output, qwen3:8b wrote "\\n" in its JSON, so the search had the two characters
+        // backslash and n where the file has line breaks, and never matched (e2e run 5: 30 minutes of retries).
+        if (count === 0 && writtenOutBreaks(search)) {
+          const unescaped = unescapeBreaks(search);
+          if (occurrences(text, unescaped) === 1) {
+            search = unescaped;
+            replace = unescapeBreaks(replace);
+            count = 1;
+            note = " Your search and replace text had \\n written out instead of line breaks; they were read as line breaks.";
+          }
+        }
         if (count !== 1) {
           return {
             ok: false,
             output:
               count === 0
-                ? `The search text was not found in ${call.path}. Read the file again and copy the text exactly, including indentation.`
+                ? `The search text was not found in ${call.path}. Read the file again and copy the text exactly, including indentation.${
+                    writtenOutBreaks(search) ? " Your search text has the two characters \\n where the file has line breaks: put real line breaks in it (one \\n in the JSON string, not two)." : ""
+                  }`
                 : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once.`,
           };
         }
-        await ctx.sandbox.writeFile(call.path, text.replace(call.search, () => call.replace));
-        return { ok: true, output: draftNote(call.path, "edit"), wrote: call.path };
+        await ctx.sandbox.writeFile(call.path, text.replace(search, () => replace));
+        return { ok: true, output: draftNote(call.path, "edit") + note, wrote: call.path };
       }
       case "run_check": {
         const check = ctx.checks.find((c) => c.name === call.name);
@@ -136,4 +151,18 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
  */
 export function draftNote(filePath: string, what: string): string {
   return `Drafted ${filePath} (${what}). This is a draft, not in the project yet: the user reviews it and decides whether to accept it. Do not say the file was created or updated; say it is ready for review.`;
+}
+
+function occurrences(text: string, search: string): number {
+  return search ? text.split(search).length - 1 : 0;
+}
+
+/** True when a text has line breaks written out as backslash-n and no real ones. */
+export function writtenOutBreaks(text: string): boolean {
+  return /\\n/.test(text) && !text.includes("\n");
+}
+
+/** Turns written-out \\n, \\r\\n and \\t into the characters they stand for. */
+export function unescapeBreaks(text: string): string {
+  return text.replace(/\\r\\n|\\n/g, "\n").replace(/\\t/g, "\t");
 }
