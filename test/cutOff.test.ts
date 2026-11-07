@@ -71,7 +71,7 @@ describe("a reply stopped at the length limit", () => {
     };
     const out = await callStructured({ provider, messages: [{ role: "user", content: "x" }], schema, schemaName: "t" });
     expect(out.reply).toBe("Two files changed: a.ts and b.ts.");
-    expect(sent[1]).toMatch(/cut off at the length limit/);
+    expect(sent[1]).toMatch(/cut off at the length limit[\s\S]* \/no_think$/);
   });
 });
 

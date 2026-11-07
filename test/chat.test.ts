@@ -12,7 +12,7 @@ import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
-import { buildCoordinatorMessages, coordinatorTurn, enforceMode, isGoAhead, isReadOnlyPlan, routeTurn } from "../src/chat/coordinatorChat";
+import { buildCoordinatorMessages, continueChange, coordinatorTurn, enforceMode, isGoAhead, isReadOnlyPlan, routeTurn } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
@@ -569,7 +569,7 @@ describe("ChatController", () => {
       expect(fixPrompt).toMatch(/fix-up round 1/);
       expect(fixPrompt).toMatch(/<untrusted_data[^>]*>[\s\S]*Add GET \/users\/:id to src\/api.ts/);
       // The instruction is the user's own message; the coordinator's model-written request only goes along fenced.
-      expect(fixPrompt).toMatch(/Request:\nFinish the user's request. The user wrote:\nadd users/);
+      expect(fixPrompt).toMatch(/Request:\nThis is fix-up round 1\.[\s\S]*the user's request was:\nadd users/);
       expect(fixPrompt).toMatch(/<untrusted_data source="the coordinator's summary of the request">\nAdd a User model and an API that uses it./);
       expect(fixPrompt.replace(/<untrusted_data[\s\S]*?<\/untrusted_data>/g, "")).not.toMatch(/Add a User model and an API/);
       expect(run.userRequest).toBe("add users");
@@ -632,6 +632,23 @@ describe("ChatController", () => {
       const state = await controller.state();
       expect(state.current!.entries.some((e) => e.tag === "not verified" && /sent sub-agents back 1 time/.test(e.text))).toBe(true);
       expect(state.done).toMatchObject({ status: "partial", text: expect.stringMatching(/not verified: 1 thing/) });
+    });
+
+    it("leaves out fix-up tasks for files that do not exist, that no task was planned for and that the user never named", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const invented = JSON.stringify({
+        tasks: [{ id: "fix-tests", title: "Update tests", instructions: "Expect 4 in the night test.", dependsOn: [], fileScope: ["test/thermostat.test.js"], changes: true }],
+      });
+      const { controller, started } = setup(
+        [...planReplies(), verdict("not_done", "Tests expect 3.", ["Update test/thermostat.test.js to expect 4."]), invented, finalReply],
+        "act",
+        { workspace: ws, saved: [], verify: true, verifyRounds: 1, during: finishAll },
+      );
+      await controller.send("add users");
+      expect(started).toHaveLength(1);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.some((e) => /left out 1 fix-up task\(s\) for files that do not exist[^:]*: test\/thermostat\.test\.js/.test(e.text))).toBe(true);
     });
 
     it("runs the checks on all drafts together and counts a failed check as not done, whatever the model says", async () => {
@@ -1055,6 +1072,17 @@ describe("ChatController", () => {
     expect(entries.some((e) => e.kind === "plan")).toBe(false);
     expect(entries.some((e) => e.kind === "research")).toBe(true);
     expect(entries.at(-1)).toMatchObject({ author: "coordinator", text: "There is one module, src/index.ts." });
+  });
+
+  it("keeps a change request as a plan even when the planner marks its task as only reading", async () => {
+    // Run 4: "Write docs/usage.md" came back as a changes:false task, ran as research, and claimed it created the file.
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    const docsPlan = JSON.stringify({ tasks: [{ id: "docs", title: "Write usage documentation", instructions: "Write docs/usage.md.", dependsOn: [], fileScope: ["docs/usage.md"], changes: false }] });
+    const { controller } = setup([turn("I'll have it drafted.", "plan", "Write docs/usage.md with a usage guide.", { goal: "change" }), docsPlan], "plan");
+    await controller.send("Write docs/usage.md with a usage guide");
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => e.kind === "plan")).toBe(true);
+    expect(entries.some((e) => e.kind === "research")).toBe(false);
   });
 
   it("first reads the code base, then plans a refactor that knows what research found", async () => {
@@ -2318,6 +2346,37 @@ describe("routing follows the model's own structured choice", () => {
     // Asking the user first is a real "none".
     const asks = { reply: "Should the guide cover night mode too?", action: "none" as const, request: "", goal: "change" as const, complete: true };
     expect(route(asks, "Write docs/usage.md")).toBe(asks);
+  });
+
+  it("turns an answer after research into a plan when the user first asked for a change", () => {
+    // qwen3:8b in the e2e suite: researched a bug fix, then answered "I've fixed it" with nothing changed.
+    const claimed = { reply: "I've fixed it by dividing by readings.length.", action: "none" as const, request: "", goal: "answer" as const, complete: true };
+    const out = continueChange(claimed, "change", "Fix average() in src/stats.js");
+    expect(out.action).toBe("plan");
+    expect(out.request).toMatch(/Fix average\(\)[\s\S]*readings\.length/);
+    // A question first, a research question, or a plan that already came: left alone.
+    const asks = { ...claimed, reply: "Should it ignore empty lists?" };
+    expect(continueChange(asks, "change", "Fix it")).toBe(asks);
+    expect(continueChange(claimed, "answer", "Why is it wrong?")).toBe(claimed);
+    expect(continueChange(claimed, undefined, "Fix it")).toBe(claimed);
+    // The first turn gave no goal, but the turn after research says it is a change.
+    expect(continueChange({ ...claimed, goal: "change" }, undefined, "Fix it").action).toBe("plan");
+  });
+
+  it("asks for the decision after research in a user turn that repeats the user's request", () => {
+    // Run 3 of the e2e suite: the prompt ended with the research reports as the coordinator's own message, and
+    // qwen3:8b went on writing a made-up plan, fix and passing tests, then answered "none".
+    const entries: ChatEntry[] = [
+      { id: "1", time: "", author: "user", text: "Fix average() in src/stats.js" },
+      { id: "2", time: "", author: "coordinator", text: "I'll have sub-agents read it." },
+      { id: "3", time: "", author: "coordinator", text: "Research finished. Reports: it divides by 2." },
+    ];
+    const after = buildCoordinatorMessages({ mode: "act", entries, answerFromResearch: true }, 8192);
+    const last = after.at(-1)!;
+    expect(last.role).toBe("user");
+    expect(last.content).toMatch(/Fix average\(\) in src\/stats\.js[\s\S]*Nothing has been changed yet/);
+    // Before research, the user's own message is the last turn, as always.
+    expect(buildCoordinatorMessages({ mode: "act", entries: entries.slice(0, 1) }, 8192).at(-1)!.content).toBe("Fix average() in src/stats.js");
   });
 
   it("leaves plain answers alone, whatever the reply says", () => {

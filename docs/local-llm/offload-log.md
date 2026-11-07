@@ -5,3 +5,28 @@ Every run of the end-to-end suite against a local model adds a line here (writte
 | Date (UTC) | Model | Task | Outcome |
 | --- | --- | --- | --- |
 | 2026-11-05 13:01 | qwen3-8b-16k (qwen3:8b, num_ctx 16384) | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review | 3/5 passed, 39 min, unloaded. change-final-reply: a request hung 27 min; draft-for-review: promise with action none |
+| 2026-11-05 18:51 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review | 2/5 passed, unloaded qwen3-8b-16k (row written by hand from the run report) |
+| 2026-11-05 20:23 | qwen3-8b-16k | e2e: new scenarios (run 2) | stopped on "pause" after 8 scenarios, 5 passed; unloaded (row written by hand from the run report) |
+| 2026-11-06 00:41 | qwen3-8b-16k | e2e: command-use, verify-fix, draft-for-review, project-skill-trusted, long-conversation, dependent-changes, stop-then-continue, command-denied, missing-script, question-then-answer, no-json-mode, research-not-change | 6/12 passed, 129.3 min, unloaded qwen3-8b-16k |
+| 2026-11-06 07:24 | qwen3-8b-16k | e2e: verify-fix, long-conversation, dependent-changes, stop-then-continue, question-then-answer, research-not-change | 3/6 passed, 88.5 min, unloaded qwen3-8b-16k |
+| 2026-11-06 09:03 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, draft-for-review, project-skill-trusted, project-skill-untrusted, small-context-change, cut-off-answer, parallel-changes, command-denied, missing-script, no-json-mode | 10/12 passed, 98.7 min, unloaded qwen3-8b-16k |
+| 2026-11-06 13:47 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review, project-skill-trusted, project-skill-untrusted, long-conversation, small-context-change, cut-off-answer, parallel-changes, dependent-changes, stop-then-continue, command-denied, missing-script, question-then-answer, no-json-mode, research-not-change | 15/18 passed, 223.0 min, unloaded qwen3-8b-16k |
+| 2026-11-06 14:51 | qwen3-8b-16k | e2e: dependent-changes, stop-then-continue, no-json-mode | 0/3 passed, 62.0 min, unloaded qwen3-8b-16k |
+| 2026-11-06 17:27 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review, project-skill-trusted, project-skill-untrusted, long-conversation, small-context-change, cut-off-answer, parallel-changes, command-denied, missing-script, question-then-answer, research-not-change | 14/15 passed, 155.9 min, unloaded qwen3-8b-16k |
+| 2026-11-06 18:58 | qwen3-8b-16k | e2e: parallel-changes, dependent-changes, stop-then-continue, no-json-mode | 2/4 passed, 90.5 min, unloaded qwen3-8b-16k |
+| 2026-11-06 19:27 | qwen3-8b-16k | e2e: parallel-changes, stop-then-continue | 1/2 passed, 28.3 min, unloaded qwen3-8b-16k |
+| 2026-11-06 19:57 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
+| 2026-11-06 20:30 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
+| 2026-11-06 20:50 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 19.8 min, unloaded qwen3-8b-16k |
+| 2026-11-06 21:15 | qwen3-8b-16k | e2e: parallel-changes (run 6 phase G, stopped on Oskar's pause after about 24 min; written by hand) | not finished, unloaded qwen3-8b-16k |
+| 2026-11-06 23:20 | qwen3-8b-16k | e2e: parallel-changes (run 6 phase H run 2 on d928280, stopped after about 3 min to move to the newest commit; written by hand) | not finished, unloaded qwen3-8b-16k |
+| 2026-11-06 23:43 | qwen3-8b-16k | e2e: parallel-changes | 1/1 passed, 22.5 min, unloaded qwen3-8b-16k |
+| 2026-11-07 02:31 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review, project-skill-trusted, project-skill-untrusted, long-conversation, small-context-change, cut-off-answer, parallel-changes, dependent-changes, stop-then-continue, command-denied, missing-script, question-then-answer, no-json-mode, research-not-change | 15/18 passed, 167.9 min, unloaded qwen3-8b-16k |
+| 2026-11-06 23:18 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
+| 2026-11-07 03:08 | qwen3-8b-16k | e2e: draft-for-review, stop-then-continue, research-not-change | 1/3 passed, 36.3 min, unloaded qwen3-8b-16k |
+| 2026-11-07 03:49 | qwen3-8b-16k | e2e: stop-then-continue, research-not-change | 2/2 passed, 38.3 min, unloaded qwen3-8b-16k |
+| 2026-11-07 03:57 | qwen3-8b-16k | e2e: research-not-change | 1/1 passed, 8.5 min, unloaded qwen3-8b-16k |
+| 2026-11-07 08:03 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review, project-skill-trusted, project-skill-untrusted, long-conversation, small-context-change, cut-off-answer, parallel-changes, dependent-changes, stop-then-continue, command-denied, missing-script, question-then-answer, no-json-mode, research-not-change | 16/18 passed, 147.8 min, unloaded qwen3-8b-16k |
+| 2026-11-07 08:34 | qwen3-8b-16k | e2e: parallel-changes, question-then-answer | 1/2 passed, 30.6 min, unloaded qwen3-8b-16k |
+| 2026-11-07 09:05 | qwen3-8b-16k | e2e: question-then-answer | 1/1 passed, 29.2 min, unloaded qwen3-8b-16k |
+| 2026-11-07 09:18 | qwen3-8b-16k | e2e: question-then-answer | 1/1 passed, 12.3 min, unloaded qwen3-8b-16k |

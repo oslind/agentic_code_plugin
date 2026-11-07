@@ -1,5 +1,6 @@
 import { SkillCatalog } from "../skills/catalog";
 import { promises as fs } from "fs";
+import { moduleStyleProblems } from "../changes/moduleStyle";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { CommandSink } from "../checks/commandTerminal";
@@ -182,6 +183,18 @@ export class Orchestrator {
       .filter((t): t is Task => !!t && t.status === "done" && !!t.summary)
       .map((t) => `- [report from sub-agent "${t.title}"] ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
     if (reports.length) parts.push(untrustedSection("The tasks you build on are done. Their reports:", "reports from the tasks you build on", reports.join("\n")));
+    // Run 6: another sub-agent's draft that cannot load was in this one's files, and its tests failed on it.
+    const broken = moduleStyleProblems((run.changes ?? []).filter((c) => c.status === "pending" && c.taskId !== task.id));
+    if (broken.length) {
+      const yours = (p: string) => task.fileScope.some((f) => p === f || p.startsWith(`${f.replace(/\/$/, "")}/`));
+      parts.push(
+        untrustedSection(
+          "Drafts of other sub-agents are in your files, not yet accepted, and these cannot load. If a file below is part of your task, fix it. If not, it is not yours to fix: when a test fails only because of it, finish and name it in your summary.",
+          "problems found in other sub-agents' drafts",
+          broken.map((b) => `- ${b}${task.fileScope.length && !yours(b.split(" ")[0] ?? "") ? " (not in your task)" : ""}`).join("\n"),
+        ),
+      );
+    }
     return parts.length ? parts.join("\n\n") : undefined;
   }
 
@@ -242,6 +255,7 @@ export class Orchestrator {
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
         askCoordinator: this.o.askCoordinator && ((q) => this.o.askCoordinator!(task, q, signal)),
         reviewResult: this.o.reviewResult && ((summary, skip) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id)), signal, skip)),
+        draftsNow: () => overlay.pending(task.id),
         // A question is usually about the drafts ("is this what you wanted?"), so show them first.
         beforeAsk: async () => void (await this.publishDrafts(task, overlay, published)),
         inbox: this.o.inbox && (() => this.o.inbox!(task.id)),

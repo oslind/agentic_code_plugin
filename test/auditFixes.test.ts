@@ -222,6 +222,20 @@ describe("bounded reads (audit finding 3)", () => {
     expect(res.output).toMatch(/only its first \d+ lines can be read/);
   });
 
+  it("replace_in_file reads written-out \\n as line breaks when only that matches, and says why it missed otherwise", async () => {
+    // e2e run 5, no-json-mode: without structured output the search came with "\\n" and never matched for 30 minutes.
+    await writeFile(path.join(repo, "convert.js"), "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\n\nmodule.exports = { toCelsius };\n");
+    const sandbox = await WorkspaceSandbox.create(repo);
+    const edit = (search: string, replace: string) => executeTool(toolCallSchema.parse({ tool: "replace_in_file", path: "convert.js", search, replace }), { sandbox, checks: [] });
+    const res = await edit("}\\n\\nmodule.exports = { toCelsius };", "}\\n\\nfunction toF(c) {\\n  return c;\\n}\\n\\nmodule.exports = { toCelsius, toF };");
+    expect(res.ok).toBe(true);
+    expect(res.output).toMatch(/read as line breaks/);
+    expect(await sandbox.readFile("convert.js")).toContain("}\n\nfunction toF(c) {\n  return c;\n}\n\nmodule.exports = { toCelsius, toF };\n");
+    const miss = await edit("nothing\\nhere", "x");
+    expect(miss.ok).toBe(false);
+    expect(miss.output).toMatch(/two characters \\n where the file has line breaks/);
+  });
+
   it("search skips files over its limit without loading them", async () => {
     await writeFile(path.join(repo, "huge.txt"), "needle\n" + "x".repeat(300 * 1024));
     await writeFile(path.join(repo, "small.txt"), "needle\n");

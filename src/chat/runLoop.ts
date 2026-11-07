@@ -8,7 +8,7 @@ import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
 import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
 import { compactConversation, compactionNote, planCompaction } from "./compaction";
-import { coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
+import { continueChange, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { AnswerCheck, Verification, verifyRoundLimit } from "../coordinator/verify";
@@ -216,6 +216,9 @@ export class RunLoop {
           "info",
           `Coordinator after research round ${round} of ${maxRounds} chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`,
         );
+        // The user asked for a change and research was the first step: answering now would leave it undone.
+        // qwen3:8b researched a bug fix, then answered "I've fixed it" with nothing changed.
+        answer = continueChange(answer, turn.goal, text);
         if (answer.action === "plan" || answer.action === "research") {
           await this.s.append(c.id, { author: "coordinator", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
         }
@@ -244,14 +247,16 @@ export class RunLoop {
         const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: t.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks, skills: await this.skillsFor(c.workspaceRoot) },
+          { request: t.request, userWords: userRequest, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks, skills: await this.skillsFor(c.workspaceRoot) },
           {
             signal: abort.signal,
             onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
             onThinking: (x) => (planThinking = x),
           },
         );
-        if (isReadOnlyPlan(result.plan.tasks)) {
+        // A request the coordinator called a change stays a plan, whatever the planner marked: run 4 sent
+        // "Write docs/usage.md" as a read-only task (changes: false), which then claimed it created the file.
+        if (isReadOnlyPlan(result.plan.tasks) && t.goal !== "change") {
           if (afterResearch && round >= maxRounds) {
             // Every research round for this message is used; reading again would only loop.
             await this.s.append(c.id, { author: "system", tone: "warning", text: "The plan only read files, which the research already did, so nothing was started. Say what should change, for example which file to edit." });
@@ -499,7 +504,7 @@ export class RunLoop {
     }
     const result = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
-      { question, reports, draft: draft?.reply, limitReached },
+      { question, reports, draft: draft?.reply, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [] },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);

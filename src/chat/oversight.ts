@@ -1,9 +1,10 @@
 import { TaskStore } from "../state/taskStore";
+import { draftProblemsOf } from "../changes/moduleStyle";
 import { Run, RunEvent, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
-import { MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { feedbackInScope, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -49,6 +50,11 @@ export class Oversight {
   readonly reviewRounds = new Map<string, number>();
   /** How each sub-agent's latest result came out of review, by "runId:taskId". An unreviewed result is never auto-accepted. */
   readonly reviewOutcomes = new Map<string, ReviewOutcome>();
+
+  /** The review outcome of each task of a run, for the team list the coordinator reads. */
+  private reviewOf(runId: string): (taskId: string) => ReviewOutcome | undefined {
+    return (taskId) => this.reviewOutcomes.get(`${runId}:${taskId}`);
+  }
   /**
    * A run used its model-call budget. Its sub-agents are stopped as with
    * Stop (drafts kept for review, never written automatically), and the
@@ -137,7 +143,7 @@ export class Oversight {
         activity: s.monitor.describe(task.id),
         notesSent,
         learned: learnedSoFar(scope) ?? fresh.briefing,
-        team: s.monitor.teamStatus(fresh.tasks, task.id),
+        team: s.monitor.teamStatus(fresh.tasks, task.id, this.reviewOf(run.id)),
       },
       { signal: s.abort.signal },
     );
@@ -177,7 +183,7 @@ export class Oversight {
     try {
       const c = await this.conversations.load(conversationId);
       const run = await this.tasks.load(runId);
-      const team = this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id);
+      const team = this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id, this.reviewOf(runId));
       // Only what belongs to this run: earlier, unrelated tasks in the same conversation stay out of reach.
       const scope = runScope(c.entries, runId);
       let result;
@@ -193,6 +199,7 @@ export class Oversight {
             briefing: run.briefing,
             team,
             earlier: earlierAnswers(scope),
+            fileTree: await this.host.fileTree(c.workspaceRoot, signal).catch(() => undefined),
           },
           { signal },
         );
@@ -277,7 +284,7 @@ export class Oversight {
             summary,
             drafts,
             learned: learnedSoFar(scope) ?? run.briefing,
-            team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id),
+            team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id, this.reviewOf(runId)),
             round,
             final,
           },
@@ -291,6 +298,17 @@ export class Oversight {
       signal.throwIfAborted();
       // It asked for changes without saying which: that is no review at all, so the user decides.
       if (result.adjusted) return await unreviewed("unclear", { thought: result.thought, thinking: clip(result.thinking) });
+      // A send-back for work in files the sub-agent may not change cannot be done: that part is left out.
+      if (result.verdict === "revise" && !research) {
+        const scoped = feedbackInScope(result.feedback, task.fileScope);
+        if (scoped.dropped.length) {
+          this.host.log("info", `Review of "${task.title}": left out a request for files outside its task: ${scoped.dropped.join(" ")}`);
+          result = scoped.kept.length >= 10 ? { ...result, feedback: scoped.kept } : { ...result, verdict: "accept", feedback: `Accepted: the review only asked for work in other tasks' files (${scoped.dropped.join(" ")})` };
+        }
+      }
+      // A draft that cannot load is never accepted, whatever the model said (run 4 and 5 accepted an ES import in a CommonJS file).
+      const problems = draftProblemsOf(drafts);
+      if (result.verdict === "accept" && problems.length) result = { ...result, verdict: "revise", feedback: problems.join("\n") };
       const revise = result.verdict === "revise";
       const outcome: ReviewOutcome = !revise ? "accepted" : final ? "not_accepted" : "sent_back";
       if (outcome === "sent_back") this.reviewRounds.set(key, round + 1);

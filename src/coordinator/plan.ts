@@ -17,7 +17,8 @@ const taskSchema = z.object({
     .min(10)
     .max(1200)
     .describe("What the worker must do, written so it can be done without seeing the other tasks"),
-  dependsOn: z.array(z.string()).describe("ids of tasks that must finish first"),
+  // Defaults to none: a one-task plan without it was rejected four times in e2e run 6.
+  dependsOn: z.array(z.string()).default([]).describe("ids of tasks that must finish first"),
   fileScope: z
     .array(z.string())
     .min(1)
@@ -143,6 +144,46 @@ export function repairPlan(plan: Plan): { plan: Plan; repairs: Repair[] } {
     }
   }
   return { plan: { tasks }, repairs };
+}
+
+/**
+ * Joins tasks that write the same files into one task. Used for fix-up rounds: run 6E planned "Fix median"
+ * and "Revert average" on the same src/stats.js, and the two sub-agents undid each other until the run timed out.
+ * Tasks that only read (empty file scope) are left alone.
+ */
+export function mergeSameFileTasks(tasks: PlannedTask[]): PlannedTask[] {
+  const out: PlannedTask[] = [];
+  const into = new Map<string, string>();
+  for (const t of tasks) {
+    const host = t.fileScope.length ? out.find((o) => o.fileScope.length && scopesOverlap(o.fileScope, t.fileScope)) : undefined;
+    if (!host) {
+      out.push({ ...t, dependsOn: [...t.dependsOn], fileScope: [...t.fileScope] });
+      continue;
+    }
+    into.set(t.id, host.id);
+    host.instructions = `${host.instructions}\n\nAlso (planned as a separate task on the same file; where the two disagree, follow the user's request and leave code it did not ask about as it is): ${t.instructions}`;
+    host.fileScope = [...new Set([...host.fileScope, ...t.fileScope])];
+    host.dependsOn = [...new Set([...host.dependsOn, ...t.dependsOn])];
+    if (t.skills?.length) host.skills = [...new Set([...(host.skills ?? []), ...t.skills])];
+    if (t.changes) host.changes = true;
+  }
+  for (const t of out) t.dependsOn = [...new Set(t.dependsOn.map((d) => into.get(d) ?? d))].filter((d) => d !== t.id);
+  return out;
+}
+
+/**
+ * Fix-up tasks that touch none of the files the missing work names, when other tasks do. Run 6H's fix-up plan
+ * added "Fix 'away' mode test" next to the one thing verification found missing (a duplicate median in stats.js).
+ * When no task's files are named, nothing is dropped: the missing work may not name files at all.
+ */
+export function offTargetTasks(tasks: PlannedTask[], missing: string[]): PlannedTask[] {
+  const text = missing.join("\n").toLowerCase();
+  const named = (t: PlannedTask) => t.fileScope.some((f) => {
+    const plain = f.replace(/\/\*\*?$|\*.*$/, "").toLowerCase();
+    const base = plain.split("/").pop() ?? "";
+    return (plain.length > 0 && text.includes(plain)) || (base.length > 2 && text.includes(base));
+  });
+  return tasks.some(named) ? tasks.filter((t) => t.fileScope.length > 0 && !named(t)) : [];
 }
 
 /** Groups tasks into waves that can run at the same time. */

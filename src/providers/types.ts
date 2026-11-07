@@ -14,6 +14,12 @@ export interface ChatRequest {
   jsonSchema?: { name: string; schema: Record<string, unknown> };
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Ask the server to answer without thinking. Sent as the fields local servers read for that (Ollama's
+   * reasoning_effort "none" and think false, vLLM's chat_template_kwargs.enable_thinking false); a server that
+   * rejects them is asked again without them.
+   */
+  noThinking?: boolean;
   signal?: AbortSignal;
   /**
    * Called while the reply is on its way, so the user can see the model is

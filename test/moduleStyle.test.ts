@@ -1,0 +1,75 @@
+import { describe, expect, it } from "vitest";
+import { loadWarning } from "../src/worker/tools";
+import { draftProblemsOf, moduleStyleProblems, undefinedExports } from "../src/changes/moduleStyle";
+import { draftsForReview } from "../src/coordinator/review";
+import { guardVerification } from "../src/coordinator/verify";
+
+const cjs = "const DEFAULT_TARGET = 21;\nfunction targetTemp() { return DEFAULT_TARGET - 3; }\nmodule.exports = { targetTemp, DEFAULT_TARGET };\n";
+// What qwen3:8b drafted in e2e runs 4 and 5.
+const mixed = cjs.replace("const DEFAULT_TARGET = 21;", "import { NIGHT_DROP, DEFAULT_TARGET } from './config';");
+
+describe("module style of drafts", () => {
+  it("flags a CommonJS file that a draft gave an ES import, and nothing else", () => {
+    expect(moduleStyleProblems([{ path: "src/thermostat.js", original: cjs, proposed: mixed }])).toEqual([expect.stringMatching(/^src\/thermostat\.js uses both import\/export and require\/module\.exports/)]);
+    expect(moduleStyleProblems([{ path: "src/thermostat.js", original: cjs, proposed: cjs.replace("21", "22") }])).toEqual([]);
+    expect(moduleStyleProblems([{ path: "src/config.mjs", original: null, proposed: "export const A = 1;\n" }])).toEqual([]);
+    // TypeScript compiles import to require, and a file that already mixed is not this draft's doing.
+    expect(moduleStyleProblems([{ path: "src/a.ts", original: null, proposed: mixed }])).toEqual([]);
+    expect(moduleStyleProblems([{ path: "src/b.js", original: mixed, proposed: `${mixed}\n// more` }])).toEqual([]);
+  });
+
+  it("flags a CommonJS draft with a syntax error, compiled but never run", () => {
+    // Run 5: new tests pasted after the closing brace of the tests object.
+    const tests = "const tests = {\n  a: () => 1,\n};\nmodule.exports = tests;\n";
+    const broken = tests.replace("};", "};\n  'median of odd array': () => 3,\n};");
+    expect(moduleStyleProblems([{ path: "test.js", original: tests, proposed: broken }])).toEqual([expect.stringMatching(/^test\.js has a syntax error/)]);
+    expect(moduleStyleProblems([{ path: "test.js", original: tests, proposed: "#!/usr/bin/env node\n" + tests }])).toEqual([]);
+    // Never run: a draft that would throw or loop when run still only compiles.
+    expect(moduleStyleProblems([{ path: "x.js", original: null, proposed: "while (true) {}\nthrow new Error('x');\n" }])).toEqual([]);
+  });
+
+  it("puts the problem after the diffs, where review and verification read it, and verification is never done with it", () => {
+    const drafts = draftsForReview([{ path: "src/thermostat.js", original: cjs, proposed: mixed }]);
+    const problems = draftProblemsOf(drafts);
+    expect(problems).toHaveLength(1);
+    const v = guardVerification({ verdict: "done", verified: "All good.", missing: [] }, { checks: [], tasks: [], drafts });
+    expect(v.verified).toBe(false);
+    expect(v.missing[0]).toMatch(/src\/thermostat\.js uses both/);
+    expect(draftProblemsOf(draftsForReview([{ path: "src/x.js", original: cjs, proposed: cjs }]))).toEqual([]);
+  });
+});
+
+describe("warning a sub-agent right after a write that breaks a file", () => {
+  it("warns when an edit leaves code after the closing brace, and not for files that already had the problem", () => {
+    const before = "function toC(f) {\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toC };\n";
+    const after = "function toC(f) {\n  return (f - 32) / 1.8;\n}\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toC };\n";
+    expect(loadWarning("convert.js", before, after)).toMatch(/^\nWarning: convert\.js has a syntax error[\s\S]*write it again whole with write_file[\s\S]*instead of patching it further\.$/);
+    expect(loadWarning("convert.js", after, after + "\n")).toBe("");
+    expect(loadWarning("convert.js", null, before)).toBe("");
+    expect(loadWarning("notes.md", null, "}")).toBe("");
+    const big = "// line\n".repeat(100);
+    expect(loadWarning("convert.js", big + before, big + after)).toMatch(/Read the file and fix it before you finish\.$/);
+  });
+});
+
+describe("exports of names a file never defines", () => {
+  it("finds a name in module.exports or export { } that is defined nowhere, and nothing else", () => {
+    expect(undefinedExports("function toC(f) { return f; }\nmodule.exports = { toC, toKelvin };\n")).toEqual(["toKelvin"]);
+    expect(undefinedExports("const toK = (c) => c + 273.15;\nfunction toC(f) { return f; }\nmodule.exports = { toC, toK };\n")).toEqual([]);
+    expect(undefinedExports("const { a } = require('./x');\nmodule.exports = { a, b: a };\n")).toEqual([]);
+    expect(undefinedExports("// toKelvin later\nmodule.exports = { toKelvin };\n")).toEqual(["toKelvin"]);
+    expect(undefinedExports("function median(xs) {}\nexport { median, mode };\n")).toEqual(["mode"]);
+    expect(undefinedExports("export { a } from './a.js';\n")).toEqual([]);
+    expect(undefinedExports("obj.toKelvin = 1;\nmodule.exports = { toKelvin };\n")).toEqual(["toKelvin"]);
+  });
+
+  it("makes a draft that adds such an export a problem, and the write warns about it", () => {
+    const before = "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\nmodule.exports = { toCelsius };\n";
+    const after = before.replace("{ toCelsius }", "{ toCelsius, toKelvin }");
+    expect(moduleStyleProblems([{ path: "src/convert.js", original: before, proposed: after }])).toEqual([
+      "src/convert.js exports toKelvin but never defines it, so loading it throws a ReferenceError. Write the missing code.",
+    ]);
+    expect(loadWarning("src/convert.js", before, after)).toMatch(/Warning: src\/convert\.js exports toKelvin but never defines it/);
+    expect(moduleStyleProblems([{ path: "src/convert.js", original: after, proposed: after + "\n" }])).toEqual([]);
+  });
+});

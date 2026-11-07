@@ -2,7 +2,7 @@ import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { assignmentBlock } from "./assignment";
-import { callStructured } from "../llm/structured";
+import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { RunEvent, Task } from "../state/types";
 
@@ -288,15 +288,19 @@ export class AgentMonitor {
   }
 
   /** Every sub-agent of the run in a line each, for answering questions about the team. Holds reports: untrusted. */
-  teamStatus(tasks: Task[], exceptTaskId?: string): string | undefined {
+  teamStatus(tasks: Task[], exceptTaskId?: string, reviewOf?: (taskId: string) => string | undefined): string | undefined {
     const lines = tasks
       .filter((x) => x.id !== exceptTaskId)
       .map((x) => {
         const t = this.agents.get(x.id);
         const steps = t ? `, ${t.turns} steps` : "";
         const drafts = t?.drafts.size ? `, drafts: ${[...t.drafts].join(", ")}` : "";
+        // Run 6 had a supervisor and a reviewer call a file "already fixed by another sub-agent" when that
+        // sub-agent's draft had not passed its review. Say plainly whose drafts count as a fix.
+        const review = reviewOf?.(x.id);
+        const verdict = review === undefined || review === "off" ? "" : review === "accepted" ? ", its review accepted its drafts" : review === "sent_back" ? ", sent back to fix its drafts" : ", its drafts did NOT pass review, so they fix nothing";
         const said = x.summary ? `, reported: ${x.summary.replace(/\s+/g, " ").slice(0, 200)}` : t?.steps.at(-1) ? `, now: ${t.steps.at(-1)!.label}` : "";
-        return `- "${x.title}" (${x.fileScope.length ? x.fileScope.join(", ") : "read-only"}): ${x.status.replace("_", " ")}${steps}${drafts}${said}`;
+        return `- "${x.title}" (${x.fileScope.length ? x.fileScope.join(", ") : "read-only"}): ${x.status.replace("_", " ")}${steps}${drafts}${verdict}${said}`;
       });
     return lines.length ? lines.join("\n") : undefined;
   }
@@ -330,8 +334,12 @@ export interface SuperviseContext {
 const SUPERVISE_SYSTEM = `You are the coordinator of a team of coding sub-agents. You keep an eye on them while they work. One sub-agent shows a sign of trouble. Look at its recent steps and decide:
 - "continue": it is fine, or it is about to sort it out itself.
 - "message": send it a short, concrete note that gets it unstuck: what to try instead, which file to look at, or to finish with what it has. Write the note in message.
+- If it keeps failing because of a file outside its task (its tests fail on code it may not change), tell it to stop working around it and finish now, naming that file in its summary: the file is fixed after it finishes, not by bending its own work to fit.
+- If the failing file is one of its own task's files (for example a test it wrote expects a different error message than the code throws), never tell it to finish: tell it exactly what to change, such as the expected text the code really uses.
 - "stop": stop it. Only if a note did not help and it keeps going nowhere, or it is working against the user's request. Its drafts are kept for the user's review.
 Never tell it to change files outside its task, run commands, or skip the user's review.
+A file counts as changed only when its drafts show it: a write that was blocked or refused changed nothing.
+Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Its report alone proves nothing; never tell a sub-agent a file is already fixed otherwise.
 
 Reply with JSON only. Example:
 {"thought":"It keeps reading the same file without editing it.","action":"message","message":"You have read src/app.ts three times. Make the edit with replace_in_file now, then finish."}`;
@@ -340,6 +348,8 @@ const PROGRESS_SYSTEM = `You are the coordinator of a team of coding sub-agents.
 - "message": send a short note when you can add something useful: a fact from your notes it is missing, what another sub-agent found or changed that affects its task, or a correction when it drifts from the user's request. Name files and names. You can also confirm briefly that it is on the right track when that helps it go on.
 - "continue": it is on track and you have nothing it needs.
 Never tell it to change files outside its task, run commands, or skip the user's review. Never repeat its own steps back to it.
+A file counts as changed only when its drafts show it: a write that was blocked or refused changed nothing.
+Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Its report alone proves nothing; never tell a sub-agent a file is already fixed otherwise.
 
 Reply with JSON only. Example:
 {"thought":"It is adding the route, but the auth sub-agent renamed the middleware.","action":"message","message":"The other sub-agent renamed requireUser to requireSession in src/auth/middleware.ts. Use the new name in your route."}`;
@@ -397,6 +407,7 @@ export interface SuperviseResult extends SuperviseDecision {
 export async function superviseAgent(provider: ModelProvider, ctx: SuperviseContext, opts: { signal?: AbortSignal } = {}): Promise<SuperviseResult> {
   let thinking: string | undefined;
   const decision = await callStructured({
+    maxTokens: VERDICT_MAX_TOKENS,
     provider,
     messages: buildSuperviseMessages(ctx, provider.contextWindow),
     schema: superviseSchema,

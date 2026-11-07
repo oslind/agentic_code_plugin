@@ -251,6 +251,21 @@ describe("sub-agents and skills", () => {
     expect(events.filter((e) => e.type === "skill").map((e) => e.data?.name)).toEqual(["python", "conventions", "cmake"]);
   });
 
+  it("always gives a coding sub-agent the project's trusted AGENTS.md, even when the planner did not pick it", async () => {
+    const root = await tmp();
+    const agents: Skill = { ...skill("project-conventions", "project", ["coder", "research"], "Every new function gets a JSDoc comment."), file: "AGENTS.md" };
+    const catalog = new SkillCatalog([...builtinSkills(), agents, skill("other-rules", "project", ["coder"], "Unrelated.")]);
+    const p = scripted([turn({ tool: "finish", summary: "done" })]);
+    const events: { type: string; data?: Record<string, unknown> }[] = [];
+    const worker = new Worker({ provider: p, sandbox: await WorkspaceSandbox.create(root), task: task(["javascript-typescript"]), checks: [], approve: async () => false, log: (type, _m, data) => events.push({ type, data }), skills: catalog });
+    await worker.run();
+    const first = p.requests[0]!.messages[1]!.content;
+    expect(first).toMatch(/Skill "javascript-typescript"[\s\S]*Every new function gets a JSDoc comment/);
+    // A project skill file that is not AGENTS.md or .clinerules is still only offered.
+    expect(first).not.toMatch(/Unrelated\./);
+    expect(events.filter((e) => e.type === "skill").map((e) => e.data?.name)).toEqual(["javascript-typescript", "project-conventions"]);
+  });
+
   it("has no load_skill tool without skills", async () => {
     const p = scripted([turn({ tool: "finish", summary: "done" })]);
     const worker = new Worker({ provider: p, sandbox: await WorkspaceSandbox.create(await tmp()), task: task(), checks: [], approve: async () => false, log: () => undefined });
