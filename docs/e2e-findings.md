@@ -75,7 +75,7 @@ Also seen: some worker calls ran about 350 s and returned nothing, which made a 
 | D | 0dd9fc3 | 1 of 2: stop-then-continue passed |
 | E | c85ff3e | 0 of 1: parallel-changes |
 
-Every scenario passed at least once in run 6 except parallel-changes, which failed in phases B to E on a different cause each time.
+Every scenario passed at least once in run 6 except parallel-changes, which failed in phases B to F and H1 on a different cause each time, then passed in H2 (893021c).
 
 | Where | What happened | Fix |
 | --- | --- | --- |
@@ -87,10 +87,21 @@ Every scenario passed at least once in run 6 except parallel-changes, which fail
 | Tests vs code | Verification asked to change the code to fit a test's made-up error message. | When a test and the code disagree on a detail the user did not name, the test is fixed. |
 | Slow calls | Review, verification and plan calls sometimes thought for about 6 minutes and returned nothing. | Token caps: 4096 for verdicts, 6144 for plans; the retry asks for no thinking. Worker calls are not capped. |
 
+## Run 7: all 18 on 893021c: 15 of 18 passed; the 3 failures then passed on 2ae5efe and 635d9cc
+
+| Scenario | Run 7 | Rerun | Fix |
+| --- | --- | --- | --- |
+| draft-for-review | Fail: "I want to review it before it is saved" was answered with the text in chat. | Pass (7B) | Writing a file is always a change plan; drafts wait under Changes. |
+| stop-then-continue | Fail (timeout): reviews sent the stats.js task back for tests in test.js; three empty verification calls. | Pass (7C) | Send-back sentences naming only files outside the task are dropped by rule; retries ask the server not to think. |
+| research-not-change | Fail: listed files from the file tree without researching. | Pass twice (7C) | "Which files would change / how would I add" starts with research. |
+
+Ollama 0.40.13 ignores "/no_think" in the prompt and `think: false` on /v1, but honours `reasoning_effort: "none"` (12 tokens instead of 174 for "Say hi"). Since 807c87b, retries after a reply that thought until the cap send it.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
 2. Reviews sometimes send back correct work with nonsense requests.
 3. A reply cut off at the 8192 cap gives the user no visible sign; the step is retried quietly.
 4. Final replies of parallel runs can contradict themselves.
-5. Worker calls can still think for about 6 minutes with nothing to show; parallel-changes is close to the 30-minute limit.
+5. Worker calls can still think for about 6 minutes with nothing to show; parallel-changes and stop-then-continue run close to the 30-minute limit.
+6. Reviews sometimes contradict each other on code outside the task (average() in stats.js).
