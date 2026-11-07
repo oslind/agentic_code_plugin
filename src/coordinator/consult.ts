@@ -46,6 +46,8 @@ export interface ConsultContext {
   team?: string;
   /** Earlier questions from sub-agents and their answers in this conversation, including what the user decided. */
   earlier?: string;
+  /** The project's file tree. Untrusted (file names). Run 8: answers named test files that do not exist. */
+  fileTree?: string;
 }
 
 const SYSTEM = `You are the coordinator of a team of coding sub-agents working in the user's project. You planned the work and gave each sub-agent one task. You know things they do not: what the user said, what earlier research found, the whole plan and what the other sub-agents are doing.
@@ -94,6 +96,8 @@ export function buildConsultMessages(ctx: ConsultContext, contextWindow: number)
   if (briefing) untrusted.push(dataBlock("what you told the sub-agents when planning", briefing));
   const team = fit(ctx.team, 800);
   if (team) untrusted.push(dataBlock("what the other sub-agents are doing", team));
+  const tree = fit(ctx.fileTree, 800);
+  if (tree) untrusted.push(`${dataBlock("the project's file tree", tree)}\nName only files from this tree; never guess a path.`);
   if (untrusted.length) parts.push(`Your notes:\n${DATA_RULE}\n${untrusted.join("\n")}`);
 
   const question = `${untrustedSection("The sub-agent asks you:", "the sub-agent's question", ctx.question)}\n\nAnswer it with JSON only. ${DATA_REMINDER}`;

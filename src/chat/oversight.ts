@@ -199,6 +199,7 @@ export class Oversight {
             briefing: run.briefing,
             team,
             earlier: earlierAnswers(scope),
+            fileTree: await this.host.fileTree(c.workspaceRoot, signal).catch(() => undefined),
           },
           { signal },
         );

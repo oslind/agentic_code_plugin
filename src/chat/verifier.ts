@@ -193,6 +193,7 @@ export class Verifier {
       drafts: draftsForReview([...newest.values()]),
       checks: results,
       round,
+      fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
       ...(await this.compareWithProject(conversationId, workspaceRoot, runId, failedCommandsOf(runScope(c.entries, runId)), checks, signal)),
     };
     let v: Verification;

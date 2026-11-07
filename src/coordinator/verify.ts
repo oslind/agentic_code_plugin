@@ -80,6 +80,8 @@ export interface VerifyContext {
   preexistingFailures?: { line: string; output: string }[];
   /** Failed commands that could not be compared with the project without the drafts (not approved, or nothing to compare). */
   uncomparedFailures?: { line: string; output: string }[];
+  /** The project's file tree. Untrusted (file names). Run 8: verification named test files that do not exist. */
+  fileTree?: string;
 }
 
 /** Why the user has to look at the work themselves when verification could not name anything to fix. */
@@ -194,6 +196,8 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   failures.forEach(({ c, how }, i) => {
     evidence.push(`Command ${i + 1} a sub-agent ran failed the last time it ran. It ${how}. Its line and the end of its output:\n${dataBlock(`failed command ${i + 1}`, `$ ${commandLine(c)}\n${fit(c.output, 400) ?? "(no output)"}`)}`);
   });
+  const tree = fit(ctx.fileTree, 1200);
+  if (tree) evidence.push(`The project's files. Name only these files (or files in the drafts) in missing; never guess a path:\n${dataBlock("the project's file tree", tree)}`);
   parts.push(`The evidence:\n${DATA_RULE}\n${evidence.join("\n")}`);
   parts.push(`Decide with JSON only. ${DATA_REMINDER}`);
   return [
