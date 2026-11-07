@@ -95,6 +95,8 @@ export interface HarnessOptions {
   /** Folder for the transcript, model calls and command log. Not written when unset. */
   outDir?: string;
   log?: (message: string) => void;
+  /** Looks at the project once the drafts are accepted, even when the run was stopped or timed out (the benchmark scores it there). */
+  inspect?: (run: ScenarioRun) => Promise<void>;
 }
 
 export interface ScenarioResult {
@@ -108,6 +110,8 @@ export interface ScenarioResult {
   done?: DoneBar;
   calls: RecordedCall[];
   transcript: string;
+  /** The coordinator's last message to the user. */
+  answer?: string;
 }
 
 const DEFAULT_ANSWER = "I have nothing to add to my request. Use your best judgment, check the project files yourself if something is unclear, and finish without asking me again.";
@@ -315,6 +319,7 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
   }, 1000);
 
   let transcript = "";
+  let answer: string | undefined;
   let done: DoneBar | undefined;
   try {
     let confirmed = false;
@@ -373,6 +378,18 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
     transcript = transcriptOf(entries);
     done = state.done;
     const lastCoordinator = [...entries].reverse().find((e) => e.author === "coordinator");
+    answer = lastCoordinator?.text;
+    const run: ScenarioRun = {
+      workspace: root,
+      state,
+      entries,
+      lastCoordinator,
+      cards,
+      calls: provider.calls,
+      read: (rel) => fs.readFile(path.join(root, rel), "utf8").catch(() => undefined),
+      sh: (command, args) => sh(root, command, args),
+    };
+    if (opts.inspect) await opts.inspect(run);
 
     // What every scenario must do: end, end cleanly, and end with a clear answer.
     if (!stopped) {
@@ -393,18 +410,7 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
       if (scenario.endsWithAnswer !== false && lastCoordinator?.kind !== "answer") {
         failures.push(`the coordinator's last message is not an answer or final reply: [${lastCoordinator?.kind ?? "none"}] ${lastCoordinator?.text.slice(0, 200) ?? ""}`);
       }
-      failures.push(
-        ...(await scenario.expect({
-          workspace: root,
-          state,
-          entries,
-          lastCoordinator,
-          cards,
-          calls: provider.calls,
-          read: (rel) => fs.readFile(path.join(root, rel), "utf8").catch(() => undefined),
-          sh: (command, args) => sh(root, command, args),
-        })),
-      );
+      failures.push(...(await scenario.expect(run)));
     }
   } catch (err) {
     failures.push(`the harness failed: ${(err as Error).stack ?? (err as Error).message}`);
@@ -424,6 +430,7 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
     done,
     calls: provider.calls,
     transcript,
+    answer,
   };
   if (opts.outDir) {
     await fs.mkdir(opts.outDir, { recursive: true });
