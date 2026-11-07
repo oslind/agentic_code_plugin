@@ -117,9 +117,9 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
             ok: false,
             output:
               count === 0
-                ? `The search text was not found in ${call.path}. Read the file again and copy the text exactly, including indentation.${
+                ? `The search text was not found in ${call.path}.${
                     writtenOutBreaks(search) ? " Your search text has the two characters \\n where the file has line breaks: put real line breaks in it (one \\n in the JSON string, not two)." : ""
-                  }`
+                  }${nearestMatch(text, search) ?? " Read the file again and copy the text exactly, including indentation."}`
                 : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once.`,
           };
         }
@@ -171,6 +171,29 @@ export function draftNote(filePath: string, what: string): string {
 
 function occurrences(text: string, search: string): number {
   return search ? text.split(search).length - 1 : 0;
+}
+
+/**
+ * Where a missed search nearly matches, and the first line that differs, so
+ * the model copies the real text. Run 9: told only "not found", qwen kept
+ * guessing at line breaks (and wrote that belief into its step notes) while
+ * the real difference was a changed line.
+ */
+export function nearestMatch(text: string, search: string): string | undefined {
+  const want = search.split("\n");
+  const first = want.findIndex((l) => l.trim().length > 0);
+  if (first < 0) return undefined;
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => l.trim() === want[first]!.trim());
+  if (at < 0) return undefined;
+  const start = at - first;
+  const shown = lines.slice(Math.max(0, start), Math.max(0, start) + want.length);
+  const differs = want.findIndex((l, i) => l !== (lines[start + i] ?? ""));
+  const diff =
+    differs >= 0
+      ? ` Line ${differs + 1} of your search differs: you wrote ${JSON.stringify(want[differs]!.slice(0, 160))}, the file has ${lines[start + differs] === undefined ? "nothing (the file ends)" : JSON.stringify(lines[start + differs]!.slice(0, 160))}.`
+      : "";
+  return `${diff} The file has these lines there (line ${Math.max(0, start) + 1} on); copy them exactly:\n${shown.join("\n").slice(0, 2000)}`;
 }
 
 /** True when a text has line breaks written out as backslash-n and no real ones. */

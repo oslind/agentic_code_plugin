@@ -245,3 +245,23 @@ describe("verification with project conventions", () => {
     expect(user).toMatch(/must follow them[\s\S]*JSDoc right above every function/);
   });
 });
+
+describe("removals nobody asked for", () => {
+  it("drops a missing item that removes something when the user asked for no removal", async () => {
+    const { guardVerification, unaskedRemovals } = await import("../src/coordinator/verify");
+    const v = guardVerification(
+      { verdict: "not_done", verified: "", missing: ["Fix the JSDoc syntax in src/thermostat.js (missing closing */)", "Remove the extra comment on DEFAULT_TARGET in src/thermostat.js"] },
+      { checks: [], tasks: [], userMessages: ["Add a JSDoc comment above every function. Do not change any code."] },
+    );
+    expect(v.missing).toEqual(["Fix the JSDoc syntax in src/thermostat.js (missing closing */)"]);
+    expect(unaskedRemovals(["Remove the debug log"], ["Remove the debug logging from src/a.js"])).toEqual([]);
+  });
+
+  it("needs the user's review when removals were all it named", async () => {
+    const { guardVerification } = await import("../src/coordinator/verify");
+    const v = guardVerification({ verdict: "not_done", verified: "", missing: ["Delete the comment on line 2"] }, { checks: [], tasks: [], userMessages: ["Add JSDoc comments."] });
+    expect(v.verified).toBe(false);
+    expect(v.manualReview).toBe(true);
+    expect(v.adjusted).toMatch(/remove things you did not ask/);
+  });
+});

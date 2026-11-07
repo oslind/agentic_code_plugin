@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadWarning } from "../src/worker/tools";
+import { loadWarning, nearestMatch } from "../src/worker/tools";
 import { draftProblemsOf, moduleStyleProblems, undefinedExports } from "../src/changes/moduleStyle";
 import { draftsForReview } from "../src/coordinator/review";
 import { guardVerification } from "../src/coordinator/verify";
@@ -71,5 +71,18 @@ describe("exports of names a file never defines", () => {
     ]);
     expect(loadWarning("src/convert.js", before, after)).toMatch(/Warning: src\/convert\.js exports toKelvin but never defines it/);
     expect(moduleStyleProblems([{ path: "src/convert.js", original: after, proposed: after + "\n" }])).toEqual([]);
+  });
+});
+
+describe("a search that was not found", () => {
+  const file = "// The heating target.\nconst DEFAULT_TARGET = 21;\n\nfunction targetTemp(mode) {\n  return mode === 'night' ? DEFAULT_TARGET - 3 : DEFAULT_TARGET;\n}\n";
+  it("shows where it nearly matches and the first line that differs", () => {
+    const hint = nearestMatch(file, "function targetTemp(mode) {\n  return mode === 'night' ? DEFAULT_TARGET - 2 : DEFAULT_TARGET;\n}");
+    expect(hint).toMatch(/Line 2 of your search differs/);
+    expect(hint).toMatch(/DEFAULT_TARGET - 3/);
+    expect(hint).toMatch(/line 4 on/);
+  });
+  it("says nothing when no line of the search is in the file", () => {
+    expect(nearestMatch(file, "function other() {}")).toBeUndefined();
   });
 });

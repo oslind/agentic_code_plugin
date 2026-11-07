@@ -109,6 +109,10 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
 ## Run 9: all 18 on b591bb8 (in progress)
 
 - **project-skill-trusted failed:** it passed in runs 5 to 8. The sub-agent had the trusted AGENTS.md and wrote a JSDoc, but inside the function body. The review accepted it: the review prompt never contained the convention, and neither did verification. Fixed: `conventionsText()` (src/skills/catalog.ts) gives the trusted AGENTS.md and .clinerules, fenced, to the review and the verification.
+- **small-context-change failed:** it timed out after 30 minutes. It passed in runs 5 to 8. The thermostat.js sub-agent left an unclosed JSDoc. Verification then took the file's original top comment for an addition and asked to remove it. The fix-up removed it, and the review asked to restore it, so the run looped until the timeout. Fixed in three places:
+  - `unaskedRemovals` drops "remove/delete …" items from verification unless the user asked to remove something (when nothing else is left, the result goes to manual review);
+  - both prompts now say that lines in the original file, comments included, were not added by a sub-agent;
+  - a missed `replace_in_file` now shows the nearest matching lines and the first line that differs (`nearestMatch`). Before, qwen kept "fixing line breaks" that were never the problem, and wrote that belief into its step notes.
 
 ## Still open
 

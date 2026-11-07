@@ -116,7 +116,7 @@ Compare what the user asked with the drafts and the check results. The reports a
 - "done": every part the user asked for is in the drafts (or the reports show nothing needed changing), and no check failed.
 - "not_done": a part of the request is missing or wrong in the drafts, a check failed, or a task did not finish. List each thing still left in "missing", naming files, so a sub-agent can fix it.
 A command a sub-agent ran that failed (for example its tests) counts like a failed check only when the evidence says the drafts caused it. A failure that was there before the request is never missing work and never a reason for not_done: name it in "verified" so the user hears about it.
-Missing work is only what the user's request asked for. Never name removing or rewriting code, or installing a package, as missing unless the user asked for that. A bug you notice in code the request did not ask about (for example an old function that was already wrong) is never missing work, even when a sub-agent fixed it and a review asked to undo that: mention it in verified instead.
+Missing work is only what the user's request asked for. Never name removing or rewriting anything the original files had (code, comments, blank lines), or installing a package, as missing unless the user asked for that. Only + lines in the diff are new: a line that is in the original file was not added by a sub-agent. A bug you notice in code the request did not ask about (for example an old function that was already wrong) is never missing work, even when a sub-agent fixed it and a review asked to undo that: mention it in verified instead.
 When a new test and the code disagree on a detail the user did not name (an error message, a wording), the test is what is wrong: name the test as missing work, never ask to change the code to fit it.
 Commands the sub-agents ran during their tasks do not show that the final drafts pass: a later task may have changed files since. Only the checks on all drafts together show that. With no checks set up, never write that all tests passed.
 A draft that would not load or run is not done: for example ES import/export in a file or project that uses require and module.exports, or an import of a file or name that does not exist. With no checks run, look for this yourself.
@@ -218,12 +218,30 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
  * stays not verified and asks for the user's review: a reviewer that says
  * "not done" is never turned into "verified" because it could not say why.
  */
-export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string }): Omit<Verification, "thinking"> {
+/** A missing item that asks to take something out. */
+const REMOVAL = /^\W*(remove|delete|drop|strip|get rid of|take out)\b/i;
+/** The user asked to take something out themselves. */
+const USER_REMOVES = /\b(remove|delete|drop|strip|get rid of|take out|ta bort|radera)\b/i;
+
+/**
+ * Missing items that ask to remove something the user never asked to remove.
+ * Run 9: verification took an original comment for an addition and asked to
+ * remove it; the review then asked to restore it, and the run looped until it
+ * timed out. Undoing an unasked change is a review's job ("restore the lines").
+ */
+export function unaskedRemovals(missing: string[], userMessages: string[] | undefined): string[] {
+  if (!userMessages || USER_REMOVES.test(userMessages.join("\n"))) return [];
+  return missing.filter((m) => REMOVAL.test(m));
+}
+
+export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[] }): Omit<Verification, "thinking"> {
   const failed = ctx.checks.filter((c) => !c.passed && !c.skipped);
   const unfinished = ctx.tasks.filter((t) => t.unfinished !== undefined);
   // Run 6D: verification called the run done while the toKelvin task's review had said the function was missing.
   const rejected = ctx.tasks.filter((t) => t.unfinished === undefined && t.notAccepted !== undefined);
   let missing = d.missing.map((m) => m.replace(/\s+/g, " ").trim()).filter((m) => m.length >= 5);
+  const removals = unaskedRemovals(missing, ctx.userMessages);
+  missing = missing.filter((m) => !removals.includes(m));
   const forced: string[] = [
     ...draftProblemsOf(ctx.drafts ?? ""),
     ...failed.map((c) => `Make the "${checkName(c.name)}" check pass on all drafts together.`),
@@ -238,7 +256,8 @@ export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "c
     return { verified: false, evidence, summary, missing, thought: d.thought, adjusted };
   }
   if (d.verdict === "not_done" && missing.length === 0) {
-    return { verified: false, evidence, summary, missing: [], thought: d.thought, manualReview: true, adjusted: "It said not done but named nothing that is missing, so the work stays unverified and needs your review." };
+    const why = removals.length ? "only asked to remove things you did not ask to remove" : "named nothing that is missing";
+    return { verified: false, evidence, summary, missing: [], thought: d.thought, manualReview: true, adjusted: `It said not done but ${why}, so the work stays unverified and needs your review.` };
   }
   return { verified: d.verdict === "done", evidence, summary, missing: d.verdict === "done" ? [] : missing, thought: d.thought };
 }
