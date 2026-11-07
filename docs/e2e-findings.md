@@ -97,6 +97,15 @@ Every scenario passed at least once in run 6 except parallel-changes, which fail
 
 Ollama 0.40.13 ignores "/no_think" in the prompt and `think: false` on /v1, but honours `reasoning_effort: "none"` (12 tokens instead of 174 for "Say hi"). Since 807c87b, retries after a reply that thought until the cap send it.
 
+## Run 8: all 18 on 9457cf5: 16 of 18 passed; both failures then passed on newer commits
+
+| Scenario | Run 8 | Rerun | Fix |
+| --- | --- | --- | --- |
+| parallel-changes | Partial: told to undo an average() change, the sub-agent deleted average(); verification then asked to remove it. | Pass (8B, 1b24703) | Send-backs show the drafts against the original file; reviews ask to restore, never delete; verification never asks to remove code. |
+| question-then-answer | Partial: verification and coordinator answers invented test/thermostat.test.js (the tests are in test.js). | Pass twice (8C, c95b93d) | Verification and answers get the file tree; fix-up tasks for files that do not exist are left out. |
+
+Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a worker pick 5 degrees), and a test task switched test.js to mocha. Prompt rules for both are in 18677b2, not yet run live.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
