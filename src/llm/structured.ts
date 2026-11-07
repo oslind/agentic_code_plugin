@@ -131,9 +131,11 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
   let lastReply = "";
   let lastError = "";
 
+  // After a reply that thought until the length limit, the retries ask the server not to think.
+  let thinkingCutOff = false;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     options.onAttempt?.(attempt, attempt > 0 ? lastError : undefined);
-    const reply = await provider.chat({ messages, jsonSchema: { name: schemaName, schema: jsonSchema }, signal, maxTokens: options.maxTokens });
+    const reply = await provider.chat({ messages, jsonSchema: { name: schemaName, schema: jsonSchema }, signal, maxTokens: options.maxTokens, noThinking: thinkingCutOff || undefined });
     lastReply = reply.content;
     const thinking = extractThinking(reply.content, reply.reasoning);
     if (thinking) options.onThinking?.(thinking);
@@ -141,7 +143,10 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
     try {
       // A reply stopped at the length limit is never used, even if what arrived happens to parse:
       // a string in it (the reply to the user) may end mid-sentence.
-      if (reply.truncated) throw new SyntaxError(CUT_OFF);
+      if (reply.truncated) {
+        thinkingCutOff = true;
+        throw new SyntaxError(CUT_OFF);
+      }
       const parsed = schema.safeParse(extractJson(reply.content));
       if (parsed.success) {
         return parsed.data;

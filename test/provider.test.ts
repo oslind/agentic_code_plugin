@@ -48,6 +48,29 @@ function fakeFetch(status: number, body: unknown) {
 describe("OpenAICompatibleProvider", () => {
   beforeEach(() => OpenAICompatibleProvider.resetFallbacks());
 
+  it("asks for no thinking when told to, and stops sending those fields to a server that refuses them", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const replies = [
+      new Response(JSON.stringify({ error: { message: "unknown field: chat_template_kwargs" } }), { status: 400 }),
+      new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 }),
+      new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 }),
+      new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 }),
+    ];
+    const fn = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return replies.shift()!;
+    }) as unknown as typeof fetch;
+    const p = new OpenAICompatibleProvider({ ...base, stream: false }, fn);
+    await p.chat({ messages: [{ role: "user", content: "hi" }], noThinking: true });
+    expect(bodies[0]).toMatchObject({ reasoning_effort: "none", think: false, chat_template_kwargs: { enable_thinking: false } });
+    expect(bodies[1]).not.toHaveProperty("reasoning_effort");
+    await p.chat({ messages: [{ role: "user", content: "hi" }], noThinking: true });
+    expect(bodies[2]).not.toHaveProperty("think");
+    OpenAICompatibleProvider.resetFallbacks();
+    await p.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(bodies[3]).not.toHaveProperty("think");
+  });
+
   it("falls back to json_object, then no format, when the server cannot do structured output", async () => {
     const bodies: Record<string, unknown>[] = [];
     const replies = [

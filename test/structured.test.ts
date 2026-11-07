@@ -65,6 +65,14 @@ describe("callStructured", () => {
     expect(r.requests[0]?.maxTokens).toBe(VERDICT_MAX_TOKENS);
   });
 
+  it("asks for no thinking on the retry after a reply cut off at the length limit", async () => {
+    const requests: ChatRequest[] = [];
+    const replies = [{ content: "", truncated: true }, { content: '{"files":["a.ts"]}' }];
+    const p: ModelProvider = { model: "t", contextWindow: 8192, async chat(req) { requests.push(req); return replies.shift()!; } };
+    await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x" });
+    expect(requests.map((r) => r.noThinking)).toEqual([undefined, true]);
+  });
+
   it("feeds the validation error back and retries", async () => {
     const p = scripted(['{"files":[]}', '{"files":["b.ts"]}']);
     const out = await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x" });
