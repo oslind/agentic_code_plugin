@@ -10,7 +10,9 @@ import { checkToolCall } from "../tools/policy";
 import { ToolCall, workerTurnSchema } from "../tools/protocol";
 import { ProjectFiles } from "../tools/sandbox";
 import { lineDiff } from "../changes/lineDiff";
-import { MAX_LOADED_SKILLS, SkillCatalog, skillIndex, skillText, SKILL_RULE } from "../skills/catalog";
+import { isConventionSkill, MAX_LOADED_SKILLS, SkillCatalog, skillIndex, skillText, SKILL_RULE } from "../skills/catalog";
+
+export { isConventionSkill };
 import { Skill, SkillRole } from "../skills/skill";
 import { compactHistory } from "./history";
 import { compactSteps, planStepCompaction } from "./stepSummary";
@@ -137,10 +139,6 @@ const KICKOFF = "If anything about this task is unclear (what the user meant, wh
 /** How sub-agents use run_command. Small models skip a tool unless they are told plainly when it is the right one. */
 const COMMAND_RULES = `Use run_command like a developer at a terminal whenever running something tells you more than reading: run the tests, a build, a type check or linter, a script, or a tool's --version. One command per call, from the project root (use "cd sub && cmd" for a subfolder). It runs in a copy of the project that has your drafts, so files it creates or changes are not kept: change files only with the file tools. Commands may wait for the user's approval. Never run commands that need a network login, never start servers or watchers that do not exit, and do not use paths outside the project.`;
 
-/** A trusted AGENTS.md or .clinerules: project conventions every task gets, not a skill picked by topic. */
-export function isConventionSkill(s: Pick<Skill, "source" | "file">): boolean {
-  return s.source === "project" && (s.file === "AGENTS.md" || s.file === ".clinerules" || (s.file ?? "").startsWith(".clinerules/"));
-}
 
 /** The tool line and rule for load_skill, only when there are skills to load. */
 const SKILL_TOOL = `- {"tool":"load_skill","name":"run-tests"}  (reads a skill from the skill list: short advice on how to do a kind of task)`;

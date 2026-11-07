@@ -4,6 +4,7 @@ import { Run, RunEvent, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
+import { conventionsText } from "../skills/catalog";
 import { feedbackInScope, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
@@ -285,6 +286,7 @@ export class Oversight {
             drafts,
             learned: learnedSoFar(scope) ?? run.briefing,
             team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id, this.reviewOf(runId)),
+            conventions: conventionsText(await this.host.skills?.(c.workspaceRoot).catch(() => undefined)),
             round,
             final,
           },

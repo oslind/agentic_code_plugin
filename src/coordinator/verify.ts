@@ -82,6 +82,8 @@ export interface VerifyContext {
   uncomparedFailures?: { line: string; output: string }[];
   /** The project's file tree. Untrusted (file names). Run 8: verification named test files that do not exist. */
   fileTree?: string;
+  /** The project's trusted conventions (AGENTS.md, .clinerules), already fenced by conventionsText(). */
+  conventions?: string;
 }
 
 /** Why the user has to look at the work themselves when verification could not name anything to fix. */
@@ -164,6 +166,10 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   // The planned work and the task titles were written by a model (after research that read project files), so they are fenced too.
   parts.push(`The work you planned:\n${dataBlock("the work you planned", fit(ctx.request, 500) ?? "(not recorded)")}`);
   if (ctx.round > 0) parts.push(`This is check ${ctx.round + 1}: you already sent sub-agents back ${ctx.round} time(s) to finish what was missing.`);
+  if (ctx.conventions) {
+    parts.push(`The project's own conventions, which the user trusted. Every change must follow them; a draft that breaks one is missing work:\n${ctx.conventions}`);
+    budget -= estimateTokens(ctx.conventions);
+  }
 
   // How each check ended is a fact and stays plain; its name comes from settings a project can propose, so names are fenced.
   if (ctx.checks.length) {

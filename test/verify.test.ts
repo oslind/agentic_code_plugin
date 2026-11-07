@@ -238,3 +238,10 @@ describe("checking a research answer", () => {
     expect(res).toEqual({ answered: true, missing: [], thought: undefined });
   });
 });
+
+describe("verification with project conventions", () => {
+  it("tells the verifier every change must follow them", () => {
+    const user = buildVerifyMessages({ userMessages: ["add toKelvin"], request: "add toKelvin", tasks: [], drafts: "", checks: [], round: 0, conventions: "JSDoc right above every function" }, 8192)[1]!.content;
+    expect(user).toMatch(/must follow them[\s\S]*JSDoc right above every function/);
+  });
+});

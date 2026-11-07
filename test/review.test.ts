@@ -142,3 +142,11 @@ describe("a send-back shows the drafts against the original files", () => {
     expect(changesFromOriginal([{ path: "new.js", original: null, proposed: "x" }])).toBe("");
   });
 });
+
+describe("review with project conventions", () => {
+  it("shows the reviewer the conventions the sub-agent was given", () => {
+    const user = buildReviewMessages({ ...ctx, conventions: "<untrusted_data source=\"AGENTS.md\">JSDoc right above every function</untrusted_data>" }, 8192)[1]!.content;
+    expect(user).toMatch(/project's own conventions[\s\S]*JSDoc right above every function/);
+    expect(buildReviewMessages(ctx, 8192)[1]!.content).not.toMatch(/project's own conventions/);
+  });
+});

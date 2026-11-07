@@ -106,6 +106,10 @@ Ollama 0.40.13 ignores "/no_think" in the prompt and `think: false` on /v1, but 
 
 Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a worker pick 5 degrees), and a test task switched test.js to mocha. Prompt rules for both are in 18677b2, not yet run live.
 
+## Run 9: all 18 on b591bb8 (in progress)
+
+- **project-skill-trusted failed:** it passed in runs 5 to 8. The sub-agent had the trusted AGENTS.md and wrote a JSDoc, but inside the function body. The review accepted it: the review prompt never contained the convention, and neither did verification. Fixed: `conventionsText()` (src/skills/catalog.ts) gives the trusted AGENTS.md and .clinerules, fenced, to the review and the verification.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

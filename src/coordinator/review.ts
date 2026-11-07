@@ -81,6 +81,8 @@ export interface ReviewContext {
   learned?: string;
   /** How the other sub-agents are doing. Untrusted. */
   team?: string;
+  /** The project's trusted conventions (AGENTS.md, .clinerules), already fenced by conventionsText(). */
+  conventions?: string;
   /** Times it was already sent back in this task. */
   round: number;
   /** Set when it cannot be sent back this time, and why. A "revise" then goes to the user instead. */
@@ -146,6 +148,12 @@ export function buildReviewMessages(ctx: ReviewContext, contextWindow: number): 
     parts.push(
       `It cannot be sent back this time (${ctx.final === "out_of_turns" ? "it has no steps left" : "it was already sent back as often as allowed"}). Still decide honestly: "revise" means its drafts wait for the user with your feedback, instead of counting as done.`,
     );
+  }
+
+  // Fenced already, and cut to size by conventionsText(): never cut here, which could drop the fence's end.
+  if (ctx.conventions) {
+    parts.push(`The project's own conventions, which the user trusted. The sub-agent was given them; drafts that break one (for example a comment in the wrong place) are "revise":\n${ctx.conventions}`);
+    budget -= estimateTokens(ctx.conventions);
   }
 
   const notes: string[] = [];

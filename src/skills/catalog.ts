@@ -75,3 +75,21 @@ export function skillText(skill: Skill): string {
   if (skill.source !== "project") return `Skill "${skill.name}" (${skill.description}):\n${skill.body}`;
   return untrustedSection(`Skill "${skill.name}" (${PROJECT_NOTE}):`, `project skill ${skill.file ?? skill.name}`, skill.body);
 }
+
+/** A trusted AGENTS.md or .clinerules: project conventions every task gets, not a skill picked by topic. */
+export function isConventionSkill(s: Pick<Skill, "source" | "file">): boolean {
+  return s.source === "project" && (s.file === "AGENTS.md" || s.file === ".clinerules" || (s.file ?? "").startsWith(".clinerules/"));
+}
+
+/**
+ * The project's trusted conventions, fenced, for the coordinator's review and
+ * verification: the sub-agents follow them, so the checks must know them too.
+ * Run 9: a JSDoc placed inside the function body was accepted, because the
+ * reviewer never saw AGENTS.md. Undefined when the project has none (or is not trusted).
+ */
+export function conventionsText(catalog: SkillCatalog | undefined, maxChars = 2000): string | undefined {
+  const conventions = (catalog?.skills ?? []).filter(isConventionSkill);
+  if (!conventions.length) return undefined;
+  const each = Math.max(300, Math.floor(maxChars / conventions.length));
+  return conventions.map((s) => skillText(s.body.length > each ? { ...s, body: `${s.body.slice(0, each)}\n[... cut ...]` } : s)).join("\n\n");
+}

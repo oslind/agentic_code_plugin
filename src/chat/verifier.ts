@@ -11,6 +11,7 @@ import { mergeSameFileTasks, offTargetTasks } from "../coordinator/plan";
 import { isReadOnlyPlan } from "./coordinatorChat";
 import { commandEventData } from "../worker/worker";
 import { draftsForReview } from "../coordinator/review";
+import { conventionsText } from "../skills/catalog";
 import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
@@ -194,6 +195,7 @@ export class Verifier {
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
+      conventions: conventionsText(await this.host.skills?.(workspaceRoot).catch(() => undefined)),
       ...(await this.compareWithProject(conversationId, workspaceRoot, runId, failedCommandsOf(runScope(c.entries, runId)), checks, signal)),
     };
     let v: Verification;
