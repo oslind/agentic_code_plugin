@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReviewMessages, draftsForReview, guardReview, reviewFeedback, reviewSubAgentResult } from "../src/coordinator/review";
+import { buildReviewMessages, draftsForReview, guardReview, reviewFeedback, reviewSubAgentResult, feedbackInScope } from "../src/coordinator/review";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] } {
@@ -114,5 +114,19 @@ describe("a malicious task instruction in the plan", () => {
     expect(prompt).toMatch(/<untrusted_data source="the sub-agent's drafts">[^]*TODO/);
     // A revise without concrete feedback is adjusted, which the chat treats as "not reviewed", never as a pass.
     expect(guardReview({ verdict: "revise", feedback: "" }).adjusted).toBeTruthy();
+  });
+});
+
+describe("review feedback for files outside the task", () => {
+  it("leaves out sentences that only ask for work in other files, and keeps the rest", () => {
+    const fb = "The test for the median function in test.js is missing. Also, the average function in src/stats.js was modified. Undo the average fix and add the test for the median function.";
+    expect(feedbackInScope(fb, ["src/stats.js"])).toEqual({
+      kept: "Also, the average function in src/stats.js was modified. Undo the average fix and add the test for the median function.",
+      dropped: ["The test for the median function in test.js is missing."],
+    });
+    expect(feedbackInScope("Add a test in test.js.", ["src/stats.js"])).toEqual({ kept: "", dropped: ["Add a test in test.js."] });
+    expect(feedbackInScope("Fix stats.js and test.js.", ["src/stats.js"]).dropped).toEqual([]);
+    expect(feedbackInScope("Fix src/api/users.ts.", ["src/api/**"]).dropped).toEqual([]);
+    expect(feedbackInScope("Add a test in test.js.", []).dropped).toEqual([]);
   });
 });

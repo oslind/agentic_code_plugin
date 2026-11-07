@@ -5,6 +5,7 @@ import { DRAFT_PROBLEMS_HEADING, moduleStyleProblems } from "../changes/moduleSt
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
+import { matchesAny, normalizeWorkspacePath } from "../tools/paths";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { PendingChange } from "../state/types";
 
@@ -202,4 +203,29 @@ export function reviewFeedback(text: string): string {
     "the coordinator's review of your result",
     text,
   )}\nTake it into account. Your task, your files and your rules stay the same. Fix what it names, then call finish again with an updated summary.`;
+}
+
+const FILE_MENTION = /(?:[\w.-]+\/)*[\w-]+\.(?:c?js|mjs|jsx|tsx?|json|md|py|go|rs|java|rb|php|css|scss|html|ya?ml|toml|txt|sh)\b/g;
+
+/**
+ * Review feedback with the sentences that ask for work in files outside the task's scope left out. A sub-agent
+ * cannot change those files, so such a request only wastes a send-back. Run 7 and 7B: two reviews in a row sent the
+ * stats.js task back for tests in test.js, which another task owned, although the prompt says not to.
+ * A sentence that also names one of its own files is kept. Read-only tasks and tasks with no scope are left alone.
+ */
+export function feedbackInScope(feedback: string, fileScope: string[]): { kept: string; dropped: string[] } {
+  if (fileScope.length === 0) return { kept: feedback, dropped: [] };
+  const mine = (f: string) => {
+    const p = normalizeWorkspacePath(f.replace(/^\.\//, "")) ?? f;
+    return matchesAny(p, fileScope) || fileScope.some((g) => !/[*?[{]/.test(g) && (g === p || g.endsWith(`/${p}`) || p.endsWith(`/${g}`)));
+  };
+  const sentences = feedback.split(/(?<=[.!?])\s+(?=[A-Z])/);
+  const dropped: string[] = [];
+  const kept = sentences.filter((sentence) => {
+    const files = [...sentence.matchAll(FILE_MENTION)].map((m) => m[0]);
+    const off = files.length > 0 && !files.some(mine);
+    if (off) dropped.push(sentence.trim());
+    return !off;
+  });
+  return { kept: kept.join(" ").trim(), dropped };
 }

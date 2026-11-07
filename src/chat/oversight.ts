@@ -4,7 +4,7 @@ import { Run, RunEvent, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
-import { MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { feedbackInScope, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -297,6 +297,14 @@ export class Oversight {
       signal.throwIfAborted();
       // It asked for changes without saying which: that is no review at all, so the user decides.
       if (result.adjusted) return await unreviewed("unclear", { thought: result.thought, thinking: clip(result.thinking) });
+      // A send-back for work in files the sub-agent may not change cannot be done: that part is left out.
+      if (result.verdict === "revise" && !research) {
+        const scoped = feedbackInScope(result.feedback, task.fileScope);
+        if (scoped.dropped.length) {
+          this.host.log("info", `Review of "${task.title}": left out a request for files outside its task: ${scoped.dropped.join(" ")}`);
+          result = scoped.kept.length >= 10 ? { ...result, feedback: scoped.kept } : { ...result, verdict: "accept", feedback: `Accepted: the review only asked for work in other tasks' files (${scoped.dropped.join(" ")})` };
+        }
+      }
       // A draft that cannot load is never accepted, whatever the model said (run 4 and 5 accepted an ES import in a CommonJS file).
       const problems = draftProblemsOf(drafts);
       if (result.verdict === "accept" && problems.length) result = { ...result, verdict: "revise", feedback: problems.join("\n") };
