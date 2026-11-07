@@ -92,7 +92,7 @@ const SYSTEM = `You are the coordinator of a team of coding sub-agents. You gave
 - "revise": a part of the task is clearly missing or wrong, the drafts do not match what the report claims, the drafts go against what the user asked, or a research report does not answer its question. Write in feedback exactly what to fix or add, naming files.
 For each new or changed function, work out by hand, line by line, what it returns for one or two small inputs (for a list: an odd and an even length, such as [3, 1, 2] and [4, 1, 3, 2]). Write that trace in thought. An index into an array must be a whole number: sorted[3 / 2] is sorted[1.5], which is undefined in JavaScript. If no test or command output shows the function working, do not accept on a report that "all tests passed". A draft that also rewrites code its task did not ask for (another function, a bug it noticed) is "revise": ask it to undo that part and mention the bug in its report instead.
 If your feedback asks for any fix, the verdict is "revise", never "accept". When the sub-agent's new tests and the code disagree on a detail the user did not name (an error message, a wording), the test is wrong: ask it to fix the test, not the code.
-Only the diff lines (+ and -) are changes. Code that is in the whole file but not in the diff is unchanged from the original: never ask to undo it. After a send-back, judge the diff as it is now: a problem it no longer shows is fixed, whatever the report says. A task that only asks to undo or remove something is done when the diff no longer has it, even with no drafts.
+Only the diff lines (+ and -) are changes. Code that is in the whole file but not in the diff is unchanged from the original: never ask to undo it. To undo an unasked change, ask to restore the original lines; never ask to remove or delete code the original file had. After a send-back, judge the diff as it is now: a problem it no longer shows is fixed, whatever the report says. A task that only asks to undo or remove something is done when the diff no longer has it, even with no drafts.
 Judge the drafts, not the wording of the report: when the drafts are right and only the report has a typo or a wrong number, accept and mention it in feedback.
 A report that says a file was created or changed while there are no drafts is false: nothing was written. Then use "revise".
 Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Never accept a missing change because "another sub-agent already fixed it" otherwise.
@@ -197,12 +197,31 @@ export async function reviewSubAgentResult(provider: ModelProvider, ctx: ReviewC
 }
 
 /** How the coordinator's feedback reaches the sub-agent. A model wrote it from reports, so it is fenced. */
-export function reviewFeedback(text: string): string {
+export function reviewFeedback(text: string, drafts: Pick<PendingChange, "path" | "original" | "proposed">[] = []): string {
+  const diff = changesFromOriginal(drafts);
   return `${untrustedSection(
     "The coordinator reviewed your result before handing it to the user, and sent it back:",
     "the coordinator's review of your result",
     text,
-  )}\nTake it into account. Your task, your files and your rules stay the same. Fix what it names, then call finish again with an updated summary.`;
+  )}\nTake it into account. Your task, your files and your rules stay the same. Fix what it names, then call finish again with an updated summary.${
+    diff
+      ? `\n\n${untrustedSection(
+          "Your drafts compared with the files before your task (lines with - are the original, + are yours). To undo a change you were not asked for, put the - lines back exactly as they were. Never delete code the original had unless your task asks for it.",
+          "your drafts compared with the original files",
+          diff,
+        )}`
+      : ""
+  }`;
+}
+
+/**
+ * The diff of each edited file against the file before the task. Run 8: told to "remove the average function
+ * changes", the sub-agent deleted average() outright; with the original lines in front of it, it can restore them.
+ */
+export function changesFromOriginal(drafts: Pick<PendingChange, "path" | "original" | "proposed">[], maxChars = 2500): string {
+  const parts = drafts.filter((d) => d.original !== null && d.original !== d.proposed).map((d) => `## ${d.path}\n${lineDiff(d.original!, d.proposed)}`);
+  const text = parts.join("\n\n");
+  return text.length > maxChars ? `${text.slice(0, maxChars)}\n[… cut]` : text;
 }
 
 const FILE_MENTION = /(?:[\w.-]+\/)*[\w-]+\.(?:c?js|mjs|jsx|tsx?|json|md|py|go|rs|java|rb|php|css|scss|html|ya?ml|toml|txt|sh)\b/g;

@@ -5,7 +5,7 @@ import { answerForSubAgent, coordinatorNote, MAX_COORDINATOR_QUESTIONS } from ".
 import { MAX_REVIEW_ROUNDS, reviewFeedback, ReviewSkip, ReviewVerdict } from "../coordinator/review";
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
-import { Task } from "../state/types";
+import { PendingChange, Task } from "../state/types";
 import { checkToolCall } from "../tools/policy";
 import { ToolCall, workerTurnSchema } from "../tools/protocol";
 import { ProjectFiles } from "../tools/sandbox";
@@ -66,6 +66,8 @@ export interface WorkerOptions {
    */
   /** `skip` says why the sub-agent could not act on feedback now; the result is then recorded as unreviewed, not reviewed. */
   reviewResult?: (summary: string, skip?: ReviewSkip) => Promise<ReviewVerdict>;
+  /** Its drafts so far, with the files as they were before the task: shown with a send-back so it can restore lines exactly. */
+  draftsNow?: () => Promise<Pick<PendingChange, "path" | "original" | "proposed">[]> | Pick<PendingChange, "path" | "original" | "proposed">[];
   /** Asks the user a question in the chat and resolves with the answer. Without it, ask_user is refused. */
   askUser?: (question: string) => Promise<string>;
   /**
@@ -393,7 +395,7 @@ export class Worker {
           signal?.throwIfAborted();
           if (!skip && !verdict.accept && verdict.feedback?.trim()) {
             this.reviews++;
-            this.messages.push({ role: "user", content: reviewFeedback(verdict.feedback) });
+            this.messages.push({ role: "user", content: reviewFeedback(verdict.feedback, (await this.opts.draftsNow?.()) ?? []) });
             continue;
           }
         }

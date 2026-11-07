@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReviewMessages, draftsForReview, guardReview, reviewFeedback, reviewSubAgentResult, feedbackInScope } from "../src/coordinator/review";
+import { buildReviewMessages, changesFromOriginal, draftsForReview, feedbackInScope, guardReview, reviewFeedback, reviewSubAgentResult } from "../src/coordinator/review";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] } {
@@ -128,5 +128,17 @@ describe("review feedback for files outside the task", () => {
     expect(feedbackInScope("Fix stats.js and test.js.", ["src/stats.js"]).dropped).toEqual([]);
     expect(feedbackInScope("Fix src/api/users.ts.", ["src/api/**"]).dropped).toEqual([]);
     expect(feedbackInScope("Add a test in test.js.", []).dropped).toEqual([]);
+  });
+});
+
+describe("a send-back shows the drafts against the original files", () => {
+  it("adds the diff so an unasked change can be restored line for line", () => {
+    const original = "function average(r) {\n  return sum(r) / 2;\n}\nmodule.exports = { average };\n";
+    const proposed = "function median(r) {\n  return r[0];\n}\nmodule.exports = { median };\n";
+    const text = reviewFeedback("Undo the average change.", [{ path: "src/stats.js", original, proposed }]);
+    expect(text).toMatch(/put the - lines back exactly as they were/);
+    expect(text).toMatch(/## src\/stats\.js[\s\S]*-\s+return sum\(r\) \/ 2;/);
+    expect(reviewFeedback("Fix it.")).not.toMatch(/compared with the files before/);
+    expect(changesFromOriginal([{ path: "new.js", original: null, proposed: "x" }])).toBe("");
   });
 });
