@@ -22,3 +22,5 @@ Every run of the end-to-end suite against a local model adds a line here (writte
 | 2026-11-06 23:20 | qwen3-8b-16k | e2e: parallel-changes (run 6 phase H run 2 on d928280, stopped after about 3 min to move to the newest commit; written by hand) | not finished, unloaded qwen3-8b-16k |
 | 2026-11-06 23:43 | qwen3-8b-16k | e2e: parallel-changes | 1/1 passed, 22.5 min, unloaded qwen3-8b-16k |
 | 2026-11-07 02:31 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review, project-skill-trusted, project-skill-untrusted, long-conversation, small-context-change, cut-off-answer, parallel-changes, dependent-changes, stop-then-continue, command-denied, missing-script, question-then-answer, no-json-mode, research-not-change | 15/18 passed, 167.9 min, unloaded qwen3-8b-16k |
+| 2026-11-06 23:18 | qwen3-8b-16k | e2e: parallel-changes | 0/1 passed, 30.0 min, unloaded qwen3-8b-16k |
+| 2026-11-07 03:08 | qwen3-8b-16k | e2e: draft-for-review, stop-then-continue, research-not-change | 1/3 passed, 36.3 min, unloaded qwen3-8b-16k |
