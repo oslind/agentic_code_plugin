@@ -193,7 +193,7 @@ Rules:
 - You may only change files matching: ${task.fileScope.join(", ")}
 - Read a file before changing it. Prefer replace_in_file for small edits.
 - Change only what your task asks for. If you notice another bug, do not fix it: name it in your finish summary.
-- Write code the way the project already does: keep its module style (require/module.exports or import/export), naming and formatting. "Import" in a request means to use something from another file, not to switch module styles. Before you create a new code file, read one of the project's existing files next to it to see that style.
+- Write code the way the project already does: keep its module style (require/module.exports or import/export), naming and formatting. "Import" in a request means to use something from another file, not to switch module styles. Before you create a new code file, read one of the project's existing files next to it to see that style. Tests too: add tests in the style the project's test file already uses, and never switch to another test framework or add a dependency your task does not ask for.
 - Paths are relative to the project root.
 - ${COMMAND_RULES}
 ${withSkills ? `${skillRules()}\n` : ""}- After changing code, run the tests or a build with run_command or run_check before you finish, when the project has them.
