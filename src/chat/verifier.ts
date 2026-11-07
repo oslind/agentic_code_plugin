@@ -18,6 +18,16 @@ import { clip } from "./helpers";
 import { FailedCommand, failedCommandsOf } from "./synthesis";
 import { failedBefore } from "../checks/failures";
 import { runScope, userMessagesOf, userRequestOf } from "./scope";
+import { promises as fs } from "fs";
+import * as path from "path";
+import { normalizeWorkspacePath } from "../tools/paths";
+
+/** Whether a workspace-relative file exists. Never looks outside the workspace. */
+async function fileExists(root: string, rel: string): Promise<boolean> {
+  const p = normalizeWorkspacePath(rel);
+  if (!p) return false;
+  return fs.stat(path.join(root, p)).then((st) => st.isFile(), () => false);
+}
 
 /**
  * The coordinator verifying a request before it calls it done: the approved
@@ -168,7 +178,9 @@ export class Verifier {
         status: notStarted ? "did not start" : t.status.replace("_", " "),
         summary: t.summary ?? (t.error ? `No report: ${t.error}` : ""),
         unfinished: latest.has(t.id) && t.status !== "done" ? (notStarted ? "a task it depends on did not finish" : (t.error ?? t.status)) : undefined,
-        notAccepted: latest.has(t.id) ? reviews.get(t.id) : undefined,
+        // Only drafts that wait for the user can be wrong: a task that was not accepted but changed nothing
+        // (run 8: its file did not exist) leaves nothing behind to fix.
+        notAccepted: latest.has(t.id) && (run.changes ?? []).some((ch) => ch.taskId === t.id && ch.status !== "rejected" && ch.status !== "reverted") ? reviews.get(t.id) : undefined,
       };
     });
     // The newest draft of each file that is not rejected: what the user would get.
@@ -335,8 +347,30 @@ export class Verifier {
       return [];
     }
     // One sub-agent per file: two fix-up tasks on the same file undid each other's work in run 6E.
-    const offTarget = new Set(offTargetTasks(result.plan.tasks, v.missing).map((t) => t.id));
+    // Run 8: verification named test/thermostat.test.js, which does not exist (the tests are in test.js), and two
+    // fix-up rounds were scoped to it. A task scoped only to files that do not exist, that no earlier task of the run
+    // was planned for and that the user never named, is left out.
+    const said = (userRequest ?? "").toLowerCase();
+    const invented = new Set<string>();
+    for (const t of result.plan.tasks) {
+      const literal = t.fileScope.filter((f) => !/[*?[{]/.test(f));
+      if (!literal.length || literal.length !== t.fileScope.length) continue;
+      const planned0 = new Set(run.tasks.flatMap((x) => x.fileScope));
+      const exists = await Promise.all(literal.map(async (f) => planned0.has(f) || !!run.changes?.some((c) => c.path === f) || (await fileExists(workspaceRoot, f))));
+      if (exists.some(Boolean) || literal.some((f) => said.includes(f.toLowerCase()))) continue;
+      invented.add(t.id);
+    }
+    if (invented.size) {
+      await this.s.append(conversationId, {
+        author: "system",
+        runId,
+        tone: "warning",
+        text: `I left out ${invented.size} fix-up task(s) for files that do not exist in the project and that you did not ask for: ${result.plan.tasks.filter((t) => invented.has(t.id)).flatMap((t) => t.fileScope).join(", ")}.`,
+      });
+    }
+    const offTarget = new Set([...invented, ...offTargetTasks(result.plan.tasks, v.missing).map((t) => t.id)]);
     if (offTarget.size) this.host.log("info", `Fix-up plan: left out ${offTarget.size} task(s) whose files the missing work does not name.`);
+    if (result.plan.tasks.every((t) => offTarget.has(t.id))) return [];
     const planned = mergeSameFileTasks(result.plan.tasks.filter((t) => !offTarget.has(t.id)).map((t) => ({ ...t, dependsOn: t.dependsOn.filter((d) => !offTarget.has(d)) })));
     // New ids, so they never clash with the run's earlier tasks; dependencies point at the new ids.
     const taken = new Set(run.tasks.map((t) => t.id));

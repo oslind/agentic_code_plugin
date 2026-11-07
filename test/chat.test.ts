@@ -634,6 +634,23 @@ describe("ChatController", () => {
       expect(state.done).toMatchObject({ status: "partial", text: expect.stringMatching(/not verified: 1 thing/) });
     });
 
+    it("leaves out fix-up tasks for files that do not exist, that no task was planned for and that the user never named", async () => {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(ws, { recursive: true });
+      const invented = JSON.stringify({
+        tasks: [{ id: "fix-tests", title: "Update tests", instructions: "Expect 4 in the night test.", dependsOn: [], fileScope: ["test/thermostat.test.js"], changes: true }],
+      });
+      const { controller, started } = setup(
+        [...planReplies(), verdict("not_done", "Tests expect 3.", ["Update test/thermostat.test.js to expect 4."]), invented, finalReply],
+        "act",
+        { workspace: ws, saved: [], verify: true, verifyRounds: 1, during: finishAll },
+      );
+      await controller.send("add users");
+      expect(started).toHaveLength(1);
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.some((e) => /left out 1 fix-up task\(s\) for files that do not exist[^:]*: test\/thermostat\.test\.js/.test(e.text))).toBe(true);
+    });
+
     it("runs the checks on all drafts together and counts a failed check as not done, whatever the model says", async () => {
       const ws = path.join(dir, "ws");
       await fs.mkdir(ws, { recursive: true });
