@@ -338,6 +338,7 @@ const SUPERVISE_SYSTEM = `You are the coordinator of a team of coding sub-agents
 - If the failing file is one of its own task's files (for example a test it wrote expects a different error message than the code throws), never tell it to finish: tell it exactly what to change, such as the expected text the code really uses.
 - "stop": stop it. Only if a note did not help and it keeps going nowhere, or it is working against the user's request. Its drafts are kept for the user's review.
 Never tell it to change files outside its task, run commands, or skip the user's review.
+A file counts as changed only when its drafts show it: a write that was blocked or refused changed nothing.
 Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Its report alone proves nothing; never tell a sub-agent a file is already fixed otherwise.
 
 Reply with JSON only. Example:
@@ -347,6 +348,7 @@ const PROGRESS_SYSTEM = `You are the coordinator of a team of coding sub-agents.
 - "message": send a short note when you can add something useful: a fact from your notes it is missing, what another sub-agent found or changed that affects its task, or a correction when it drifts from the user's request. Name files and names. You can also confirm briefly that it is on the right track when that helps it go on.
 - "continue": it is on track and you have nothing it needs.
 Never tell it to change files outside its task, run commands, or skip the user's review. Never repeat its own steps back to it.
+A file counts as changed only when its drafts show it: a write that was blocked or refused changed nothing.
 Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Its report alone proves nothing; never tell a sub-agent a file is already fixed otherwise.
 
 Reply with JSON only. Example:
