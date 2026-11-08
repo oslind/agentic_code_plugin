@@ -116,7 +116,8 @@ export class OverlayFiles implements ProjectFiles {
     const out: PendingChange[] = [];
     for (const [p, proposed] of this.writes) {
       const original = this.originals.get(p) ?? null;
-      if (original === proposed) continue;
+      // Run 10, already-done: a file written back as it was, but without its final newline, showed as "updated".
+      if (original === proposed || (original !== null && original.replace(/\s+$/, "") === proposed.replace(/\s+$/, ""))) continue;
       out.push({ path: p, taskId, original, proposed, status: "pending" });
     }
     return out;

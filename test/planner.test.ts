@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPlannerMessages, numbersNotSaid, planRequest } from "../src/coordinator/planner";
+import { buildPlannerMessages, namesNotSaid, numbersNotSaid, planRequest } from "../src/coordinator/planner";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[], contextWindow = 32768): ModelProvider & { requests: ChatRequest[] } {
@@ -67,6 +67,10 @@ describe("buildPlannerMessages", () => {
     expect(text).toMatch(/earlier messages[\s\S]*already handled[\s\S]*toKelvin/);
     expect(text).toMatch(/never plan for a class[\s\S]*function targetTemp\(mode\)/);
     expect(numbersNotSaid("returns 16 and 27.15", "returns 16, celsius + 273.15")).toEqual(["27.15"]);
+    // Run 10, already-done: "Celsius(212)" for the user's "toCelsius(212)".
+    expect(namesNotSaid("Update src/convert.js so Celsius(212) returns 100.", "Make sure toCelsius(212) returns 100 in src/convert.js.")).toEqual(["Celsius"]);
+    expect(namesNotSaid("Add targetTemp away mode and fix max_value", "add away mode to targetTemp")).toEqual(["max_value"]);
+    expect(buildPlannerMessages({ request: "Update so Celsius(212) returns 100.", userWords: "Make sure toCelsius(212) returns 100." }, 16384).messages.map((m) => m.content).join("\n")).toMatch(/the request names Celsius, which the user never wrote/);
   });
 
   it("drops the file tree when the context window is tiny", () => {

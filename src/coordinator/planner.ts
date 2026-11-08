@@ -20,6 +20,7 @@ Rules:
 - Do not add tasks for running tests or reviewing; that happens automatically.
 - Set "changes": true only when a task creates or edits files. Tasks that read, explore, explain or summarise set "changes": false.
 - Start each instruction with what to do: "Add …", "Create …", "Read …", "Explain …".
+- When the user asks to make sure or check that something holds ("make sure toCelsius(212) returns 100"), the task first checks it (read the code and try it once with a command), and changes code only if it does not hold. Never assume the code is wrong.
 - Keep the user's own words for what to build. Never add a design choice the user did not make (a default export, a new parameter, an error message, a file name): leave it out, and the worker follows the file's existing style. "Export it" means export it the way the file already exports its other functions.
 ${skillExample !== undefined ? `- "skills" lists up to ${MAX_TASK_SKILLS} names from "Skills" that fit the task: a language or build skill for its files, and a task skill (tests, a fix, a refactor, docs). Use [] when none fits. Only use names from the list.\n` : ""}
 Reply with JSON only, in this shape:
@@ -80,6 +81,19 @@ export function numbersNotSaid(request: string, said: string): string[] {
   return [...new Set(nums(request).filter((n) => !known.has(n)))];
 }
 
+/**
+ * Code names in a model's request that the user's words do not have: a word
+ * called like a function, or written in camelCase or snake_case. Run 10,
+ * already-done: the coordinator wrote "Celsius(212)" for the user's
+ * "toCelsius(212)", and the sub-agent renamed the function.
+ */
+export function namesNotSaid(request: string, said: string): string[] {
+  const code = /\b([A-Za-z_$][\w$]*)(?=\()|\b([a-z]+[A-Z][\w$]*|[a-z]+_[a-z_\d]+)\b/g;
+  const known = new Set(said.match(/[A-Za-z_$][\w$]*/g) ?? []);
+  const names = [...request.matchAll(code)].map((m) => (m[1] ?? m[2])!);
+  return [...new Set(names.filter((n) => !known.has(n)))];
+}
+
 export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   const budget = Math.max(1024, contextWindow - REPLY_RESERVE);
   const sections: ContextSection[] = [
@@ -88,7 +102,9 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   if (input.userWords?.trim() && input.userWords.trim() !== input.request.trim()) {
     // Run 10, two-changes-in-a-row: the coordinator's request added "Add a way to toggle this mode", and the
     // plan built a toggle nobody asked for. Its numbers drift too (273.15 became 27.15, 27.3.15, 27.315).
-    const drift = numbersNotSaid(input.request, [input.userWords, ...(input.earlierUserWords ?? [])].join("\n"));
+    const userSaid = [input.userWords, ...(input.earlierUserWords ?? [])].join("\n");
+    const drift = numbersNotSaid(input.request, userSaid);
+    const names = namesNotSaid(input.request, userSaid);
     const earlier = (input.earlierUserWords ?? []).map((m) => m.trim()).filter(Boolean).slice(-3);
     sections.push({
       name: "user",
@@ -96,6 +112,7 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
         `The user's latest message, in their own words. It decides what to build: plan only what it asks for. The request above is a model's rewrite of it. Take file names and facts from the request, but where it adds work, a number or a name that the user's words do not have, leave that out and follow the user's words:\n${input.userWords.trim().slice(0, 3000)}`,
         earlier.length ? `The user's earlier messages (only to understand the latest one; work they asked for earlier is already handled):\n${earlier.map((m) => `- ${m.slice(0, 600)}`).join("\n")}` : "",
         drift.length ? `Checked by rule: the request has ${drift.join(", ")}, which the user never wrote. Use the user's own numbers.` : "",
+        names.length ? `Checked by rule: the request names ${names.join(", ")}, which the user never wrote. Use the names the user wrote, or the ones in the project's files.` : "",
       ]
         .filter(Boolean)
         .join("\n\n"),
