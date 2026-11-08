@@ -330,6 +330,21 @@ export class Verifier {
         approve,
         this.host.terminal?.(workspaceRoot),
       );
+      // Run 12, new-module-used: a fix-up made `node src/index.js` work, but the final reply still said it failed,
+      // because the latest run in the chat was the old failing one. The rerun on all drafts is shown, and counts.
+      for (const [i, n] of now.entries()) {
+        if (!n || n.skipped) continue;
+        const line = own[i]!.line;
+        await this.s.append(conversationId, {
+          author: "coordinator",
+          runId,
+          kind: "command",
+          tag: "rerun",
+          tone: n.passed ? "success" : "warning",
+          text: `Ran \`${line}\` again on all drafts together: ${n.passed ? "it passes now" : n.timedOut ? "timed out" : "it still fails"}.`,
+          command: { line, output: String(commandEventData(line, n).output ?? "") },
+        });
+      }
       own.forEach((f, i) => {
         const b = base[i];
         const n = now[i];

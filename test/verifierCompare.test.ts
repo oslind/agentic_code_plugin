@@ -35,13 +35,15 @@ async function setup(draft: string) {
   run.changes = [{ path: "a.js", taskId: "t1", original: "module.exports = { v: 1 };\n", proposed: draft, status: "pending" }];
   await tasks.save(run);
   const logs: string[] = [];
+  const appended: { tag?: string; text: string }[] = [];
   const session = {
     host: { openFolder: async () => root, scratchLinkDirs: () => [], permissions: () => ({ editFiles: false, sensitiveFiles: false, commands: false }), terminal: () => undefined, log: (_l: string, m: string) => void logs.push(m) },
     tasks,
     conversations: {},
     allowedFor: () => new Set(["node test.js"]),
+    append: async (_c: string, e: { tag?: string; text: string }) => void appended.push(e),
   } as unknown as ChatSession;
-  return { verifier: new Verifier(session), root, runId: run.id };
+  return { verifier: new Verifier(session), root, runId: run.id, appended };
 }
 
 // What a sub-agent saw halfway through: its draft had broken a.js too.
@@ -56,8 +58,10 @@ describe("comparing a failed command with the project without the drafts", () =>
   });
 
   it("still blames the drafts when they break something now", async () => {
-    const { verifier, root, runId } = await setup("module.exports = { v: 1, w: 3 };\n");
+    const { verifier, root, runId, appended } = await setup("module.exports = { v: 1, w: 3 };\n");
     const r = await verifier.compareWithProject("c", root, runId, stale, [], new AbortController().signal);
     expect(r.failedCommands?.map((f) => f.output)).toEqual([expect.stringMatching(/FAIL a\.w is 2/)]);
+    // The rerun on all drafts is shown, so the final reply goes by the latest result.
+    expect(appended).toEqual([expect.objectContaining({ tag: "rerun", text: expect.stringMatching(/still fails/) })]);
   });
 });
