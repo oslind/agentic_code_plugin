@@ -167,3 +167,10 @@ describe("undo requests the drafts cannot act on", () => {
     expect(withoutMootUndo("Undo the change to average.", draftsForReview([added])).dropped).toEqual([]);
   });
 });
+
+describe("commands the user declined, in a review", () => {
+  it("are named, so an honest 'it was declined' report is not sent back", () => {
+    const user = buildReviewMessages({ ...ctx, declined: ["node test.js"] }, 8192)[1]!.content;
+    expect(user).toMatch(/The user declined these commands in this run, so they never ran: `node test\.js`/);
+  });
+});

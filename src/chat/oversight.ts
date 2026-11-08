@@ -304,6 +304,7 @@ export class Oversight {
             learned: learnedSoFar(scope) ?? run.briefing,
             team: this.supervised.get(runId)?.monitor.teamStatus(run.tasks, task.id, this.reviewOf(runId)),
             conventions: conventionsText(await this.host.skills?.(c.workspaceRoot).catch(() => undefined)),
+            declined: [...this.s.deniedFor(runId)],
             round,
             final,
           },

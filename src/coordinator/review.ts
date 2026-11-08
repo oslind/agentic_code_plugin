@@ -83,6 +83,8 @@ export interface ReviewContext {
   team?: string;
   /** The project's trusted conventions (AGENTS.md, .clinerules), already fenced by conventionsText(). */
   conventions?: string;
+  /** Commands the user declined in this run. A fact. */
+  declined?: string[];
   /** Times it was already sent back in this task. */
   round: number;
   /** Set when it cannot be sent back this time, and why. A "revise" then goes to the user instead. */
@@ -188,6 +190,11 @@ export function buildReviewMessages(ctx: ReviewContext, contextWindow: number): 
     );
   }
 
+  // Run 10: reviews twice sent back an honest "the user declined node test.js" and asked for its output.
+  if (ctx.declined?.length) {
+    const list = ctx.declined.map((d) => `\`${d.replace(/\s+/g, " ").slice(0, 120)}\``).join(", ");
+    parts.push(`The user declined these commands in this run, so they never ran: ${list}. A report that says it could not run one because the user declined it is complete on that point: never ask it to run one of them again or to give its output.`);
+  }
   // Fenced already, and cut to size by conventionsText(): never cut here, which could drop the fence's end.
   if (ctx.conventions) {
     parts.push(`The project's own conventions, which the user trusted. The sub-agent was given them; drafts that break one (for example a comment in the wrong place) are "revise":\n${ctx.conventions}`);

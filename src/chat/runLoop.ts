@@ -524,6 +524,16 @@ export class RunLoop {
       this.s.changed();
       check = await review(result.text);
       signal.throwIfAborted();
+      // Run 10: the check asked for the output of a command the user declined, so the honest answer was held back
+      // for another round that could not run it. What only a declined command could answer is not open.
+      const declined = [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))];
+      if (check && !check.answered && declined.length) {
+        const open = check.missing.filter((m) => !declined.some((d) => m.includes(d)));
+        if (open.length < check.missing.length) {
+          this.host.log("info", `The answer check asked for the output of a command you declined (${declined.join(", ")}); that part is not counted as open.`);
+          check = open.length ? { ...check, missing: open } : { ...check, answered: true, missing: [] };
+        }
+      }
       if (check && !check.answered && check.missing.length && canResearchMore) return { open: check.missing };
     }
     if (check) {
