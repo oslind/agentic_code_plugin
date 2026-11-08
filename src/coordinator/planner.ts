@@ -43,6 +43,10 @@ export interface PlanInput {
    * turned "273.15" into "27.3.15", and the plan then said 27.315.
    */
   userWords?: string;
+  /** The user's earlier messages in this conversation, oldest first, for what the latest one refers to. Trusted. */
+  earlierUserWords?: string[];
+  /** Top-level outlines of the files the request names (outlinesOfNamedFiles). Read from the project, so fenced. */
+  outlines?: string;
   /** Compact file listing of the workspace. Truncated to fit if needed. */
   fileTree?: string;
   /** Extra context such as README or package.json excerpts, lowest priority. */
@@ -69,16 +73,41 @@ export const FILES_HEADING = "Workspace files (names only, from the project):";
 /** Tokens held back for the model's reply and for retry turns. */
 const REPLY_RESERVE = 4096;
 
+/** Numbers in a model's request that the user's words do not have (273.15 rewritten as 27.15). */
+export function numbersNotSaid(request: string, said: string): string[] {
+  const nums = (t: string) => t.match(/\d+(?:[.,]\d+)*/g) ?? [];
+  const known = new Set(nums(said));
+  return [...new Set(nums(request).filter((n) => !known.has(n)))];
+}
+
 export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   const budget = Math.max(1024, contextWindow - REPLY_RESERVE);
   const sections: ContextSection[] = [
     { name: "request", text: `Request:\n${input.request}`, priority: 100, required: true },
   ];
   if (input.userWords?.trim() && input.userWords.trim() !== input.request.trim()) {
+    // Run 10, two-changes-in-a-row: the coordinator's request added "Add a way to toggle this mode", and the
+    // plan built a toggle nobody asked for. Its numbers drift too (273.15 became 27.15, 27.3.15, 27.315).
+    const drift = numbersNotSaid(input.request, [input.userWords, ...(input.earlierUserWords ?? [])].join("\n"));
+    const earlier = (input.earlierUserWords ?? []).map((m) => m.trim()).filter(Boolean).slice(-3);
     sections.push({
       name: "user",
-      text: `The user's own words (where the request above differs from them, for example in a number, a name or a file, follow the user's words):\n${input.userWords.trim().slice(0, 3000)}`,
+      text: [
+        `The user's latest message, in their own words. It decides what to build: plan only what it asks for. The request above is a model's rewrite of it. Take file names and facts from the request, but where it adds work, a number or a name that the user's words do not have, leave that out and follow the user's words:\n${input.userWords.trim().slice(0, 3000)}`,
+        earlier.length ? `The user's earlier messages (only to understand the latest one; work they asked for earlier is already handled):\n${earlier.map((m) => `- ${m.slice(0, 600)}`).join("\n")}` : "",
+        drift.length ? `Checked by rule: the request has ${drift.join(", ")}, which the user never wrote. Use the user's own numbers.` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       priority: 95,
+    });
+  }
+  if (input.outlines?.trim()) {
+    sections.push({
+      name: "outlines",
+      text: input.outlines,
+      priority: 70,
+      wrap: (o) => untrustedSection("The top-level code in the files the request names (plan against this: never plan for a class, method or function that is not here unless the user asks to create it):", "outlines of project files", o),
     });
   }
   if (input.planned?.trim()) {

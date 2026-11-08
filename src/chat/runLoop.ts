@@ -19,7 +19,8 @@ import { ChatHost } from "./host";
 import { ChatSession } from "./session";
 import { DoneBar } from "./viewState";
 import { clip, clipLine, describePlan, isUnstarted, plural, title } from "./helpers";
-import { learnedSoFar, runScope, userRequestOf } from "./scope";
+import { learnedSoFar, runScope, userMessagesOf, userRequestOf } from "./scope";
+import { outlinesOfNamedFiles } from "../context/outline";
 import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
@@ -254,7 +255,18 @@ export class RunLoop {
         const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: t.request, userWords: userRequest, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks, skills: await this.skillsFor(c.workspaceRoot) },
+          {
+            request: t.request,
+            userWords: userRequest,
+            earlierUserWords: userMessagesOf(c.entries).filter((m) => m.trim() !== userRequest?.trim()).slice(-3),
+            outlines: await WorkspaceSandbox.create(c.workspaceRoot)
+              .then((files) => outlinesOfNamedFiles(files, fileTree, [t.request, userRequest ?? ""]))
+              .catch(() => undefined),
+            fileTree,
+            learned,
+            maxTasks: this.host.delegationLimits().maxTasks,
+            skills: await this.skillsFor(c.workspaceRoot),
+          },
           {
             signal: abort.signal,
             onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),

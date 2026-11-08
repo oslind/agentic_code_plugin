@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPlannerMessages, planRequest } from "../src/coordinator/planner";
+import { buildPlannerMessages, numbersNotSaid, planRequest } from "../src/coordinator/planner";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[], contextWindow = 32768): ModelProvider & { requests: ChatRequest[] } {
@@ -47,8 +47,26 @@ describe("buildPlannerMessages", () => {
     // Run 4: the coordinator wrote "27.3.15" for the user's 273.15.
     const user = "Add toKelvin(celsius) to src/convert.js that returns celsius + 273.15";
     const text = buildPlannerMessages({ request: "Add toKelvin returning celsius + 27.3.15", userWords: user }, 16384).messages.map((m) => m.content).join("\n");
-    expect(text).toMatch(/The user's own words[\s\S]*celsius \+ 273\.15/);
-    expect(buildPlannerMessages({ request: user, userWords: user }, 16384).messages.map((m) => m.content).join("\n")).not.toMatch(/The user's own words/);
+    expect(text).toMatch(/in their own words[\s\S]*celsius \+ 273\.15/);
+    expect(text).toMatch(/the request has 27\.3\.15, which the user never wrote/);
+    expect(buildPlannerMessages({ request: user, userWords: user }, 16384).messages.map((m) => m.content).join("\n")).not.toMatch(/in their own words/);
+  });
+
+  it("plans the latest message against the files' real code, with earlier messages only as background", () => {
+    // Run 10, two-changes-in-a-row: the request added a toggle, and the plan wrote tasks for a class that does not exist.
+    const text = buildPlannerMessages(
+      {
+        request: "Add 'away' mode to targetTemp in src/thermostat.js that returns 16. Add a way to toggle this mode.",
+        userWords: "Now also add an 'away' mode to targetTemp in src/thermostat.js that returns 16.",
+        earlierUserWords: ["Add toKelvin(celsius) to src/convert.js returning celsius + 273.15, and export it."],
+        outlines: "src/thermostat.js:\n  function targetTemp(mode)\n  module.exports = { targetTemp };",
+      },
+      16384,
+    ).messages.map((m) => m.content).join("\n");
+    expect(text).toMatch(/where it adds work, a number or a name that the user's words do not have, leave that out/);
+    expect(text).toMatch(/earlier messages[\s\S]*already handled[\s\S]*toKelvin/);
+    expect(text).toMatch(/never plan for a class[\s\S]*function targetTemp\(mode\)/);
+    expect(numbersNotSaid("returns 16 and 27.15", "returns 16, celsius + 273.15")).toEqual(["27.15"]);
   });
 
   it("drops the file tree when the context window is tiny", () => {
