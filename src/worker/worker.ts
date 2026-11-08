@@ -145,6 +145,14 @@ export function outputCommand(task: Pick<Task, "instructions" | "fileScope">): s
   return `${file.endsWith(".py") ? "python" : "node"} ${file}`;
 }
 
+/** True when a shell command runs the script of an outputCommand ("node src/index.js", "cd src && node index.js 22"). */
+export function runsProgram(command: string, output: string | undefined): boolean {
+  if (!output) return false;
+  const file = output.split(" ").slice(1).join(" ");
+  const base = file.split("/").pop()!;
+  return /\b(node|python3?|py)\b/.test(command) && (command.includes(file) || new RegExp(`(^|[\\s/])${base.replace(/\./g, "\\.")}(\\s|$|;|&|\\|)`).test(command));
+}
+
 /** The most of a conversation saved for a later follow-up, in estimated tokens. Older tool output goes first. */
 const SAVED_HISTORY_TOKENS = 24000;
 
@@ -254,6 +262,8 @@ export class Worker {
   private toldNoWrites = false;
   /** Ran a command or check after its last successful write. */
   private ranSinceWrite = false;
+  /** True once the program a task is about (outputCommand) ran after the last write. Run 12B: npm test ran, index.js never did. */
+  private ranOutputSinceWrite = false;
   private toldToTest = false;
 
   constructor(private readonly opts: WorkerOptions) {
@@ -416,6 +426,7 @@ export class Worker {
       }
 
       if (turn.call.tool === "run_command" || turn.call.tool === "run_check" || turn.call.tool === "request_check") this.ranSinceWrite = true;
+      if (turn.call.tool === "run_command" && runsProgram(turn.call.command, outputCommand(task))) this.ranOutputSinceWrite = true;
 
       const checks = this.checks;
       const decision = checkToolCall(turn.call, {
@@ -453,14 +464,15 @@ export class Worker {
         // saved checks, a change task that has not run anything since its last write runs the project's tests once.
         // Run 10, new-module-used: the task was about what src/index.js prints, and nobody ran it, so a wrong
         // conversion a review asked for went out. A task about output also runs the program once.
-        const tries = [this.checks.length === 0 ? this.opts.testCommand : undefined, outputCommand(task)].filter((c): c is string => !!c);
-        if (tries.length && !this.opts.readOnly && !this.opts.followUp && this.changed.size > 0 && !this.ranSinceWrite && !this.toldToTest) {
+        // Run 12B: npm test ran after the last write, so the program the task prints from was never run; it is asked for on its own.
+        const tries = [this.checks.length === 0 && !this.ranSinceWrite ? this.opts.testCommand : undefined, this.ranOutputSinceWrite ? undefined : outputCommand(task)].filter((c): c is string => !!c);
+        if (tries.length && !this.opts.readOnly && !this.opts.followUp && this.changed.size > 0 && !this.toldToTest) {
           this.toldToTest = true;
           this.opts.log("untested", `It changed code without running anything; told to run ${tries.join(" and ")}`);
           const what = tries.map((c) => JSON.stringify(c)).join(" and then ");
           this.messages.push({
             role: "user",
-            content: `Before you finish: you changed code but have not run anything since. Run ${what} once with run_command, and check the output against your task (for printed text, compare it character by character with what the task asks). If something fails or prints wrong because of your change, fix your change (an existing test shows behaviour the user still expects unless the task says otherwise). If it fails for a reason outside your task, or the command is declined, say so in your summary. Then finish.`,
+            content: `Before you finish: you changed code but have not run ${this.ranSinceWrite ? "the program your task is about" : "anything"} since. Run ${what} once with run_command, and check the output against your task (for printed text, compare it character by character with what the task asks). If something fails or prints wrong because of your change, fix your change (an existing test shows behaviour the user still expects unless the task says otherwise). If it fails for a reason outside your task, or the command is declined, say so in your summary. Then finish.`,
           });
           continue;
         }
@@ -558,6 +570,7 @@ export class Worker {
       if (outcome.wrote) {
         this.changed.add(outcome.wrote);
         this.ranSinceWrite = false;
+        this.ranOutputSinceWrite = false;
         this.writes++;
       }
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });

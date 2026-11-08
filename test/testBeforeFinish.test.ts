@@ -26,11 +26,11 @@ function scripted(calls: object[]): ModelProvider & { requests: ChatRequest[] } 
 const WRITE = { tool: "write_file", path: "convert.js", content: "module.exports = { toKelvin: (c) => c + 273.15 };\n" };
 const FINISH = { tool: "finish", summary: "Added toKelvin to convert.js." };
 
-async function worker(model: ModelProvider, testCommand?: string) {
+async function worker(model: ModelProvider, testCommand?: string, instructions = "Add toKelvin to convert.js") {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "test-first-"));
   await fs.writeFile(path.join(root, "convert.js"), "module.exports = {};\n");
   const now = new Date().toISOString();
-  const task: Task = { id: "t1", title: "Add toKelvin", instructions: "Add toKelvin to convert.js", dependsOn: [], fileScope: ["convert.js"], status: "running", attempts: 0, createdAt: now, updatedAt: now };
+  const task: Task = { id: "t1", title: "Add toKelvin", instructions, dependsOn: [], fileScope: ["convert.js"], status: "running", attempts: 0, createdAt: now, updatedAt: now };
   const overlay = new OverlayFiles(await WorkspaceSandbox.create(root));
   // Commands are declined, so nothing runs in the test.
   const w = new Worker({ provider: model, sandbox: overlay, task, checks: [], testCommand, maxTurns: 8, approve: async (_r, call) => call.tool !== "run_command", log: () => {} });
@@ -58,6 +58,17 @@ describe("a change task that never ran anything", () => {
     expect(ran.requests).toHaveLength(3);
     await fs.rm(a.root, { recursive: true, force: true });
     await fs.rm(b.root, { recursive: true, force: true });
+  });
+});
+
+describe("a task about printed output", () => {
+  it("is told to run the program even after npm test ran (run 12B)", async () => {
+    const model = scripted([WRITE, { tool: "run_command", command: "npm test", reason: "run the tests" }, FINISH, { tool: "run_command", command: "node convert.js", reason: "see it" }, FINISH]);
+    const { w, root } = await worker(model, "npm test", "Make convert.js print the result.");
+    await w.run();
+    expect(model.requests[3]!.messages.at(-1)!.content).toMatch(/not run the program your task is about since\. Run "node convert\.js" once/);
+    expect(model.requests).toHaveLength(5);
+    await fs.rm(root, { recursive: true, force: true });
   });
 });
 
@@ -107,5 +118,15 @@ describe("a command that fails the same way across its own changes", () => {
     expect(said(3)).toMatch(/exactly the same failure as before your last change/);
     expect(said(4)).toMatch(/same result as the last time you ran it/);
     await fs.rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("runsProgram", () => {
+  it("knows when a command ran the program a task prints from", async () => {
+    const { runsProgram } = await import("../src/worker/worker");
+    expect(runsProgram("node src/index.js", "node src/index.js")).toBe(true);
+    expect(runsProgram("cd src && node index.js 22", "node src/index.js")).toBe(true);
+    expect(runsProgram("npm test", "node src/index.js")).toBe(false);
+    expect(runsProgram("node test.js", "node src/index.js")).toBe(false);
   });
 });

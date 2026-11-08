@@ -1,6 +1,6 @@
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
-import { moduleStyleOf, projectTestText } from "../changes/moduleStyle";
+import { importProblems, moduleStyleOf, projectTestText } from "../changes/moduleStyle";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { ScratchCopy } from "../changes/scratch";
@@ -208,7 +208,7 @@ export class Verifier {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,
       tasks,
-      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? []), said, await this.renameLeftovers(workspaceRoot, run.changes ?? [], said, newest)),
+      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? []), said, [...(await this.renameLeftovers(workspaceRoot, run.changes ?? [], said, newest)), ...(await this.importProblems(workspaceRoot, run.changes ?? [], newest))]),
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
@@ -293,6 +293,16 @@ export class Verifier {
       const found = (await filesMentioning(files, pair.from)).filter((p) => !drafted.has(p));
       const texts = await Promise.all(found.map(async (p) => ({ path: p, text: (await files.readFile(p, 300_000).catch(() => undefined)) ?? "" })));
       return renameLeftovers(texts, said);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Names the newest drafts take from project modules that do not export them, read with the drafts in place. */
+  private async importProblems(workspaceRoot: string, changes: PendingChange[], drafted: Map<string, PendingChange>): Promise<string[]> {
+    try {
+      const files = new OverlayFiles(await WorkspaceSandbox.create(workspaceRoot), pendingBase(changes));
+      return await importProblems([...drafted.values()], (p) => files.readFile(p));
     } catch {
       return [];
     }

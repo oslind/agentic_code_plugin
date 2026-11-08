@@ -9,6 +9,7 @@ const ESM = /^\s*(import\s+[\w{*]|import\s+["']|export\s+(default\b|const\b|let\
 const CJS = /\bmodule\.exports\b|^\s*exports\.\w+\s*=|\brequire\s*\(\s*["']/m;
 
 import * as vm from "vm";
+import { posix } from "path";
 import { ProjectFiles, WorkspaceSandbox } from "../tools/sandbox";
 
 /** Heading of the problems section in draftsForReview(). Its lines are facts from this check. */
@@ -115,6 +116,62 @@ export function unexportedProblems(changes: { path: string; original: string | n
     if (missing.length) {
       const list = missing.join(", ");
       problems.push(`${c.path} defines ${list}, which the request says to export, but does not export ${missing.length === 1 ? "it" : "them"}, so other files cannot use ${missing.length === 1 ? "it" : "them"}. Add ${missing.length === 1 ? "it" : "them"} to the file's exports (module.exports or export, as the file already does).`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Whether a module's text gives other files a property `name`: true, false, or undefined when its shape cannot
+ * be read by rule (spreads, computed exports, nothing exported at all).
+ */
+export function exportsProperty(text: string, name: string): boolean | undefined {
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const n = name.replace(/\$/g, "\\$");
+  const word = new RegExp(`(?<![\\w$.])${n}(?![\\w$])`);
+  if (new RegExp(`\\b(?:module\\.)?exports\\.${n}\\s*=`).test(code)) return true;
+  if (new RegExp(`^\\s*export\\s+(?:async\\s+)?(?:function\\*?|const|let|var|class)\\s+${n}(?![\\w$])`, "m").test(code)) return true;
+  const lists = [...code.matchAll(/^\s*export\s*\{([^{}]*)\}/gm)].map((m) => m[1]!.split(",").map((p) => p.trim().split(/\s+as\s+/).pop()!.trim()));
+  if (lists.some((l) => l.includes(name))) return true;
+  const objects = [...code.matchAll(/\bmodule\.exports\s*=\s*\{([^{}]*)\}/g), ...code.matchAll(/\bObject\.assign\s*\(\s*(?:module\.)?exports\s*,\s*\{([^{}]*)\}/g)];
+  if (objects.some((m) => m[1]!.split(",").some((p) => word.test(p.split(":")[0]!)))) return true;
+  if (objects.some((m) => /\.\.\./.test(m[1]!))) return undefined;
+  // module.exports = something else (a function, a class, a name): the module is that one value.
+  const single = /\bmodule\.exports\s*=\s*(?!\{)/.test(code);
+  if (objects.length || single || lists.length || /^\s*export\s/m.test(code) || /\bexports\.\w+\s*=/.test(code)) return false;
+  return undefined;
+}
+
+/**
+ * Names a JavaScript draft takes from a project module (`const { a } = require('./x')`, `import { a } from './x.js'`)
+ * that the module does not export, read with the drafts in place. Run 12B, new-module-used: format.js was
+ * `module.exports = function formatTemp`, index.js took `{ formatTemp }` from it, and the program crashed with
+ * "formatTemp is not a function" while the review and verification called it done.
+ */
+export async function importProblems(changes: { path: string; proposed: string }[], read: (path: string) => Promise<string | undefined>): Promise<string[]> {
+  const problems: string[] = [];
+  for (const c of changes) {
+    if (!/\.(c|m)?js$/i.test(c.path)) continue;
+    const code = c.proposed.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+    const takes = [
+      ...[...code.matchAll(/\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*require\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g)].map((m) => ({ names: m[1]!.split(",").map((p) => p.trim().split(":")[0]!.trim()), from: m[2]! })),
+      ...[...code.matchAll(/^\s*import\s*\{([^{}]*)\}\s*from\s*["'](\.{1,2}\/[^"']+)["']/gm)].map((m) => ({ names: m[1]!.split(",").map((p) => p.trim().split(/\s+as\s+/)[0]!.trim()), from: m[2]! })),
+    ];
+    for (const t of takes) {
+      const base = posix.normalize(posix.join(posix.dirname(c.path), t.from));
+      let target: { path: string; text: string } | undefined;
+      for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.mjs`, `${base}/index.js`]) {
+        const text = changes.find((d) => d.path === candidate)?.proposed ?? (await read(candidate).catch(() => undefined));
+        if (text !== undefined) {
+          target = { path: candidate, text };
+          break;
+        }
+      }
+      if (!target) continue;
+      const missing = t.names.filter((n) => /^[A-Za-z_$][\w$]*$/.test(n) && exportsProperty(target!.text, n) === false);
+      if (!missing.length) continue;
+      const single = /\bmodule\.exports\s*=\s*(?!\{)/.test(target.text) ? ` (${target.path} sets module.exports to a single value, so { } takes nothing from it; export an object like module.exports = { ${missing.join(", ")} }, or import the value without { })` : "";
+      problems.push(`${c.path} takes ${missing.join(", ")} from ${t.from}, but ${target.path} does not export ${missing.length === 1 ? "it" : "them"}${single}, so ${missing.length === 1 ? "it is" : "they are"} undefined and calling ${missing.length === 1 ? "it" : "them"} throws. Make the two files fit together.`);
     }
   }
   return problems;

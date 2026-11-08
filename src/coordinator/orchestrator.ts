@@ -1,6 +1,6 @@
 import { SkillCatalog } from "../skills/catalog";
 import { promises as fs } from "fs";
-import { moduleStyleOf, moduleStyleProblems, projectTestText } from "../changes/moduleStyle";
+import { importProblems, moduleStyleOf, moduleStyleProblems, projectTestText } from "../changes/moduleStyle";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { CommandSink } from "../checks/commandTerminal";
@@ -278,7 +278,7 @@ export class Orchestrator {
         skills: this.o.skills,
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
         askCoordinator: this.o.askCoordinator && ((q) => this.o.askCoordinator!(task, q, signal)),
-        reviewResult: this.o.reviewResult && (async (summary, skip) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id), undefined, await moduleStyleOf(this.root), await projectTestText(overlay), task.instructions), signal, skip)),
+        reviewResult: this.o.reviewResult && (async (summary, skip) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id), undefined, await moduleStyleOf(this.root), await projectTestText(overlay), task.instructions, await importProblems(overlay.pending(task.id), (p) => overlay.readFile(p))), signal, skip)),
         draftsNow: () => overlay.pending(task.id),
         // A question is usually about the drafts ("is this what you wanted?"), so show them first.
         beforeAsk: async () => void (await this.publishDrafts(task, overlay, published)),

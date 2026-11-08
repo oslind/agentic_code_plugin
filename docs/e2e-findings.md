@@ -191,10 +191,11 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 - use-strict-everywhere (7.1 min) passed.
 - The scenarios give each task its own file, so same-file merging under real overlap was not exercised. New scenario same-file-parallel: two sub-agents add one function each to src/convert.js at the same time.
 
-### Run 12B (reruns, two at once, b27f1f5)
+### Run 12B (reruns, two at once, b27f1f5): 0/3, 42.8 min
 
 - **parallel-changes failed on one missing export.** median was right (Math.floor) and added with insert_lines, but module.exports further down was never touched; npm test does not call median, and the review and verification accepted it although the user said "and export it". Now a new function that the request says to export, in the same sentence, and that the file does not export is a problem checked by rule: the sub-agent is warned right after the write, and reviews and verification cannot accept it. A review call still took 372 s.
 - **rename-everywhere failed on one call.** The plan covered all three files, but the index.js sub-agent renamed only the import and left `toCelsius(70)` on line 4, so node src/index.js threw a ReferenceError. The tests do not run index.js, and the review, verification and final reply all said every call was updated. A rename is now checked by rule: after each write the sub-agent is told which lines still use the old name (and to use replace_in_file with "all": true), and reviews and verification get every file that still uses it, drafted or not, as a problem they cannot accept.
+- **new-module-used failed: the two files did not fit together.** format.js became `module.exports = function formatTemp`, index.js took `{ formatTemp }` from it, and the program crashed with "formatTemp is not a function". index.js also lost its targetTemp call. Nobody ran the program: the reminder to run node src/index.js counted the earlier npm test as a run. Now the program a task prints from must itself run after the last write, and a name a draft takes from a project module (require or import with { }) that the module does not export is a problem checked by rule after the write, in the review and at verification. Reviews noticing removed behaviour (the lost targetTemp call) is still open (item 8).
 
 ## Still open
 
@@ -205,3 +206,4 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 5. Worker calls can still think for about 6 minutes with nothing to show; parallel-changes and stop-then-continue run close to the 30-minute limit.
 6. Reviews sometimes contradict each other on code outside the task (average() in stats.js).
 7. Reviews and verification read code but do not check program output against the request's wording.
+8. Reviews do not notice a draft that removes working behaviour the request did not ask to remove.
