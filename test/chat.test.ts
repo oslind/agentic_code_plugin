@@ -2159,6 +2159,17 @@ describe("ChatController", () => {
         expect(state.dashboard!.agents.find((a) => a.taskId === "add-api")!.coordinator.review).toBe("not_accepted");
       });
 
+      it("a send-back that only asks to fix code nobody named is accepted", async () => {
+        // e2e run 12, parallel-changes: "average() divides by 2. The task only asked for median, so leave it. Fix the average function's calculation."
+        const revise = JSON.stringify({
+          thought: "average is wrong.",
+          verdict: "revise",
+          feedback: "The average function divides by 2. The task did not ask for it, so it should stay as it is. Fix the average function's calculation to divide by the count.",
+        });
+        const { verdict } = await finishWith([revise]);
+        expect(verdict).toEqual({ accept: true, outcome: "accepted" });
+      });
+
       it("a revise without feedback counts as unclear, not as a pass", async () => {
         const { verdict, written } = await finishWith([JSON.stringify({ thought: "Hmm.", verdict: "revise", feedback: "" })]);
         expect(verdict).toEqual({ accept: true, outcome: "unclear" });

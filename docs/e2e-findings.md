@@ -179,6 +179,13 @@ Thirteen scenarios that failed in run 10 passed in run 11. One clean run does no
 
 - **rename-everywhere timed out on a new problem.** Research now found test.js and the plan had the right three tasks, but the convert.js task's own npm test check ran on a copy with only its rename, so "toCelsius is not a function" (test.js was the next task's file). It was sent to fix rounds and retried four times for work it may not do, and the other tasks barely started. Now, when a task's checks fail while another unfinished task of the run changes a file the failure or the sub-agent's report names, the checks are left to verification, which runs them on all drafts together (logged as checks_deferred). A check that fails on the task's own files still gets its fix rounds.
 
+## Run 12: the multi-task scenarios with two sub-agents at once (AGENTIC_E2E_PARALLEL=2, d286e73)
+
+Every earlier run used one sub-agent at a time. Here the tasks really overlapped (interleaved steps, two npm test runs at once), and so far no concurrency problem showed: no drafts leaked between tasks.
+
+- research-answer passed.
+- **parallel-changes timed out, not because of parallel running.** The median worker wrote correct code and tried it itself with node -e (odd and even length). But a review said average() "should remain unchanged" and "fix the average function" in the same feedback; the fix was then rejected as unasked, verification asked to revert it, and time ran out. A send-back sentence that asks to fix a function neither the user nor the task named is now left out by rule (as verification already did), and when what is left asks for nothing, the result is accepted. With one GPU, two sub-agents at once are not faster: model calls add up to more than the wall time, so the 30-minute limit is tighter.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

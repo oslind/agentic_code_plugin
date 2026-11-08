@@ -1,4 +1,5 @@
 import { TaskStore } from "../state/taskStore";
+import { unaskedFixes } from "../coordinator/verify";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { draftProblemsOf } from "../changes/moduleStyle";
 import { Run, RunEvent, Task } from "../state/types";
@@ -13,6 +14,9 @@ import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
 import { earlierAnswers, learnedSoFar, runScope, userMessagesOf } from "./scope";
+
+/** A sentence that asks for a change ("Add …", "Please fix …", "Restore the original lines"). */
+const IMPERATIVE = /^\W*(please\s+)?(add|fix|correct|change|update|remove|delete|use|make|write|move|restore|undo|revert|rename|replace|implement|put|include|return|handle|export|import|create|call|keep|drop|split|merge|wrap|set)\b/i;
 
 /** The coordinator keeping tabs on the sub-agents of one run. */
 export interface Supervision {
@@ -336,6 +340,20 @@ export class Oversight {
       if (result.verdict === "revise" && !research && (await this.nothingToRenameIn(c.workspaceRoot, task, drafts))) {
         this.host.log("info", `Review of "${task.title}": accepted by rule, the name to rename occurs in none of its files.`);
         result = { ...result, verdict: "accept", feedback: "Accepted by rule: the name to rename occurs in none of this task's files, so there is nothing to change." };
+      }
+      // A send-back that asks to fix a function neither the user nor the task named is left out (run 12,
+      // parallel-changes: "average() is wrong; the task only asked for median, so leave it. Fix average()").
+      if (result.verdict === "revise" && !research) {
+        const words = [...userMessagesOf(scope), task.title, task.instructions];
+        const sentences = result.feedback.split(/(?<=[.!?])\s+/);
+        const unasked = unaskedFixes(sentences, words);
+        if (unasked.length) {
+          const kept = sentences.filter((x) => !unasked.includes(x)).join(" ").trim();
+          this.host.log("info", `Review of "${task.title}": left out a request to fix code nobody asked about: ${unasked.join(" ")}`);
+          // What is left must still ask for something; "average() is wrong but should stay as it is" asks for nothing.
+          const asks = kept.split(/(?<=[.!?])\s+/).some((x) => IMPERATIVE.test(x));
+          result = kept.length >= 10 && asks ? { ...result, feedback: kept } : { ...result, verdict: "accept", feedback: `Accepted: the review only asked to fix code outside the task (${unasked.join(" ")})` };
+        }
       }
       // A send-back for work in files the sub-agent may not change cannot be done: that part is left out.
       if (result.verdict === "revise" && !research) {
