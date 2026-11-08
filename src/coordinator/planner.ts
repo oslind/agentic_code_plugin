@@ -3,7 +3,8 @@ import { untrustedSection } from "../context/untrusted";
 import { callStructured, PLAN_MAX_TOKENS } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
 import { SkillCatalog, skillIndex, skillText, SKILL_RULE, MAX_TASK_SKILLS } from "../skills/catalog";
-import { DEFAULT_MAX_TASKS, dropUnknownDependencies, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
+import { DEFAULT_MAX_TASKS, dropUnknownDependencies, MAX_TASKS, Plan, planSchema, Repair, repairPlan, snapScopes } from "./plan";
+import { pathsOfTree } from "../context/budget";
 
 // Kept short on purpose: small models follow a few concrete rules and one
 // example better than a long policy document.
@@ -57,6 +58,8 @@ export interface PlanResult {
   plan: Plan;
   repairs: Repair[];
   droppedContext: string[];
+  /** fileScope paths the planner garbled, put right by snapScopes(). */
+  snappedScopes?: { taskId: string; from: string; to: string }[];
 }
 
 /** The heading of the project's file listing in a prompt. */
@@ -140,8 +143,9 @@ export async function planRequest(
     onAttempt: options.onAttempt,
     onThinking: options.onThinking,
   });
-  const repaired = repairPlan(plan);
-  return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped };
+  const snapped = snapScopes(plan, pathsOfTree(input.fileTree), [input.request, input.userWords ?? ""].join("\n"));
+  const repaired = repairPlan(snapped.plan);
+  return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped, snappedScopes: snapped.snapped };
 }
 
 /** Skills a task can be given: those for coding or research sub-agents. */

@@ -132,6 +132,7 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
   - every task that was not accepted holds "done" (fix-ups for files that don't exist are dropped before they run, which was the reason for the exception);
   - a change task whose report claims a change while it has written nothing is told so once before it can finish.
 - **parallel-changes failed:** the away-mode task never produced a draft (its replace_in_file path was malformed), yet verification called the run done. That is the same hole as above, closed by e22b70e. Median came back as `sorted[length / 2]` again. Now a rule spots a half-length array index (`halfIndexHints`) and points it out right after the write, telling the sub-agent to try an odd-length input with node -e, and again under the drafts in the review.
+  The real cause of the missing away-mode draft: the planner wrote the task's fileScope as "src/ther,mostat.js", so every write was refused as out of scope. The sub-agent and the supervisor then made up a story about a comma in the path. Now `snapScopes` replaces a fileScope path that is not in the project, and is not named as a new file, with the one project file at most 2 edits away.
 - small-context-change passed; it failed in run 9.
 
 ## Still open

@@ -302,6 +302,7 @@ export class RunLoop {
               : `Proposed plan: ${n} task(s), each for one sub-agent. Press "Run it" (or say "go") to start, or tell me what to change.`,
         });
         if (result.droppedContext.length) this.host.log("warn", `Left out of the plan prompt: ${result.droppedContext.join(", ")}`);
+        for (const x of result.snappedScopes ?? []) this.host.log("warn", `Plan task ${x.taskId}: the file "${x.from}" is not in the project; using "${x.to}".`);
         if (this.s.mode === "act") startRun = run.id;
       };
 

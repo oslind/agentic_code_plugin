@@ -95,3 +95,16 @@ describe("dependencies on tasks that do not exist", () => {
     expect(dropUnknownDependencies("not a plan")).toBe("not a plan");
   });
 });
+
+describe("garbled file scopes", () => {
+  it("are put right to the one project file a slip away, and new or named files are left alone", async () => {
+    const { snapScopes } = await import("../src/coordinator/plan");
+    const { pathsOfTree, fileTree } = await import("../src/context/budget");
+    const files = pathsOfTree(fileTree(["src/thermostat.js", "src/stats.js", "src/convert.js", "test.js"]));
+    expect(files.sort()).toEqual(["src/convert.js", "src/stats.js", "src/thermostat.js", "test.js"]);
+    const plan = { tasks: [{ ...t("away"), fileScope: ["src/ther,mostat.js"] }, { ...t("cfg"), fileScope: ["src/config.js"] }, { ...t("all"), fileScope: ["src/**"] }] };
+    const r = snapScopes(plan, files, "Create src/config.js and use it from src/thermostat.js");
+    expect(r.plan.tasks.map((x) => x.fileScope)).toEqual([["src/thermostat.js"], ["src/config.js"], ["src/**"]]);
+    expect(r.snapped).toEqual([{ taskId: "away", from: "src/ther,mostat.js", to: "src/thermostat.js" }]);
+  });
+});
