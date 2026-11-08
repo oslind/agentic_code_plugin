@@ -30,3 +30,4 @@ Every run of the end-to-end suite against a local model adds a line here (writte
 | 2026-11-07 08:34 | qwen3-8b-16k | e2e: parallel-changes, question-then-answer | 1/2 passed, 30.6 min, unloaded qwen3-8b-16k |
 | 2026-11-07 09:05 | qwen3-8b-16k | e2e: question-then-answer | 1/1 passed, 29.2 min, unloaded qwen3-8b-16k |
 | 2026-11-07 09:18 | qwen3-8b-16k | e2e: question-then-answer | 1/1 passed, 12.3 min, unloaded qwen3-8b-16k |
+| 2026-11-08 02:08 | qwen3-8b-16k | e2e: research-answer, change-final-reply, command-use, verify-fix, draft-for-review, project-skill-trusted, project-skill-untrusted, long-conversation, small-context-change, cut-off-answer, parallel-changes, dependent-changes, stop-then-continue, command-denied, missing-script, question-then-answer, no-json-mode, research-not-change | 12/18 passed, 236.7 min, unloaded qwen3-8b-16k |
