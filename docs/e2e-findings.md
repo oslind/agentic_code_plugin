@@ -126,6 +126,12 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
   - reviews of research call a "would print" guess a missing result;
   - the answer prompts no longer ask the model for injection warnings and no longer quote example phrases, and warnings the model writes itself are removed (`withoutModelWarnings`). The extension's own rule-based warning still shows.
 
+## Run 10: the 24 new scenarios plus run 9's six failures, on 643a3e0 (in progress)
+
+- **project-skill-trusted failed, and the run reported success:** the sub-agent thought "I added the toKelvin function", ran the tests and finished without a single write, twice. The reviews (which now see AGENTS.md) said so correctly. But verification called it done, because a task that was not accepted only held "done" when it had drafts, and this one had none. Fixed:
+  - every task that was not accepted holds "done" (fix-ups for files that don't exist are dropped before they run, which was the reason for the exception);
+  - a change task whose report claims a change while it has written nothing is told so once before it can finish.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

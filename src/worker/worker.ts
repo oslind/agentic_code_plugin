@@ -123,6 +123,9 @@ export class WorkerError extends Error {
 
 const REPLY_RESERVE = 4096;
 
+/** A report that says something was changed. */
+const CLAIMS_CHANGE = /\b(added|adds|updated|created|changed|fixed|wrote|written|modified|implemented|renamed|removed|inserted|replaced|refactored)\b/i;
+
 /** The most of a conversation saved for a later follow-up, in estimated tokens. Older tool output goes first. */
 const SAVED_HISTORY_TOKENS = 24000;
 
@@ -227,6 +230,8 @@ export class Worker {
   private readonly skills: Skill[];
   private readonly loadedSkills = new Set<string>();
   private skillLoads = 0;
+  /** Set once it was told its report claims a change it never wrote. */
+  private toldNoWrites = false;
 
   constructor(private readonly opts: WorkerOptions) {
     const role: SkillRole = opts.readOnly ? "research" : "coder";
@@ -385,6 +390,17 @@ export class Worker {
       }
 
       if (turn.call.tool === "finish") {
+        // Run 10: qwen thought "I added the toKelvin function", ran the tests and finished, without any write.
+        // Once per task, a change task that wrote nothing but reports a change is told so before it can finish.
+        if (!this.opts.readOnly && !this.opts.followUp && this.changed.size === 0 && !this.toldNoWrites && CLAIMS_CHANGE.test(turn.call.summary)) {
+          this.toldNoWrites = true;
+          this.opts.log("no_writes", "Its report claims a change, but it has not written any file");
+          this.messages.push({
+            role: "user",
+            content: "You have not changed any file in this task: no write_file or replace_in_file call of yours succeeded, so nothing you describe exists yet. Make the change now with write_file or replace_in_file, then finish. If no change is needed, finish with a summary that says you changed nothing and why.",
+          });
+          continue;
+        }
         // The coordinator reads the result first. When there are too few steps left to act on its
         // feedback, it still reads it, and a "revise" goes to the user instead of passing silently.
         if (this.opts.reviewResult && !this.opts.followUp) {

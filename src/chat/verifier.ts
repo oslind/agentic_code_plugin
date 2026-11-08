@@ -179,9 +179,10 @@ export class Verifier {
         status: notStarted ? "did not start" : t.status.replace("_", " "),
         summary: t.summary ?? (t.error ? `No report: ${t.error}` : ""),
         unfinished: latest.has(t.id) && t.status !== "done" ? (notStarted ? "a task it depends on did not finish" : (t.error ?? t.status)) : undefined,
-        // Only drafts that wait for the user can be wrong: a task that was not accepted but changed nothing
-        // (run 8: its file did not exist) leaves nothing behind to fix.
-        notAccepted: latest.has(t.id) && (run.changes ?? []).some((ch) => ch.taskId === t.id && ch.status !== "rejected" && ch.status !== "reverted") ? reviews.get(t.id) : undefined,
+        // Run 8 left this out for tasks that changed nothing (a fix-up for a file that did not exist); such
+        // fix-ups are now dropped before they run. Run 10: the only task never wrote its file, its review said
+        // so twice, and verification still called the request done. A task not accepted holds "done" either way.
+        notAccepted: latest.has(t.id) ? reviews.get(t.id) : undefined,
       };
     });
     // The newest draft of each file that is not rejected: what the user would get.
