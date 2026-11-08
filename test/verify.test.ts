@@ -262,6 +262,18 @@ describe("removals nobody asked for", () => {
     const v = guardVerification({ verdict: "not_done", verified: "", missing: ["Delete the comment on line 2"] }, { checks: [], tasks: [], userMessages: ["Add JSDoc comments."] });
     expect(v.verified).toBe(false);
     expect(v.manualReview).toBe(true);
-    expect(v.adjusted).toMatch(/remove things you did not ask/);
+    expect(v.adjusted).toMatch(/outside your request/);
+  });
+});
+
+describe("fixes to functions nobody named", () => {
+  it("drops a fix of a function outside the request, keeps fixes of named ones", async () => {
+    const { unaskedFixes, guardVerification } = await import("../src/coordinator/verify");
+    const user = ["Add median(readings) to src/stats.js and export it."];
+    expect(unaskedFixes(["Fix the average function in src/stats.js to use readings.length", "Fix median() for odd lengths", "Add a test for the empty list"], user)).toEqual([
+      "Fix the average function in src/stats.js to use readings.length",
+    ]);
+    const v = guardVerification({ verdict: "not_done", verified: "", missing: ["Fix the average function in src/stats.js to use readings.length", "Fix median() for odd lengths"] }, { checks: [], tasks: [], userMessages: user, request: "Add median" });
+    expect(v.missing).toEqual(["Fix median() for odd lengths"]);
   });
 });

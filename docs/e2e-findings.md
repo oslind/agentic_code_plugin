@@ -113,6 +113,10 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
   - `unaskedRemovals` drops "remove/delete …" items from verification unless the user asked to remove something (when nothing else is left, the result goes to manual review);
   - both prompts now say that lines in the original file, comments included, were not added by a sub-agent;
   - a missed `replace_in_file` now shows the nearest matching lines and the first line that differs (`nearestMatch`). Before, qwen kept "fixing line breaks" that were never the problem, and wrote that belief into its step notes.
+- **parallel-changes failed:** median came back as `sorted[length / 2]`, which is undefined for odd lengths. This is the fourth time in about nine runs. No sub-agent tried it with node -e, and no review traced it. A second review also asked to undo an average() change that had already been undone. Verification then turned that into "fix average()", a bug from before the request, and a fix-up rewrote it. Fixed:
+  - drafts that keep every original line now say so, checked by rule (`KEEPS_ORIGINAL_FACT`), and undo sentences in a send-back of such drafts are dropped (`withoutMootUndo`);
+  - verification drops "fix X()" items for functions that neither the user nor the plan named (`unaskedFixes`).
+  The median bug itself is left as a limit of the 8B model, because running unapproved project code to catch it would break the approval rule. The benchmark scores it.
 
 ## Still open
 

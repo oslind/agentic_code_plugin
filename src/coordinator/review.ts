@@ -125,7 +125,42 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
   const text = joined.length > maxChars ? `${joined.slice(0, maxChars)}\n[… cut]` : joined;
   // Facts found by rule go last and are never cut, so a review or verification cannot miss them.
   const problems = moduleStyleProblems(changes);
-  return problems.length ? `${text}\n\n${DRAFT_PROBLEMS_HEADING}\n${problems.map((p) => `- ${p}`).join("\n")}` : text;
+  const facts = keepsOriginalLines(changes) ? `${text}\n\n${KEEPS_ORIGINAL_FACT}` : text;
+  return problems.length ? `${facts}\n\n${DRAFT_PROBLEMS_HEADING}\n${problems.map((p) => `- ${p}`).join("\n")}` : facts;
+}
+
+/** Said under the drafts when they only add lines. Checked by rule. */
+export const KEEPS_ORIGINAL_FACT = "Checked by rule: every line of the original files is still there, unchanged. These drafts only add lines, so there is nothing to undo or restore.";
+
+/** True when every changed file still has all its original lines, in order: the drafts only add. */
+export function keepsOriginalLines(changes: Pick<PendingChange, "original" | "proposed">[]): boolean {
+  const edited = changes.filter((c) => c.original !== null);
+  if (!edited.length) return false;
+  return edited.every((c) => {
+    const after = c.proposed.split("\n");
+    let j = 0;
+    for (const line of c.original!.split("\n")) {
+      while (j < after.length && after[j] !== line) j++;
+      if (j >= after.length) return false;
+      j++;
+    }
+    return true;
+  });
+}
+
+/**
+ * A send-back that asks to undo or restore something when the drafts only add
+ * lines cannot be acted on. Run 9: the second review asked to undo a change
+ * to average() that the sub-agent had already undone, so its good drafts were
+ * not accepted, and verification turned that into a fix of a bug the user
+ * never named. The undo sentences are dropped; what is left stands.
+ */
+export function withoutMootUndo(feedback: string, drafts: string | undefined): { kept: string; dropped: string[] } {
+  if (!drafts?.includes(KEEPS_ORIGINAL_FACT)) return { kept: feedback, dropped: [] };
+  const sentences = feedback.split(/(?<=[.!?])\s+/);
+  const undo = /\b(undo|restore|revert|put back|roll back)\b/i;
+  const dropped = sentences.filter((x) => undo.test(x));
+  return { kept: sentences.filter((x) => !undo.test(x)).join(" ").trim(), dropped };
 }
 
 /** Builds the review prompt. Trusted parts are plain; everything a model wrote is fenced. */

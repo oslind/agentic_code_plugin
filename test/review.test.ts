@@ -150,3 +150,20 @@ describe("review with project conventions", () => {
     expect(buildReviewMessages(ctx, 8192)[1]!.content).not.toMatch(/project's own conventions/);
   });
 });
+
+describe("undo requests the drafts cannot act on", () => {
+  it("says so under drafts that only add lines, and drops the undo sentences", async () => {
+    const { draftsForReview, keepsOriginalLines, withoutMootUndo, KEEPS_ORIGINAL_FACT } = await import("../src/coordinator/review");
+    const original = "function average(r) {\n  return sum / 2;\n}\n\nmodule.exports = { average };\n";
+    const added = { path: "src/stats.js", original, proposed: original.replace("module.exports = { average };", "function median(r) {\n  return r[0];\n}\n\nmodule.exports = { average, median };") };
+    expect(keepsOriginalLines([added])).toBe(false);
+    const onlyAdds = { path: "src/stats.js", original, proposed: original + "\nfunction median(r) {\n  return r[0];\n}\n" };
+    expect(keepsOriginalLines([onlyAdds])).toBe(true);
+    const drafts = draftsForReview([onlyAdds]);
+    expect(drafts).toContain(KEEPS_ORIGINAL_FACT);
+    const r = withoutMootUndo("Undo the average function change. Also median returns the wrong value for [3, 1, 2]: sort first.", drafts);
+    expect(r.dropped).toHaveLength(1);
+    expect(r.kept).toMatch(/^Also median/);
+    expect(withoutMootUndo("Undo the change to average.", draftsForReview([added])).dropped).toEqual([]);
+  });
+});

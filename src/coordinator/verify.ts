@@ -234,13 +234,31 @@ export function unaskedRemovals(missing: string[], userMessages: string[] | unde
   return missing.filter((m) => REMOVAL.test(m));
 }
 
-export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[] }): Omit<Verification, "thinking"> {
+/** Words that name code but say nothing about which code. */
+const GENERIC = new Set(["the", "this", "that", "new", "test", "tests", "main", "helper", "each", "every", "all", "its", "any", "one", "other", "existing", "same", "missing", "broken", "wrong", "old"]);
+
+/**
+ * Missing items that fix a function the user never named, nor the planned work.
+ * Run 9: verification asked to fix average(), a bug that was there before the
+ * request ("add median"), and a fix-up rewrote it. Items that name no function are kept.
+ */
+export function unaskedFixes(missing: string[], words: string[]): string[] {
+  const asked = words.join("\n").toLowerCase();
+  return missing.filter((m) => {
+    const names = [...m.matchAll(/\b([A-Za-z_]\w{2,})\s*\(|\b(?:the|its)\s+([A-Za-z_]\w{2,})\s+function\b|\bfunction\s+([A-Za-z_]\w{2,})/g)]
+      .map((x) => (x[1] ?? x[2] ?? x[3])!)
+      .filter((n) => !GENERIC.has(n.toLowerCase()));
+    return /^\W*(fix|correct|repair|change|update|rewrite)\b/i.test(m) && names.length > 0 && !names.some((n) => new RegExp(`\\b${n.toLowerCase()}\\b`).test(asked));
+  });
+}
+
+export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string }): Omit<Verification, "thinking"> {
   const failed = ctx.checks.filter((c) => !c.passed && !c.skipped);
   const unfinished = ctx.tasks.filter((t) => t.unfinished !== undefined);
   // Run 6D: verification called the run done while the toKelvin task's review had said the function was missing.
   const rejected = ctx.tasks.filter((t) => t.unfinished === undefined && t.notAccepted !== undefined);
   let missing = d.missing.map((m) => m.replace(/\s+/g, " ").trim()).filter((m) => m.length >= 5);
-  const removals = unaskedRemovals(missing, ctx.userMessages);
+  const removals = [...unaskedRemovals(missing, ctx.userMessages), ...(ctx.userMessages ? unaskedFixes(missing, [...ctx.userMessages, ctx.request ?? ""]) : [])];
   missing = missing.filter((m) => !removals.includes(m));
   const forced: string[] = [
     ...draftProblemsOf(ctx.drafts ?? ""),
@@ -256,7 +274,7 @@ export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "c
     return { verified: false, evidence, summary, missing, thought: d.thought, adjusted };
   }
   if (d.verdict === "not_done" && missing.length === 0) {
-    const why = removals.length ? "only asked to remove things you did not ask to remove" : "named nothing that is missing";
+    const why = removals.length ? "only asked to remove or fix things outside your request" : "named nothing that is missing";
     return { verified: false, evidence, summary, missing: [], thought: d.thought, manualReview: true, adjusted: `It said not done but ${why}, so the work stays unverified and needs your review.` };
   }
   return { verified: d.verdict === "done", evidence, summary, missing: d.verdict === "done" ? [] : missing, thought: d.thought };

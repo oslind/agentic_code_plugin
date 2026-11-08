@@ -5,7 +5,7 @@ import { ConversationStore } from "./conversationStore";
 import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { conventionsText } from "../skills/catalog";
-import { feedbackInScope, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { feedbackInScope, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -300,6 +300,14 @@ export class Oversight {
       signal.throwIfAborted();
       // It asked for changes without saying which: that is no review at all, so the user decides.
       if (result.adjusted) return await unreviewed("unclear", { thought: result.thought, thinking: clip(result.thinking) });
+      // Asking to undo what the drafts never changed cannot be done either (run 9): those sentences are left out.
+      if (result.verdict === "revise") {
+        const moot = withoutMootUndo(result.feedback, drafts);
+        if (moot.dropped.length) {
+          this.host.log("info", `Review of "${task.title}": left out a request to undo lines the drafts never changed: ${moot.dropped.join(" ")}`);
+          result = moot.kept.length >= 10 ? { ...result, feedback: moot.kept } : { ...result, verdict: "accept", feedback: "Accepted: the review only asked to undo changes, but the drafts keep every original line." };
+        }
+      }
       // A send-back for work in files the sub-agent may not change cannot be done: that part is left out.
       if (result.verdict === "revise" && !research) {
         const scoped = feedbackInScope(result.feedback, task.fileScope);
