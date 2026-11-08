@@ -233,7 +233,28 @@ describe("bounded reads (audit finding 3)", () => {
     expect(await sandbox.readFile("convert.js")).toContain("}\n\nfunction toF(c) {\n  return c;\n}\n\nmodule.exports = { toCelsius, toF };\n");
     const miss = await edit("nothing\\nhere", "x");
     expect(miss.ok).toBe(false);
-    expect(miss.output).toMatch(/two characters \\n where the file has line breaks/);
+    // Run 10: the hint only comes when real line breaks would have matched.
+    expect(miss.output).not.toMatch(/two characters \\n/);
+    const twice = await edit("{\\n", "x");
+    expect(twice.ok).toBe(false);
+    expect(twice.output).toMatch(/two characters \\n where the file has line breaks/);
+  });
+
+  it("replace_in_file with all: true replaces every occurrence, and suggests it when the text occurs more than once", async () => {
+    // e2e run 10, rename-everywhere: renames were a fight with exact matching, one occurrence at a time.
+    await writeFile(path.join(repo, "convert.js"), "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\n\nmodule.exports = { toCelsius };\n");
+    const sandbox = await WorkspaceSandbox.create(repo);
+    const edit = (all?: boolean) => executeTool(toolCallSchema.parse({ tool: "replace_in_file", path: "convert.js", search: "toCelsius", replace: "fahrenheitToCelsius", ...(all === undefined ? {} : { all }) }), { sandbox, checks: [] });
+    const once = await edit();
+    expect(once.ok).toBe(false);
+    expect(once.output).toMatch(/occurs 2 times/);
+    expect(once.output).toMatch(/"all": true/);
+    const res = await edit(true);
+    expect(res.ok).toBe(true);
+    expect(res.output).toMatch(/2 replacement/);
+    const text = await sandbox.readFile("convert.js");
+    expect(text).toContain("function fahrenheitToCelsius(f)");
+    expect(text).toContain("module.exports = { fahrenheitToCelsius };");
   });
 
   it("search skips files over its limit without loading them", async () => {

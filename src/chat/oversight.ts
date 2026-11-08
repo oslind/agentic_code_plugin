@@ -1,4 +1,5 @@
 import { TaskStore } from "../state/taskStore";
+import { WorkspaceSandbox } from "../tools/sandbox";
 import { draftProblemsOf } from "../changes/moduleStyle";
 import { Run, RunEvent, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
@@ -6,7 +7,7 @@ import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { failureLines } from "../checks/failures";
 import { conventionsText } from "../skills/catalog";
-import { feedbackInScope, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { feedbackInScope, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -326,6 +327,11 @@ export class Oversight {
           result = moot.kept.length >= 10 ? { ...result, feedback: moot.kept } : { ...result, verdict: "accept", feedback: "Accepted: the review only asked to undo changes, but the drafts keep every original line." };
         }
       }
+      // A rename with nothing to rename (run 10): the old name is in none of the task's files, so no draft is right.
+      if (result.verdict === "revise" && !research && (await this.nothingToRenameIn(c.workspaceRoot, task, drafts))) {
+        this.host.log("info", `Review of "${task.title}": accepted by rule, the name to rename occurs in none of its files.`);
+        result = { ...result, verdict: "accept", feedback: "Accepted by rule: the name to rename occurs in none of this task's files, so there is nothing to change." };
+      }
       // A send-back for work in files the sub-agent may not change cannot be done: that part is left out.
       if (result.verdict === "revise" && !research) {
         const scoped = feedbackInScope(result.feedback, task.fileScope);
@@ -353,6 +359,19 @@ export class Oversight {
     } finally {
       this.checkingOn.delete(key);
       this.s.changed();
+    }
+  }
+
+  /** Reads a task's files (only plain paths, no patterns) and checks whether its rename has nothing to change. */
+  private async nothingToRenameIn(workspaceRoot: string, task: Task, drafts: string): Promise<boolean> {
+    if (drafts.trim() || task.fileScope.some((p) => /[*?[\]{}]/.test(p))) return false;
+    try {
+      const sandbox = await WorkspaceSandbox.create(workspaceRoot);
+      const files = new Map<string, string | undefined>();
+      for (const p of task.fileScope) files.set(p, await sandbox.readFile(p).catch(() => undefined));
+      return nothingToRename(task.instructions, drafts, files);
+    } catch {
+      return false;
     }
   }
 

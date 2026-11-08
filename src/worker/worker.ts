@@ -182,7 +182,7 @@ Tools:
 - {"tool":"list_files","glob":"src/**/*.ts"}
 - {"tool":"search","query":"functionName","glob":"src/**"}
 - {"tool":"write_file","path":"src/a.ts","content":"full file content"}
-- {"tool":"replace_in_file","path":"src/a.ts","search":"exact old text","replace":"new text"}
+- {"tool":"replace_in_file","path":"src/a.ts","search":"exact old text","replace":"new text"}  (add "all":true to replace every occurrence, for a rename)
 - {"tool":"run_check","name":"${checks[0]?.name ?? "test"}"}  (available: ${checks.map((c) => c.name).join(", ") || "none"})
 - {"tool":"run_command","command":"npm test","reason":"see whether my change works"}  (runs a command in a terminal the user watches; output comes back to you)
 - {"tool":"request_check","name":"pytest","command":"python -m pytest tests/test_api.py -q","reason":"runs the tests for the code I changed"}  (adds a command that verifies your task, also when it is checked at the end)

@@ -17,8 +17,9 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
   z.object({
     tool: z.literal("replace_in_file"),
     path: z.string(),
-    search: z.string().min(1).describe("Exact text to find; must occur exactly once"),
+    search: z.string().min(1).describe("Exact text to find; must occur exactly once unless all is true"),
     replace: z.string(),
+    all: z.boolean().optional().describe("true: replace every occurrence (for a rename)"),
   }),
   z.object({ tool: z.literal("run_check"), name: z.string().describe("Name of a configured check, e.g. test or lint") }),
   z.object({

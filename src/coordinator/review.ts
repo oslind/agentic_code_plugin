@@ -168,6 +168,34 @@ export function withoutMootUndo(feedback: string, drafts: string | undefined): {
   return { kept: sentences.filter((x) => !undo.test(x)).join(" ").trim(), dropped };
 }
 
+/** Words that can follow "rename" or "replace" without being a name in the code. */
+const NOT_A_NAME = new Set(["it", "them", "this", "that", "these", "those", "all", "every", "everything", "each", "occurrences", "occurrence", "uses", "function", "variable", "method", "file", "files", "name", "names", "the", "a", "an", "text"]);
+
+/**
+ * The old name a rename or replace task asks to change ("Rename toCelsius to
+ * fahrenheitToCelsius", "replace every use of oldName with newName"), or
+ * undefined when the instructions are not a rename or name nothing that
+ * looks like code. Read from the task's instructions, which the planner wrote.
+ */
+export function renamedName(instructions: string): string | undefined {
+  const m = /\b(?:rename|replace)\b[^.\n]*?[`'"]?([A-Za-z_$][\w$.]*)[`'"]?\s+(?:to|with|by)\s+[`'"]?[A-Za-z_$][\w$]*/i.exec(instructions);
+  const name = m?.[1]?.replace(/\.$/, "");
+  return name && !NOT_A_NAME.has(name.toLowerCase()) ? name : undefined;
+}
+
+/**
+ * True when a rename task drafted nothing because there is nothing to rename:
+ * the old name occurs in none of its files (all read, and none missing). Run
+ * 10, rename-everywhere: reviews sent back a correct "this file has no
+ * occurrences" report, and the sub-agent spent its steps looking again.
+ * Checked by rule, so the review cannot argue with it.
+ */
+export function nothingToRename(instructions: string, drafts: string, scopeFiles: Map<string, string | undefined>): boolean {
+  const name = renamedName(instructions);
+  if (!name || drafts.trim() || scopeFiles.size === 0) return false;
+  return [...scopeFiles.values()].every((text) => text !== undefined && !text.includes(name));
+}
+
 /** Builds the review prompt. Trusted parts are plain; everything a model wrote is fenced. */
 export function buildReviewMessages(ctx: ReviewContext, contextWindow: number): ChatMessage[] {
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(SYSTEM);

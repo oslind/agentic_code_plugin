@@ -101,31 +101,36 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         let { search, replace } = call;
         let count = occurrences(text, search);
         let note = "";
+        // A rename: every occurrence at once (run 10: a rename cost 9 minutes of exact-match retries).
+        const every = call.all === true;
         // Without structured output, qwen3:8b wrote "\\n" in its JSON, so the search had the two characters
         // backslash and n where the file has line breaks, and never matched (e2e run 5: 30 minutes of retries).
         if (count === 0 && writtenOutBreaks(search)) {
           const unescaped = unescapeBreaks(search);
-          if (occurrences(text, unescaped) === 1) {
+          const found = occurrences(text, unescaped);
+          if (found === 1 || (every && found > 0)) {
             search = unescaped;
             replace = unescapeBreaks(replace);
-            count = 1;
+            count = found;
             note = " Your search and replace text had \\n written out instead of line breaks; they were read as line breaks.";
           }
         }
-        if (count !== 1) {
+        if (count === 0 || (count > 1 && !every)) {
+          // Run 10: the hint about written-out \n came three times although the text with real line breaks did
+          // not match either; the hint now only comes when real line breaks would have matched.
+          const unescaped = writtenOutBreaks(search) ? unescapeBreaks(search) : undefined;
+          const breaksHint = unescaped && occurrences(text, unescaped) > 0 ? " Your search text has the two characters \\n where the file has line breaks: put real line breaks in it (one \\n in the JSON string, not two)." : "";
           return {
             ok: false,
             output:
               count === 0
-                ? `The search text was not found in ${call.path}.${
-                    writtenOutBreaks(search) ? " Your search text has the two characters \\n where the file has line breaks: put real line breaks in it (one \\n in the JSON string, not two)." : ""
-                  }${nearestMatch(text, search) ?? " Read the file again and copy the text exactly, including indentation."}`
-                : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once.`,
+                ? `The search text was not found in ${call.path}.${breaksHint}${nearestMatch(text, unescaped ?? search) ?? " Read the file again and copy the text exactly, including indentation."}`
+                : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once, or add "all": true to replace every occurrence (for a rename).`,
           };
         }
-        const edited = text.replace(search, () => replace);
+        const edited = every ? text.split(search).join(replace) : text.replace(search, () => replace);
         await ctx.sandbox.writeFile(call.path, edited);
-        return { ok: true, output: draftNote(call.path, "edit") + note + loadWarning(call.path, text, edited, await moduleStyleOf(ctx.sandbox.root)), wrote: call.path };
+        return { ok: true, output: draftNote(call.path, every ? `${count} replacement(s)` : "edit") + note + loadWarning(call.path, text, edited, await moduleStyleOf(ctx.sandbox.root)), wrote: call.path };
       }
       case "run_check": {
         const check = ctx.checks.find((c) => c.name === call.name);
