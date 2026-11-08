@@ -206,7 +206,7 @@ export class Verifier {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,
       tasks,
-      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? [])),
+      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? []), userMessagesOf(runScope(c.entries, runId)).join("\n")),
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),

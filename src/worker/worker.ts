@@ -553,6 +553,7 @@ export class Worker {
         checkDir: this.opts.checkDir,
         terminal: this.opts.terminal,
         onCommand: (command, res) => this.logCommand(command, res),
+        said: this.opts.task.instructions,
       });
       if (outcome.wrote) {
         this.changed.add(outcome.wrote);

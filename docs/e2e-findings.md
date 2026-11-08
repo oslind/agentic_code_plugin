@@ -191,6 +191,10 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 - use-strict-everywhere (7.1 min) passed.
 - The scenarios give each task its own file, so same-file merging under real overlap was not exercised. New scenario same-file-parallel: two sub-agents add one function each to src/convert.js at the same time.
 
+### Run 12B (reruns, two at once, b27f1f5)
+
+- **parallel-changes failed on one missing export.** median was right (Math.floor) and added with insert_lines, but module.exports further down was never touched; npm test does not call median, and the review and verification accepted it although the user said "and export it". Now a new function that the request says to export, in the same sentence, and that the file does not export is a problem checked by rule: the sub-agent is warned right after the write, and reviews and verification cannot accept it. A review call still took 372 s.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

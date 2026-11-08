@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadWarning, nearestMatch } from "../src/worker/tools";
-import { draftProblemsOf, moduleStyleProblems, undefinedExports } from "../src/changes/moduleStyle";
+import { draftProblemsOf, moduleStyleProblems, undefinedExports, unexportedProblems } from "../src/changes/moduleStyle";
 import { draftsForReview } from "../src/coordinator/review";
 import { guardVerification } from "../src/coordinator/verify";
 
@@ -130,5 +130,41 @@ describe("ES modules in a CommonJS project", () => {
     // A bundled front end: no "type", but its .js files use import. Not called CommonJS.
     expect(await make({ "package.json": "{}", "src/a.js": "import x from './x';\n", "src/b.js": "module.exports = 1;\n" })).toBeUndefined();
     expect(await make({ "src/a.js": "module.exports = {};\n" })).toBeUndefined();
+  });
+});
+
+describe("unexportedProblems", () => {
+  const before = "function average(r) {\n  return 0;\n}\n\nmodule.exports = { average };\n";
+  const added = "function average(r) {\n  return 0;\n}\n\nfunction median(readings) {\n  return readings[0];\n}\n\nmodule.exports = { average };\n";
+  it("flags a new function the request says to export when module.exports leaves it out (run 12B)", () => {
+    const p = unexportedProblems([{ path: "src/stats.js", original: before, proposed: added }], "Add median(readings) to src/stats.js and export it.");
+    expect(p).toEqual([expect.stringMatching(/defines median, which the request says to export/)]);
+  });
+  it("is quiet when the function is exported, in any common form", () => {
+    const said = "add median(readings) and export it";
+    for (const proposed of [
+      added.replace("{ average }", "{ average, median }"),
+      added + "module.exports.median = median;\n",
+      "export function median(r) {\n  return r[0];\n}\n",
+      "function median(r) {\n  return r[0];\n}\nexport { median };\n",
+    ]) expect(unexportedProblems([{ path: "src/stats.js", original: before, proposed }], said)).toEqual([]);
+  });
+  it("leaves helpers alone that no exporting clause names, and requests that never say export", () => {
+    const helper = added.replace(/median/g, "sortCopy");
+    expect(unexportedProblems([{ path: "src/stats.js", original: before, proposed: helper }], "add median(readings) and export it")).toEqual([]);
+    expect(unexportedProblems([{ path: "src/stats.js", original: before, proposed: added }], "add median(readings) to src/stats.js")).toEqual([]);
+    expect(unexportedProblems([{ path: "src/stats.js", original: before, proposed: added }], "add median(readings); add toKelvin and export it")).toEqual([]);
+  });
+});
+
+describe("an unexported function after a write and in the review", () => {
+  const before = "function average(r) {\n  return 0;\n}\n\nmodule.exports = { average };\n";
+  const after = before.replace("\nmodule", "\nfunction median(r) {\n  return r[0];\n}\n\nmodule");
+  it("warns the sub-agent right after the write", () => {
+    expect(loadWarning("src/stats.js", before, after, "commonjs", "Add median(readings) and export it")).toMatch(/Warning: .*does not export it/);
+  });
+  it("is a rule-checked problem in the drafts a review sees", () => {
+    const drafts = draftsForReview([{ path: "src/stats.js", original: before, proposed: after }], undefined, "commonjs", undefined, "Add median(readings) and export it");
+    expect(draftProblemsOf(drafts)).toEqual([expect.stringMatching(/does not export it/)]);
   });
 });

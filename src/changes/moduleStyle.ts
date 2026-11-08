@@ -85,6 +85,41 @@ export function moduleStyleProblems(changes: { path: string; original: string | 
   return problems;
 }
 
+/** True when a JavaScript text exports `name` in any common form. */
+function exportsName(text: string, name: string): boolean {
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const n = name.replace(/\$/g, "\\$");
+  const word = `(?<![\\w$])${n}(?![\\w$])`;
+  if (new RegExp(`\\b(?:module\\.)?exports\\.${n}\\s*=`).test(code)) return true;
+  if (new RegExp(`\\bmodule\\.exports\\s*=\\s*${n}\\s*;?\\s*$`, "m").test(code)) return true;
+  if (new RegExp(`^\\s*export\\s+(?:default\\s+)?(?:async\\s+)?(?:function\\*?|const|let|var|class)\\s+${n}(?![\\w$])`, "m").test(code)) return true;
+  if (new RegExp(`^\\s*export\\s+default\\s+${n}\\s*;?\\s*$`, "m").test(code)) return true;
+  const lists = [...code.matchAll(/\bmodule\.exports\s*=\s*\{([^{}]*)\}/g), ...code.matchAll(/^\s*export\s*\{([^{}]*)\}/gm), ...code.matchAll(/\bObject\.assign\s*\(\s*(?:module\.)?exports\s*,\s*\{([^{}]*)\}/g)];
+  return lists.some((m) => new RegExp(word).test(m[1]!));
+}
+
+/**
+ * Functions a draft adds that the request says to export, but the file does not export. Run 12B: "add
+ * median(readings) to src/stats.js and export it" was inserted with insert_lines, module.exports further down
+ * was never touched, and the review and verification both accepted it. Only names that `said` mentions in the
+ * same sentence or clause as the word "export" count, so a helper the request never named is left alone.
+ */
+export function unexportedProblems(changes: { path: string; original: string | null; proposed: string }[], said: string | undefined): string[] {
+  if (!said || !/\bexport/i.test(said)) return [];
+  const clauses = said.split(/[.;!?](?=\s|$)|\n|\band\s+(?:add|create|change|make|write)\b/i).filter((c) => /\bexport/i.test(c));
+  const problems: string[] = [];
+  for (const c of changes) {
+    if (!/\.(c|m)?[jt]s$/i.test(c.path)) continue;
+    const wanted = newFunctionNames(c.original, c.proposed).filter((name) => clauses.some((cl) => new RegExp(`(?<![\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(cl)));
+    const missing = wanted.filter((name) => !exportsName(c.proposed, name));
+    if (missing.length) {
+      const list = missing.join(", ");
+      problems.push(`${c.path} defines ${list}, which the request says to export, but does not export ${missing.length === 1 ? "it" : "them"}, so other files cannot use ${missing.length === 1 ? "it" : "them"}. Add ${missing.length === 1 ? "it" : "them"} to the file's exports (module.exports or export, as the file already does).`);
+    }
+  }
+  return problems;
+}
+
 /** The problem lines inside a draftsForReview() text, if any. */
 export function draftProblemsOf(drafts: string): string[] {
   const at = drafts.lastIndexOf(DRAFT_PROBLEMS_HEADING);
