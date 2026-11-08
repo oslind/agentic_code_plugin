@@ -156,6 +156,9 @@ function decisionFor(entry: ChatEntry, scenario: Scenario): { decision: Decision
 /** A user who has changed no settings: every user-only value is its default. */
 const NO_USER_SETTINGS = { inspect: () => undefined };
 
+/** A failure named in the reply, in the languages the scenarios use (run 11: a Swedish reply said "misslyckades"). */
+export const FAILURE_WORDS = /fail|error|did not pass|not pass|misslyck|fel\b|felet|inte godk/i;
+
 export async function runScenario(scenario: Scenario, model: ModelProvider, opts: HarnessOptions): Promise<ScenarioResult> {
   const log = opts.log ?? (() => {});
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), `agentic-e2e-${scenario.name}-`));
@@ -404,7 +407,7 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
       // question-then-answer failed on a test failure from the first prompt, already reported there.
       const lastPrompt = entries.map((e) => e.author === "user" && e.text === scenario.prompts.at(-1)).lastIndexOf(true);
       const failedCommands = failedCommandsOf(entries.slice(Math.max(0, lastPrompt)));
-      if (lastCoordinator?.kind === "answer" && failedCommands.length && !/fail|error|did not pass|not pass/i.test(lastCoordinator.text)) {
+      if (lastCoordinator?.kind === "answer" && failedCommands.length && !FAILURE_WORDS.test(lastCoordinator.text)) {
         failures.push(`the last answer does not mention that ${failedCommands.map((c) => `\`${c.line}\``).join(", ")} failed: ${lastCoordinator.text.slice(0, 300)}`);
       }
       if (scenario.endsWithAnswer !== false && lastCoordinator?.kind !== "answer") {

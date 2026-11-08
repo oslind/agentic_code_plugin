@@ -161,12 +161,16 @@ Three of the 15 failures were checks that were too strict (outside-workspace, pl
 - project-skill-trusted passed (3.8 min).
 - parallel-changes timed out again: toKelvin and away were accepted, but the median task spent its time re-reading a 20-line file to get a replace right. A missed replace_in_file in a short file now also suggests writing the file whole with write_file, keeping every other line.
 
-## Run 11: every scenario (42) on aa4a0a2 (in progress)
+## Run 11: every scenario (42) on aa4a0a2: 39 of 42 passed (the original 18 all passed, the new 24: 21)
 
 - The first 21 passed, including parallel-changes (failed in runs 9, 10 and 10B), dependent-changes, command-denied, outside-workspace and stop-then-continue.
 - **rename-everywhere failed, much closer than in run 10.** Research came first and the plan touched only the right files, but the researcher had only searched src/** (as the tool examples showed), so test.js kept the old name and npm test broke with "toCelsius is not a function". Verification called that an existing issue, although it did not happen without the drafts. Now a rename request gives the planner every project file that mentions the old name (searched by rule over the whole project); the tool examples search the whole project; and a command failure the drafts caused, found by the run without them, is missing work whatever the verdict says.
 - package-json-script, readme-section, readme-typo, fix-and-add-test, validate-input and new-module-used passed (the last two failed in run 10).
 - **use-strict-everywhere timed out on the last of four files** (it passed in run 10 in 18 minutes). Every worker fought replace_in_file to add a first line, one draft put 'use strict' after the requires, and each task now also runs npm test. Sub-agents now have an insert_lines tool (insert before a line number, 1 = the top, nothing to match), with the same scope and approval rules as the other write tools.
+- esm-project, python-project, research-call-chain, research-finds-bug, noisy-command, plan-mode-holds-change, two-changes-in-a-row, what-did-you-change, already-done and impossible-constraint passed.
+- **swedish-request "failed" only on the harness check.** The change was right on the first write, and the Swedish final reply named the npm test failure ("Följande kommandon misslyckades…"), but the check only knew English failure words. It now also accepts Swedish ones (FAILURE_WORDS).
+
+Thirteen scenarios that failed in run 10 passed in run 11. One clean run does not prove they are stable with an 8B model; the benchmark repeats will say more.
 
 ## Still open
 
