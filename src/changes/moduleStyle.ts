@@ -89,3 +89,24 @@ export function draftProblemsOf(drafts: string): string[] {
     .map((l) => l.slice(2).trim())
     .filter(Boolean);
 }
+
+/**
+ * Array indexes that are half a length: not a whole number when the length is
+ * odd, so the element is undefined in JavaScript. Run 9 and 10: qwen wrote
+ * median() as sorted[sorted.length / 2] in four of about ten runs, and neither
+ * its tests nor the review ran the odd case. A hint, not a load problem: the
+ * code may only use it for even lengths.
+ */
+export function halfIndexHints(path: string, text: string): string[] {
+  if (!/\.(c|m)?[jt]sx?$/i.test(path)) return [];
+  const hints: string[] = [];
+  const direct = text.match(/\[\s*[\w.]+\.length\s*\/\s*2\s*\]/);
+  if (direct) hints.push(`${path}: \`${direct[0]}\` is not a whole number when the length is odd, so it gives undefined. Use Math.floor(... / 2) where the odd case needs the middle element.`);
+  for (const m of text.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*([\w.]+)\.length\s*\/\s*2\s*;/g)) {
+    const name = m[1]!;
+    if (new RegExp(`\\[\\s*${name}\\s*\\]`).test(text)) {
+      hints.push(`${path}: \`${name} = ${m[2]}.length / 2\` is not a whole number when the length is odd, so \`[${name}]\` gives undefined then. Use Math.floor(${m[2]}.length / 2) for the odd case.`);
+    }
+  }
+  return hints;
+}

@@ -131,6 +131,8 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
 - **project-skill-trusted failed, and the run reported success:** the sub-agent thought "I added the toKelvin function", ran the tests and finished without a single write, twice. The reviews (which now see AGENTS.md) said so correctly. But verification called it done, because a task that was not accepted only held "done" when it had drafts, and this one had none. Fixed:
   - every task that was not accepted holds "done" (fix-ups for files that don't exist are dropped before they run, which was the reason for the exception);
   - a change task whose report claims a change while it has written nothing is told so once before it can finish.
+- **parallel-changes failed:** the away-mode task never produced a draft (its replace_in_file path was malformed), yet verification called the run done. That is the same hole as above, closed by e22b70e. Median came back as `sorted[length / 2]` again. Now a rule spots a half-length array index (`halfIndexHints`) and points it out right after the write, telling the sub-agent to try an odd-length input with node -e, and again under the drafts in the review.
+- small-context-change passed; it failed in run 9.
 
 ## Still open
 

@@ -1,4 +1,4 @@
-import { moduleStyleProblems } from "../changes/moduleStyle";
+import { halfIndexHints, moduleStyleProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
@@ -155,10 +155,12 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
  */
 export function loadWarning(path: string, before: string | null, after: string): string {
   const problems = moduleStyleProblems([{ path, original: before, proposed: after }]);
-  if (!problems.length) return "";
+  const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
+  const hint = hints.length ? `\nCheck: ${hints.join(" ")} Try the function on an odd-length input with run_command (node -e) before you finish.` : "";
+  if (!problems.length) return hint;
   // Run 6H: a 15-line stats.js got seven replace_in_file patches, each making it worse. A small file is easier to write whole.
   const small = after.split("\n").length <= 80;
-  return `\nWarning: ${problems.join(" ")} ${small ? `Read the whole file with read_file, then write it again whole with write_file, correct from top to bottom, instead of patching it further.` : "Read the file and fix it before you finish."}`;
+  return `${hint}\nWarning: ${problems.join(" ")} ${small ? `Read the whole file with read_file, then write it again whole with write_file, correct from top to bottom, instead of patching it further.` : "Read the file and fix it before you finish."}`;
 }
 
 /**

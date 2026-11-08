@@ -86,3 +86,17 @@ describe("a search that was not found", () => {
     expect(nearestMatch(file, "function other() {}")).toBeUndefined();
   });
 });
+
+describe("half-length array indexes", () => {
+  const buggy = "function median(r) {\n  const sorted = [...r].sort((a, b) => a - b);\n  const mid = sorted.length / 2;\n  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;\n}\n";
+  it("are pointed out after a write and under the drafts in a review", async () => {
+    const { halfIndexHints } = await import("../src/changes/moduleStyle");
+    const { draftsForReview } = await import("../src/coordinator/review");
+    expect(halfIndexHints("src/stats.js", buggy)).toHaveLength(1);
+    expect(halfIndexHints("src/stats.js", "return s[s.length / 2];")).toHaveLength(1);
+    expect(halfIndexHints("src/stats.js", buggy.replace("sorted.length / 2", "Math.floor(sorted.length / 2)"))).toEqual([]);
+    expect(halfIndexHints("README.md", buggy)).toEqual([]);
+    expect(loadWarning("src/stats.js", "", buggy)).toMatch(/odd-length input/);
+    expect(draftsForReview([{ path: "src/stats.js", original: "", proposed: buggy }])).toMatch(/Checked by rule, look at these before you accept/);
+  });
+});

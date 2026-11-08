@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { lineDiff } from "../changes/lineDiff";
 import { estimateTokens, truncateToTokens } from "../context/budget";
-import { DRAFT_PROBLEMS_HEADING, moduleStyleProblems } from "../changes/moduleStyle";
+import { DRAFT_PROBLEMS_HEADING, halfIndexHints, moduleStyleProblems } from "../changes/moduleStyle";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
@@ -126,7 +126,9 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
   const text = joined.length > maxChars ? `${joined.slice(0, maxChars)}\n[… cut]` : joined;
   // Facts found by rule go last and are never cut, so a review or verification cannot miss them.
   const problems = moduleStyleProblems(changes);
-  const facts = keepsOriginalLines(changes) ? `${text}\n\n${KEEPS_ORIGINAL_FACT}` : text;
+  const hints = changes.flatMap((c) => halfIndexHints(c.path, c.proposed));
+  const withHints = hints.length ? `${text}\n\nChecked by rule, look at these before you accept:\n${hints.map((h) => `- ${h}`).join("\n")}` : text;
+  const facts = keepsOriginalLines(changes) ? `${withHints}\n\n${KEEPS_ORIGINAL_FACT}` : withHints;
   return problems.length ? `${facts}\n\n${DRAFT_PROBLEMS_HEADING}\n${problems.map((p) => `- ${p}`).join("\n")}` : facts;
 }
 
