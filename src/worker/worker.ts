@@ -202,6 +202,7 @@ Tools:
 - {"tool":"search","query":"functionName"}  (searches the whole project; add "glob" only to narrow it)
 - {"tool":"write_file","path":"src/a.ts","content":"full file content"}
 - {"tool":"replace_in_file","path":"src/a.ts","search":"exact old text","replace":"new text"}  (add "all":true to replace every occurrence, for a rename)
+- {"tool":"insert_lines","path":"src/a.ts","line":1,"text":"'use strict';"}  (inserts lines before a line number, 1 = the very top; no text to match)
 - {"tool":"run_check","name":"${checks[0]?.name ?? "test"}"}  (available: ${checks.map((c) => c.name).join(", ") || "none"})
 - {"tool":"run_command","command":"npm test","reason":"see whether my change works"}  (runs a command in a terminal the user watches; output comes back to you)
 - {"tool":"request_check","name":"pytest","command":"python -m pytest tests/test_api.py -q","reason":"runs the tests for the code I changed"}  (adds a command that verifies your task, also when it is checked at the end)
@@ -211,7 +212,7 @@ ${withSkills ? `${SKILL_TOOL}\n` : ""}- {"tool":"finish","summary":"what you cha
 
 Rules:
 - You may only change files matching: ${task.fileScope.join(", ")}
-- Read a file before changing it. Prefer replace_in_file for small edits.
+- Read a file before changing it. Prefer replace_in_file for small edits, and insert_lines to add lines at a known place (such as the top of a file).
 - Change only what your task asks for. If you notice another bug, do not fix it: name it in your finish summary.
 - Write code the way the project already does: keep its module style (require/module.exports or import/export), naming and formatting. "Import" in a request means to use something from another file, not to switch module styles. Before you create a new code file, read one of the project's existing files next to it to see that style. Tests too: add tests in the style the project's test file already uses, and never switch to another test framework or add a dependency your task does not ask for.
 - Paths are relative to the project root.
@@ -566,6 +567,10 @@ export class Worker {
 
 /** What a file change will do, for the approval card. Small enough to read; long changes are cut. */
 export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max = 6000): Promise<string | undefined> {
+  if (call.tool === "insert_lines") {
+    const text = `Insert before line ${call.line}:\n${call.text.split("\n").map((l) => `+ ${l}`).join("\n")}`;
+    return text.length > max ? `${text.slice(0, max)}\n[… cut, ${text.length - max} more characters]` : text;
+  }
   if (call.tool !== "write_file" && call.tool !== "replace_in_file") return undefined;
   const before = await sandbox.readFile(call.path).catch(() => undefined);
   let text: string;

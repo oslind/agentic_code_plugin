@@ -1,4 +1,5 @@
 import { existsSync, realpathSync } from "fs";
+import { checkToolCall } from "../src/tools/policy";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
@@ -256,6 +257,21 @@ describe("bounded reads (audit finding 3)", () => {
     const text = await sandbox.readFile("convert.js");
     expect(text).toContain("function fahrenheitToCelsius(f)");
     expect(text).toContain("module.exports = { fahrenheitToCelsius };");
+  });
+
+  it("insert_lines adds lines before a line number, with nothing to match", async () => {
+    // e2e run 11, use-strict-everywhere: adding a first line was a fight with replace_in_file in every file.
+    await writeFile(path.join(repo, "a.js"), "const x = require('./b');\nmodule.exports = { x };\n");
+    const sandbox = await WorkspaceSandbox.create(repo);
+    const insert = (line: number, text: string) => executeTool(toolCallSchema.parse({ tool: "insert_lines", path: "a.js", line, text }), { sandbox, checks: [] });
+    const res = await insert(1, "'use strict';\n");
+    expect(res.ok).toBe(true);
+    expect(res.wrote).toBe("a.js");
+    expect(await sandbox.readFile("a.js")).toBe("'use strict';\nconst x = require('./b');\nmodule.exports = { x };\n");
+    expect((await insert(3, "// exports")).ok).toBe(true);
+    expect(await sandbox.readFile("a.js")).toBe("'use strict';\nconst x = require('./b');\n// exports\nmodule.exports = { x };\n");
+    expect((await insert(99, "x")).ok).toBe(false);
+    expect(checkToolCall(toolCallSchema.parse({ tool: "insert_lines", path: "other.js", line: 1, text: "x" }), { fileScope: ["a.js"], allowedChecks: [] }).verdict).toBe("deny");
   });
 
   it("search skips files over its limit without loading them", async () => {

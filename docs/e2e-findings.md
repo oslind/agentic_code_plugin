@@ -165,6 +165,8 @@ Three of the 15 failures were checks that were too strict (outside-workspace, pl
 
 - The first 21 passed, including parallel-changes (failed in runs 9, 10 and 10B), dependent-changes, command-denied, outside-workspace and stop-then-continue.
 - **rename-everywhere failed, much closer than in run 10.** Research came first and the plan touched only the right files, but the researcher had only searched src/** (as the tool examples showed), so test.js kept the old name and npm test broke with "toCelsius is not a function". Verification called that an existing issue, although it did not happen without the drafts. Now a rename request gives the planner every project file that mentions the old name (searched by rule over the whole project); the tool examples search the whole project; and a command failure the drafts caused, found by the run without them, is missing work whatever the verdict says.
+- package-json-script, readme-section, readme-typo, fix-and-add-test, validate-input and new-module-used passed (the last two failed in run 10).
+- **use-strict-everywhere timed out on the last of four files** (it passed in run 10 in 18 minutes). Every worker fought replace_in_file to add a first line, one draft put 'use strict' after the requires, and each task now also runs npm test. Sub-agents now have an insert_lines tool (insert before a line number, 1 = the top, nothing to match), with the same scope and approval rules as the other write tools.
 
 ## Still open
 

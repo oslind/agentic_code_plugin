@@ -288,7 +288,8 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       return { verdict: "allow", path: p };
     }
     case "write_file":
-    case "replace_in_file": {
+    case "replace_in_file":
+    case "insert_lines": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
       if (isProtectedPath(p)) return { verdict: "deny", reason: `'${p}' is protected` };
@@ -335,7 +336,7 @@ export function isChangeAutoAccepted(path: string, auto: AutoApprove): boolean {
 /** Whether the user's auto-approve switches already allow a call the policy flagged. */
 export function isAutoApproved(call: ToolCall, auto: AutoApprove): boolean {
   if (call.tool === "request_check" || call.tool === "run_command") return auto.commands;
-  if (call.tool === "write_file" || call.tool === "replace_in_file") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
+  if (call.tool === "write_file" || call.tool === "replace_in_file" || call.tool === "insert_lines") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
   return false;
 }
 

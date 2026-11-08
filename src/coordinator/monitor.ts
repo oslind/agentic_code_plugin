@@ -155,7 +155,7 @@ export class AgentMonitor {
         const call = data.call as Record<string, unknown> | undefined;
         t.turns++;
         if (event.message === "ask_coordinator") t.questions++;
-        if (event.message === "write_file" || event.message === "replace_in_file") t.writes++;
+        if (event.message === "write_file" || event.message === "replace_in_file" || event.message === "insert_lines") t.writes++;
         if (typeof data.thought === "string" && !t.guess && event.message !== "ask_coordinator" && event.message !== "finish" && GUESSING.test(data.thought)) {
           t.guess = data.thought.replace(/\s+/g, " ").slice(0, 300);
         }
@@ -171,7 +171,7 @@ export class AgentMonitor {
         const lastStep = t.steps.at(-1);
         if (lastStep && !lastStep.denied) {
           lastStep.denied = true;
-          if (/^(write_file|replace_in_file)\b/.test(lastStep.label)) t.writes = Math.max(0, t.writes - 1);
+          if (/^(write_file|replace_in_file|insert_lines)\b/.test(lastStep.label)) t.writes = Math.max(0, t.writes - 1);
         }
         return;
       }

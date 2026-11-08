@@ -96,6 +96,17 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         await ctx.sandbox.writeFile(call.path, call.content);
         return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`) + loadWarning(call.path, before, call.content, await moduleStyleOf(ctx.sandbox.root)), wrote: call.path };
       }
+      case "insert_lines": {
+        // Run 11, use-strict-everywhere: "add a line at the top" was a fight with exact matching in every file.
+        const text = await ctx.sandbox.readFile(call.path);
+        const lines = text.split("\n");
+        if (call.line > lines.length + 1) return { ok: false, output: `${call.path} has ${lines.length} lines; line must be between 1 and ${lines.length + 1}.` };
+        const added = call.text.replace(/\n$/, "").split("\n");
+        lines.splice(call.line - 1, 0, ...added);
+        const edited = lines.join("\n");
+        await ctx.sandbox.writeFile(call.path, edited);
+        return { ok: true, output: draftNote(call.path, `${added.length} line(s) inserted at line ${call.line}`) + loadWarning(call.path, text, edited, await moduleStyleOf(ctx.sandbox.root)), wrote: call.path };
+      }
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
         let { search, replace } = call;

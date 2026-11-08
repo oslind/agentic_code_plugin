@@ -21,6 +21,12 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
     replace: z.string(),
     all: z.boolean().optional().describe("true: replace every occurrence (for a rename)"),
   }),
+  z.object({
+    tool: z.literal("insert_lines"),
+    path: z.string(),
+    line: z.number().int().min(1).describe("Insert before this line number; 1 = the very top of the file"),
+    text: z.string().min(1).describe("The lines to insert"),
+  }),
   z.object({ tool: z.literal("run_check"), name: z.string().describe("Name of a configured check, e.g. test or lint") }),
   z.object({
     tool: z.literal("request_check"),
@@ -49,4 +55,4 @@ export const workerTurnSchema = z.object({
 
 export type WorkerTurn = z.infer<typeof workerTurnSchema>;
 
-export const WRITE_TOOLS = new Set<ToolCall["tool"]>(["write_file", "replace_in_file"]);
+export const WRITE_TOOLS = new Set<ToolCall["tool"]>(["write_file", "replace_in_file", "insert_lines"]);
