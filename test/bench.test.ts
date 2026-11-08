@@ -8,7 +8,7 @@ import { promises as fs } from "fs";
 import { describe, expect, it } from "vitest";
 import { Attempt, rows, scoreboard } from "../e2e/bench/scoreboard";
 import { runSingle } from "../e2e/bench/single";
-import { ADMITS_SHORTFALL, BENCH_TASKS, editAsks, judge, modulePath, modulesNamed, sh, shopProject, throwingModules, writeProject } from "../e2e/bench/tasks";
+import { ADMITS_SHORTFALL, BENCH_TASKS, editAsks, judge, modulePath, modulesNamed, modulesSaidToThrow, sh, shopProject, throwingModules, writeProject } from "../e2e/bench/tasks";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 async function judged(task: (typeof BENCH_TASKS)[number], files: Record<string, string>, answer = "") {
@@ -76,6 +76,14 @@ describe("benchmark tasks", () => {
     const all = Array.from({ length: 20 }, (_, i) => modulePath(i)).join(", ");
     expect((await judged(task, task.files, all)).score).toBeCloseTo(truth.length / 20);
     expect(modulesNamed("mod_007.js, module 12 and src/mod_3.js")).toEqual(new Set([6, 11, 2]));
+  });
+
+  it("does not count modules the answer says do not throw (bench pass 1)", () => {
+    const listed = "mod_001.js mod_002.js\n\n- mod_003.js: checks the quantity but returns 0, so it does not throw.\n- mod_004.js doesn't throw; it clamps the quantity.\n- mod_005.js never throws.";
+    expect(modulesSaidToThrow(listed)).toEqual(new Set([0, 1]));
+    expect(modulesSaidToThrow("Throwing:\n- mod_001\n- mod_002\n\nNot throwing:\n- mod_003\n- mod_004")).toEqual(new Set([0, 1]));
+    expect(modulesSaidToThrow("mod_001 throws because the quantity is not checked before it is used. mod_002 does not throw.")).toEqual(new Set([0]));
+    expect(modulesSaidToThrow("mod_001.js - throws a RangeError - mod_003.js - does not throw")).toEqual(new Set([0]));
   });
 
   it("spreads the edit ladder's changes over different files", () => {

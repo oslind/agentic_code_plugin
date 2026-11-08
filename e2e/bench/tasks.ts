@@ -273,6 +273,37 @@ export function modulesNamed(answer: string): Set<number> {
   return found;
 }
 
+/** Says a module does not throw: "does not throw", "doesn't throw", "never throws", "returns a negative total". */
+const SAYS_NO_THROW = /\b(?:does|do|did|will|would|can)\s*(?:not|n't)\s+(?:\w+\s+){0,2}throw|\b(?:doesn't|don't|won't|never)\s+(?:\w+\s+){0,2}throw|\bno (?:error|exception)s?\b|\bwithout throwing\b|\bnon-?throwing\b|\bdo(?:es)? not\s*:|\breturns? (?:a )?negative\b|\bclamps?\b/i;
+/** A heading that starts a list of modules that do not throw ("Not throwing:", "These do not:"). */
+const NO_THROW_HEADING = /^\s*(?:[#*_>-]+\s*)*(?:modules?|files?|these|others?|the rest|remaining)?[^:]{0,40}\b(?:not|n't|never|no|safe)\b[^:]{0,40}:\s*$/i;
+
+/**
+ * The modules an answer says throw. A module named in a line (or list item, or sentence) that says it does not
+ * throw, or under a heading for the ones that do not, is not counted. Run bench pass 1: an agentic answer listed
+ * mod_001 and mod_002 and then explained why mod_003 to mod_005 do not throw, and scored 40% for a right answer.
+ */
+export function modulesSaidToThrow(answer: string): Set<number> {
+  const found = new Set<number>();
+  let underNoThrow = false;
+  for (const line of answer.split("\n")) {
+    if (!line.trim()) continue;
+    if (NO_THROW_HEADING.test(line)) {
+      underNoThrow = true;
+      continue;
+    }
+    // A heading-like line that names no module and does not negate starts a list of throwing ones again.
+    if (/:\s*$/.test(line) && modulesNamed(line).size === 0) underNoThrow = false;
+    for (const part of line.split(/(?<=[.;])\s+|\s+[-\u2013\u2014]\s+(?=[^-\u2013\u2014]*mod)/)) {
+      const named = modulesNamed(part);
+      if (!named.size) continue;
+      if (underNoThrow || SAYS_NO_THROW.test(part)) continue;
+      for (const m of named) found.add(m);
+    }
+  }
+  return found;
+}
+
 function researchTask(n: number): BenchTask {
   const truth = throwingModules(n);
   return {
@@ -285,7 +316,7 @@ function researchTask(n: number): BenchTask {
     mayChange: [],
     // One part per module: named if it throws, not named if it does not. So the score is the share classified right.
     score: async (ctx) => {
-      const named = modulesNamed(ctx.answer);
+      const named = modulesSaidToThrow(ctx.answer);
       return Array.from({ length: n }, (_, i) => ({ name: `mod_${pad(i)} ${truth.includes(i) ? "named" : "not named"}`, ok: named.has(i) === truth.includes(i) }));
     },
   };

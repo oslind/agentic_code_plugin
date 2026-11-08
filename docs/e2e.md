@@ -91,6 +91,8 @@ Results go to `e2e/results/<time>-bench/`:
 - `summary.json`;
 - one folder per attempt, holding the transcript, or for single mode its events and answer.
 
+To score a finished run's answers again after a check was fixed, without a model: `AGENTIC_BENCH_RESCORE=e2e/results/<run>-bench npm run bench:rescore`. Only questions are scored again (from the saved answer, kept up to 4000 characters); change tasks keep their score. It writes `scoreboard-rescored.md` with a list of the scores that changed.
+
 The modes take turns on every task, so a slow hour of the GPU affects both alike.
 
 | Variable | Default | Meaning |

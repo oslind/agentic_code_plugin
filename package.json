@@ -535,6 +535,7 @@
     "test": "vitest run",
     "e2e": "tsc -p tsconfig.e2e.json && vitest run --config vitest.e2e.config.mts",
     "bench": "tsc -p tsconfig.e2e.json && AGENTIC_BENCH=1 vitest run --config vitest.e2e.config.mts e2e/benchmark.e2e.ts",
+    "bench:rescore": "tsc -p tsconfig.e2e.json && vitest run --config vitest.e2e.config.mts e2e/rescore.e2e.ts",
     "e2e:replay": "tsc -p tsconfig.e2e.json && AGENTIC_E2E_REPLAY=1 vitest run --config vitest.e2e.config.mts",
     "check": "npm run typecheck && npm run lint && npm test",
     "package": "vsce package --out agentic-code-plugin.vsix"
