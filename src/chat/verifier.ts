@@ -1,7 +1,8 @@
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
-import { moduleStyleOf } from "../changes/moduleStyle";
-import { pendingBase } from "../changes/overlay";
+import { moduleStyleOf, projectTestText } from "../changes/moduleStyle";
+import { OverlayFiles, pendingBase } from "../changes/overlay";
+import { WorkspaceSandbox } from "../tools/sandbox";
 import { ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
@@ -193,7 +194,7 @@ export class Verifier {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,
       tasks,
-      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot)),
+      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? [])),
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
@@ -265,6 +266,15 @@ export class Verifier {
    * show there too were there before the request. Run 6 sent fix-ups after a test that had always failed,
    * outside the request, until it timed out. Commands that are also checks are left out: the checks cover them.
    */
+  /** The project's test files with the pending drafts applied, for the "no test mentions it" fact. Undefined when unreadable. */
+  private async testText(workspaceRoot: string, changes: PendingChange[]): Promise<string | undefined> {
+    try {
+      return await projectTestText(new OverlayFiles(await WorkspaceSandbox.create(workspaceRoot), pendingBase(changes)));
+    } catch {
+      return undefined;
+    }
+  }
+
   async compareWithProject(
     conversationId: string,
     workspaceRoot: string,

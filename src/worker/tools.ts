@@ -1,4 +1,4 @@
-import { halfIndexHints, ModuleStyle, moduleStyleOf, moduleStyleProblems } from "../changes/moduleStyle";
+import { exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, moduleStyleProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
@@ -161,7 +161,8 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
 export function loadWarning(path: string, before: string | null, after: string, style?: ModuleStyle): string {
   const problems = moduleStyleProblems([{ path, original: before, proposed: after }], style);
   const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
-  const hint = hints.length ? `\nCheck: ${hints.join(" ")} Try the function on an odd-length input with run_command (node -e) before you finish.` : "";
+  const exportsHint = exportStyleHints(path, before, after);
+  const hint = `${hints.length ? `\nCheck: ${hints.join(" ")} Try the function on an odd-length input with run_command (node -e) before you finish.` : ""}${exportsHint.length ? `\nCheck: ${exportsHint.join(" ")}` : ""}`;
   if (!problems.length) return hint;
   // Run 6H: a 15-line stats.js got seven replace_in_file patches, each making it worse. A small file is easier to write whole.
   const small = after.split("\n").length <= 80;

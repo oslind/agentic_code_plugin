@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { lineDiff } from "../changes/lineDiff";
 import { estimateTokens, truncateToTokens } from "../context/budget";
-import { DRAFT_PROBLEMS_HEADING, halfIndexHints, ModuleStyle, moduleStyleProblems } from "../changes/moduleStyle";
+import { DRAFT_PROBLEMS_HEADING, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleProblems, untestedFunctions } from "../changes/moduleStyle";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
@@ -114,7 +114,7 @@ Reply with JSON only. Examples:
 const REPLY_RESERVE = 1024;
 
 /** A sub-agent's drafts as compact diffs for the reviewer, longest files cut first. */
-export function draftsForReview(changes: Pick<PendingChange, "path" | "original" | "proposed">[], maxChars = 6000, style?: ModuleStyle): string {
+export function draftsForReview(changes: Pick<PendingChange, "path" | "original" | "proposed">[], maxChars = 6000, style?: ModuleStyle, tests?: string): string {
   if (changes.length === 0) return "";
   const per = Math.max(600, Math.floor(maxChars / changes.length));
   const parts = changes.map((c) => {
@@ -129,7 +129,11 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
   const text = joined.length > maxChars ? `${joined.slice(0, maxChars)}\n[… cut]` : joined;
   // Facts found by rule go last and are never cut, so a review or verification cannot miss them.
   const problems = moduleStyleProblems(changes, style);
-  const hints = changes.flatMap((c) => halfIndexHints(c.path, c.proposed));
+  const untested = tests?.trim() ? untestedFunctions(changes, tests) : [];
+  const hints = [
+    ...changes.flatMap((c) => [...halfIndexHints(c.path, c.proposed), ...exportStyleHints(c.path, c.original, c.proposed)]),
+    ...(untested.length ? [`No test file mentions ${untested.join(", ")}, so a passing test command says nothing about ${untested.length === 1 ? "it" : "them"}. Only a command that called ${untested.length === 1 ? "it" : "them"} (for example node -e) shows ${untested.length === 1 ? "it" : "them"} working; never say the tests checked ${untested.length === 1 ? "it" : "them"}.`] : []),
+  ];
   const withHints = hints.length ? `${text}\n\nChecked by rule, look at these before you accept:\n${hints.map((h) => `- ${h}`).join("\n")}` : text;
   const facts = keepsOriginalLines(changes) ? `${withHints}\n\n${KEEPS_ORIGINAL_FACT}` : withHints;
   return problems.length ? `${facts}\n\n${DRAFT_PROBLEMS_HEADING}\n${problems.map((p) => `- ${p}`).join("\n")}` : facts;

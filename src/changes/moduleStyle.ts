@@ -118,6 +118,63 @@ export function halfIndexHints(path: string, text: string): string[] {
   return hints;
 }
 
+/**
+ * A default export added to a file that only had named exports. Run 10,
+ * esm-project: "add multiply and export it" became `export default function
+ * multiply`, so `import { multiply }` found nothing.
+ */
+export function exportStyleHints(path: string, before: string | null, after: string): string[] {
+  if (!before || !/\.(c|m)?[jt]sx?$/i.test(path)) return [];
+  const named = /^\s*export\s+(async\s+)?(function|const|let|class)\b|^\s*export\s*\{/m;
+  const def = /^\s*export\s+default\b/m;
+  if (named.test(before) && !def.test(before) && def.test(after)) {
+    return [`${path} only had named exports (export function ...), and the draft adds a default export, so \`import { name }\` will not find it. Unless the user asked for a default export, use a named one like the rest of the file.`];
+  }
+  return [];
+}
+
+/** Names of functions a draft defines that the original did not. */
+export function newFunctionNames(before: string | null, after: string): string[] {
+  const names = (text: string) =>
+    new Set([...text.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)|^\s*def\s+([A-Za-z_]\w*)/gm)].map((m) => (m[1] ?? m[2] ?? m[3])!));
+  const old = names(before ?? "");
+  return [...names(after)].filter((n) => !old.has(n));
+}
+
+/** True for a path that looks like a test file. */
+export function isTestPath(p: string): boolean {
+  return /(^|\/)(test|tests|__tests__|spec)(\/|\.[cm]?[jt]sx?$|\.py$)|\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]*\.py$|_test\.(py|go)$/i.test(p);
+}
+
+/**
+ * New functions that no test file mentions: a passing test command says
+ * nothing about them. Run 10, esm-project: "tests passed for the function's
+ * correctness" while the only test called add(). `tests` is the text of the
+ * project's test files with the drafts applied.
+ */
+export function untestedFunctions(changes: { path: string; original: string | null; proposed: string }[], tests: string): string[] {
+  const out: string[] = [];
+  for (const c of changes) {
+    if (isTestPath(c.path) || !/\.(c|m)?[jt]sx?$|\.py$/i.test(c.path)) continue;
+    for (const n of newFunctionNames(c.original, c.proposed)) if (!new RegExp(`\\b${n.replace(/\$/g, "\\$")}\\b`).test(tests)) out.push(n);
+  }
+  return out;
+}
+
+/** The project's test files on disk (a bounded read), for untestedFunctions(). Workspace-only. */
+export async function projectTestText(files: Pick<ProjectFiles, "readFile" | "listFiles">): Promise<string> {
+  const list = (await files.listFiles("**", 2000).catch(() => [] as string[])).filter(isTestPath).slice(0, 40);
+  const texts: string[] = [];
+  let total = 0;
+  for (const f of list) {
+    const t = await files.readFile(f, 100_000).catch(() => "");
+    total += t.length;
+    if (total > 400_000) break;
+    texts.push(t);
+  }
+  return texts.join("\n");
+}
+
 export type ModuleStyle = "commonjs" | "module";
 
 /**

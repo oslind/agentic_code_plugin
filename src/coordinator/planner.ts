@@ -20,6 +20,7 @@ Rules:
 - Do not add tasks for running tests or reviewing; that happens automatically.
 - Set "changes": true only when a task creates or edits files. Tasks that read, explore, explain or summarise set "changes": false.
 - Start each instruction with what to do: "Add …", "Create …", "Read …", "Explain …".
+- Keep the user's own words for what to build. Never add a design choice the user did not make (a default export, a new parameter, an error message, a file name): leave it out, and the worker follows the file's existing style. "Export it" means export it the way the file already exports its other functions.
 ${skillExample !== undefined ? `- "skills" lists up to ${MAX_TASK_SKILLS} names from "Skills" that fit the task: a language or build skill for its files, and a task skill (tests, a fix, a refactor, docs). Use [] when none fits. Only use names from the list.\n` : ""}
 Reply with JSON only, in this shape:
 {"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"],"changes":true${skillExample !== undefined ? `,"skills":[${skillExample}]` : ""}},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"],"changes":true${skillExample !== undefined ? `,"skills":[]` : ""}}]}`;
