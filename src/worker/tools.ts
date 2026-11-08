@@ -5,6 +5,7 @@ import { ProjectFiles } from "../tools/sandbox";
 import { ToolCall } from "../tools/protocol";
 import { isSecretPath } from "../tools/policy";
 import { safeFileName } from "../context/untrusted";
+import { renameLeftovers } from "../coordinator/review";
 
 const MAX_READ_LINES = 300;
 const MAX_LIST = 200;
@@ -180,7 +181,8 @@ export function loadWarning(path: string, before: string | null, after: string, 
   const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
   const exportsHint = exportStyleHints(path, before, after);
   const hint = `${hints.length ? `\nCheck: ${hints.join(" ")} Try the function on an odd-length input with run_command (node -e) before you finish.` : ""}${exportsHint.length ? `\nCheck: ${exportsHint.join(" ")}` : ""}`;
-  const exportNote = unexported.length ? `\nWarning: ${unexported.join(" ")}` : "";
+  const leftovers = renameLeftovers([{ path, text: after }], said);
+  const exportNote = [...unexported, ...leftovers].length ? `\nWarning: ${[...unexported, ...leftovers].join(" ")}` : "";
   if (!problems.length) return hint + exportNote;
   // Run 6H: a 15-line stats.js got seven replace_in_file patches, each making it worse. A small file is easier to write whole.
   const small = after.split("\n").length <= 80;

@@ -114,7 +114,7 @@ Reply with JSON only. Examples:
 const REPLY_RESERVE = 1024;
 
 /** A sub-agent's drafts as compact diffs for the reviewer, longest files cut first. */
-export function draftsForReview(changes: Pick<PendingChange, "path" | "original" | "proposed">[], maxChars = 6000, style?: ModuleStyle, tests?: string, said?: string): string {
+export function draftsForReview(changes: Pick<PendingChange, "path" | "original" | "proposed">[], maxChars = 6000, style?: ModuleStyle, tests?: string, said?: string, extra: string[] = []): string {
   if (changes.length === 0) return "";
   const per = Math.max(600, Math.floor(maxChars / changes.length));
   const parts = changes.map((c) => {
@@ -128,7 +128,9 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
   const joined = parts.join("\n\n");
   const text = joined.length > maxChars ? `${joined.slice(0, maxChars)}\n[… cut]` : joined;
   // Facts found by rule go last and are never cut, so a review or verification cannot miss them.
-  const problems = [...moduleStyleProblems(changes, style), ...unexportedProblems(changes, said)];
+  // Drafts of the files a rename is about are checked here; verification adds files no draft touched (extra).
+  const leftovers = renameLeftovers(changes.map((c) => ({ path: c.path, text: c.proposed })), said);
+  const problems = [...moduleStyleProblems(changes, style), ...unexportedProblems(changes, said), ...leftovers, ...extra.filter((e) => !leftovers.includes(e))];
   const untested = tests?.trim() ? untestedFunctions(changes, tests) : [];
   const hints = [
     ...changes.flatMap((c) => [...halfIndexHints(c.path, c.proposed), ...exportStyleHints(c.path, c.original, c.proposed)]),
@@ -220,6 +222,65 @@ export function renamedName(instructions: string): string | undefined {
   const m = /\b(?:rename|replace)\b[^.\n]*?[`'"]?([A-Za-z_$][\w$.]*)[`'"]?\s+(?:to|with|by)\s+[`'"]?[A-Za-z_$][\w$]*/i.exec(instructions);
   const name = m?.[1]?.replace(/\.$/, "");
   return name && !NOT_A_NAME.has(name.toLowerCase()) ? name : undefined;
+}
+
+/** True when a rename request asks for every place in the project ("everywhere", "all uses", "across the project"). */
+export function renamesEverywhere(said: string): boolean {
+  return /\b(everywhere|every (use|usage|call|place|file|reference|occurrence)s?|all (uses|usages|calls|places|files|references|occurrences)|throughout|across the (whole )?(project|code ?base)|in the whole (project|code ?base)|whole project|överallt)\b/i.test(said);
+}
+
+/**
+ * The old name of a rename that a leftover check may look for: only a "rename", never a "replace" (which can
+ * be about any text), and only a name that cannot be an everyday word (camelCase, snake_case, digits, or a
+ * request that says "function", "everywhere" and the like), so "rename count to total in average()" is left alone.
+ */
+export function leftoverRename(said: string | undefined): { from: string; to: string } | undefined {
+  if (!said || !/\brenam/i.test(said)) return undefined;
+  const pair = renamePair(said);
+  if (!pair || pair.from === pair.to || pair.from.includes(".")) return undefined;
+  const codeLike = /[a-z][A-Z]|_|\d/.test(pair.from) || /\b(function|method|class|constant|everywhere)\b/i.test(said) || renamesEverywhere(said);
+  return codeLike ? pair : undefined;
+}
+
+/** Line numbers (1-based) where `name` is still used in code, comments left out. */
+export function linesUsing(text: string, name: string): number[] {
+  const word = new RegExp(`(^|[^\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`);
+  const out: number[] = [];
+  let inBlock = false;
+  text.split("\n").forEach((raw, i) => {
+    let line = raw;
+    if (inBlock) {
+      const end = line.indexOf("*/");
+      if (end < 0) return;
+      line = line.slice(end + 2);
+      inBlock = false;
+    }
+    line = line.replace(/\/\*.*?\*\//g, " ");
+    const open = line.indexOf("/*");
+    if (open >= 0) {
+      line = line.slice(0, open);
+      inBlock = true;
+    }
+    line = line.replace(/(^|\s)(\/\/|#).*$/, "");
+    if (word.test(line)) out.push(i + 1);
+  });
+  return out;
+}
+
+/**
+ * Rule-checked problems for a rename that is not finished: files that still use the old name. Run 12B: the
+ * index.js sub-agent renamed the import but left the call on line 4, nothing ran index.js, and the review,
+ * verification and final reply all said every call was updated.
+ */
+export function renameLeftovers(files: { path: string; text: string }[], said: string | undefined): string[] {
+  const pair = leftoverRename(said);
+  if (!pair) return [];
+  return files.flatMap(({ path, text }) => {
+    const lines = linesUsing(text, pair.from);
+    if (!lines.length) return [];
+    const at = lines.slice(0, 5).join(", ") + (lines.length > 5 ? ", ..." : "");
+    return [`${path} still uses ${pair.from} (line${lines.length === 1 ? "" : "s"} ${at}), which the request renames to ${pair.to}, so that code breaks or still uses the old name. Rename every use; replace_in_file with "all": true changes them all in one call.`];
+  });
 }
 
 /**

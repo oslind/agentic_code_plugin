@@ -12,7 +12,8 @@ import { ConversationStore } from "./conversationStore";
 import { mergeSameFileTasks, offTargetTasks } from "../coordinator/plan";
 import { isReadOnlyPlan } from "./coordinatorChat";
 import { commandEventData } from "../worker/worker";
-import { draftsForReview } from "../coordinator/review";
+import { draftsForReview, leftoverRename, renameLeftovers, renamesEverywhere } from "../coordinator/review";
+import { filesMentioning } from "../context/outline";
 import { conventionsText } from "../skills/catalog";
 import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { ChatHost, RunHooks } from "./host";
@@ -202,11 +203,12 @@ export class Verifier {
     // The newest draft of each file that is not rejected: what the user would get.
     const newest = new Map<string, PendingChange>();
     for (const ch of run.changes ?? []) if (ch.status !== "rejected" && ch.status !== "reverted") newest.set(ch.path, ch);
+    const said = userMessagesOf(runScope(c.entries, runId)).join("\n");
     const ctx = {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,
       tasks,
-      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? []), userMessagesOf(runScope(c.entries, runId)).join("\n")),
+      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? []), said, await this.renameLeftovers(workspaceRoot, run.changes ?? [], said, newest)),
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
@@ -279,6 +281,23 @@ export class Verifier {
    * outside the request, until it timed out. Commands that are also checks are left out: the checks cover them.
    */
   /** The project's test files with the pending drafts applied, for the "no test mentions it" fact. Undefined when unreadable. */
+  /**
+   * For a rename the user asked for everywhere: project files no draft touched that still use the old name,
+   * read with the drafts in place. Run 12B called a rename done while src/index.js still called the old name.
+   */
+  private async renameLeftovers(workspaceRoot: string, changes: PendingChange[], said: string, drafted: Map<string, PendingChange>): Promise<string[]> {
+    const pair = leftoverRename(said);
+    if (!pair || !renamesEverywhere(said)) return [];
+    try {
+      const files = new OverlayFiles(await WorkspaceSandbox.create(workspaceRoot), pendingBase(changes));
+      const found = (await filesMentioning(files, pair.from)).filter((p) => !drafted.has(p));
+      const texts = await Promise.all(found.map(async (p) => ({ path: p, text: (await files.readFile(p, 300_000).catch(() => undefined)) ?? "" })));
+      return renameLeftovers(texts, said);
+    } catch {
+      return [];
+    }
+  }
+
   private async testText(workspaceRoot: string, changes: PendingChange[]): Promise<string | undefined> {
     try {
       return await projectTestText(new OverlayFiles(await WorkspaceSandbox.create(workspaceRoot), pendingBase(changes)));

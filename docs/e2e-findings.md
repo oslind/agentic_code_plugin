@@ -194,6 +194,7 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 ### Run 12B (reruns, two at once, b27f1f5)
 
 - **parallel-changes failed on one missing export.** median was right (Math.floor) and added with insert_lines, but module.exports further down was never touched; npm test does not call median, and the review and verification accepted it although the user said "and export it". Now a new function that the request says to export, in the same sentence, and that the file does not export is a problem checked by rule: the sub-agent is warned right after the write, and reviews and verification cannot accept it. A review call still took 372 s.
+- **rename-everywhere failed on one call.** The plan covered all three files, but the index.js sub-agent renamed only the import and left `toCelsius(70)` on line 4, so node src/index.js threw a ReferenceError. The tests do not run index.js, and the review, verification and final reply all said every call was updated. A rename is now checked by rule: after each write the sub-agent is told which lines still use the old name (and to use replace_in_file with "all": true), and reviews and verification get every file that still uses it, drafted or not, as a problem they cannot accept.
 
 ## Still open
 
