@@ -1,5 +1,6 @@
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
+import { moduleStyleOf } from "../changes/moduleStyle";
 import { pendingBase } from "../changes/overlay";
 import { ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
@@ -192,7 +193,7 @@ export class Verifier {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,
       tasks,
-      drafts: draftsForReview([...newest.values()]),
+      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot)),
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),

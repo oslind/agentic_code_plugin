@@ -100,3 +100,35 @@ describe("half-length array indexes", () => {
     expect(draftsForReview([{ path: "src/stats.js", original: "", proposed: buggy }])).toMatch(/Checked by rule, look at these before you accept/);
   });
 });
+
+describe("ES modules in a CommonJS project", () => {
+  it("are a load problem even when no single file mixes the two", async () => {
+    const { moduleStyleProblems } = await import("../src/changes/moduleStyle");
+    const esmConfig = { path: "src/config.js", original: null, proposed: "export const NIGHT_DROP = 3;\nexport const DEFAULT_TARGET = 21;\n" };
+    expect(moduleStyleProblems([esmConfig], "commonjs")[0]).toMatch(/this project uses CommonJS/);
+    expect(moduleStyleProblems([esmConfig])).toEqual([]);
+    expect(moduleStyleProblems([esmConfig], "module")).toEqual([]);
+    expect(moduleStyleProblems([{ ...esmConfig, path: "src/config.mjs" }], "commonjs")).toEqual([]);
+  });
+
+  it("knows the project's style from package.json and its own files", async () => {
+    const fs = await import("fs/promises");
+    const os = await import("os");
+    const path = await import("path");
+    const { projectModuleStyle } = await import("../src/changes/moduleStyle");
+    const { WorkspaceSandbox } = await import("../src/tools/sandbox");
+    const make = async (files: Record<string, string>) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "style-"));
+      for (const [rel, text] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+        await fs.writeFile(path.join(root, rel), text);
+      }
+      return projectModuleStyle(await WorkspaceSandbox.create(root));
+    };
+    expect(await make({ "package.json": "{}", "src/a.js": "module.exports = {};\n" })).toBe("commonjs");
+    expect(await make({ "package.json": '{"type":"module"}', "src/a.js": "export const a = 1;\n" })).toBe("module");
+    // A bundled front end: no "type", but its .js files use import. Not called CommonJS.
+    expect(await make({ "package.json": "{}", "src/a.js": "import x from './x';\n", "src/b.js": "module.exports = 1;\n" })).toBeUndefined();
+    expect(await make({ "src/a.js": "module.exports = {};\n" })).toBeUndefined();
+  });
+});

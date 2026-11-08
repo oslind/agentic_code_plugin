@@ -9,6 +9,7 @@ const ESM = /^\s*(import\s+[\w{*]|import\s+["']|export\s+(default\b|const\b|let\
 const CJS = /\bmodule\.exports\b|^\s*exports\.\w+\s*=|\brequire\s*\(\s*["']/m;
 
 import * as vm from "vm";
+import { ProjectFiles, WorkspaceSandbox } from "../tools/sandbox";
 
 /** Heading of the problems section in draftsForReview(). Its lines are facts from this check. */
 export const DRAFT_PROBLEMS_HEADING = "Problems the extension found in the drafts (checked by rule, not a model's opinion):";
@@ -58,10 +59,16 @@ export function undefinedExports(text: string): string[] {
  * module styles, or (as a CommonJS file) it has a syntax error. Run 5 accepted a test.js with its new
  * tests pasted after the closing brace.
  */
-export function moduleStyleProblems(changes: { path: string; original: string | null; proposed: string }[]): string[] {
+export function moduleStyleProblems(changes: { path: string; original: string | null; proposed: string }[], project?: ModuleStyle): string[] {
   const problems: string[] = [];
   for (const c of changes) {
     if (!/\.(c|m)?js$/i.test(c.path)) continue;
+    // Run 10: a new config.js and a rewritten thermostat.js were both pure ES modules in a CommonJS project:
+    // nothing mixed within a file, and Node could not load them with the rest.
+    if (project === "commonjs" && /\.js$/i.test(c.path) && ESM.test(c.proposed) && !CJS.test(c.proposed) && !(c.original !== null && ESM.test(c.original))) {
+      problems.push(`${c.path} uses import/export, but this project uses CommonJS (package.json has no "type": "module" and its files use require and module.exports), so it cannot load with the rest. Use require(...) and module.exports.`);
+      continue;
+    }
     if (mixes(c.proposed) && !(c.original !== null && mixes(c.original))) {
       problems.push(`${c.path} uses both import/export and require/module.exports, so Node cannot load it. Use one module style, the one the rest of the file and project uses.`);
       continue;
@@ -109,4 +116,42 @@ export function halfIndexHints(path: string, text: string): string[] {
     }
   }
   return hints;
+}
+
+export type ModuleStyle = "commonjs" | "module";
+
+/**
+ * The project's module style, when it is clear: "module" when package.json says "type": "module";
+ * "commonjs" when package.json says nothing and the project's own .js files use require/module.exports
+ * and none uses import/export (a bundled front end may use import in .js files without "type"). Undefined otherwise.
+ */
+export async function projectModuleStyle(files: Pick<ProjectFiles, "readFile" | "readHead" | "listFiles">): Promise<ModuleStyle | undefined> {
+  let pkg: { type?: unknown };
+  try {
+    pkg = JSON.parse(await files.readFile("package.json", 200_000)) as { type?: unknown };
+  } catch {
+    return undefined;
+  }
+  if (pkg.type === "module") return "module";
+  if (pkg.type !== undefined && pkg.type !== "commonjs") return undefined;
+  const js = (await files.listFiles("**/*.js", 200).catch(() => [] as string[])).filter((f) => !/(^|\/)(node_modules|dist|build|out)\//.test(f)).slice(0, 30);
+  let cjs = 0;
+  for (const f of js) {
+    const head = await files.readHead(f, 20_000).catch(() => undefined);
+    const text = head?.text ?? "";
+    if (ESM.test(text)) return undefined;
+    if (CJS.test(text)) cjs++;
+  }
+  return cjs > 0 ? "commonjs" : undefined;
+}
+
+const styleCache = new Map<string, { at: number; style: Promise<ModuleStyle | undefined> }>();
+
+/** projectModuleStyle() of the project on disk (never of drafts), remembered for a minute. */
+export function moduleStyleOf(root: string, now = Date.now()): Promise<ModuleStyle | undefined> {
+  const hit = styleCache.get(root);
+  if (hit && now - hit.at < 60_000) return hit.style;
+  const style = WorkspaceSandbox.create(root).then(projectModuleStyle, () => undefined);
+  styleCache.set(root, { at: now, style });
+  return style;
 }

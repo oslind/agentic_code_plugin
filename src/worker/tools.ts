@@ -1,4 +1,4 @@
-import { halfIndexHints, moduleStyleProblems } from "../changes/moduleStyle";
+import { halfIndexHints, ModuleStyle, moduleStyleOf, moduleStyleProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
@@ -94,7 +94,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       case "write_file": {
         const before = /\.(c|m)?js$/i.test(call.path) ? await ctx.sandbox.readFile(call.path).catch(() => null) : null;
         await ctx.sandbox.writeFile(call.path, call.content);
-        return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`) + loadWarning(call.path, before, call.content), wrote: call.path };
+        return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`) + loadWarning(call.path, before, call.content, await moduleStyleOf(ctx.sandbox.root)), wrote: call.path };
       }
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
@@ -125,7 +125,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         }
         const edited = text.replace(search, () => replace);
         await ctx.sandbox.writeFile(call.path, edited);
-        return { ok: true, output: draftNote(call.path, "edit") + note + loadWarning(call.path, text, edited), wrote: call.path };
+        return { ok: true, output: draftNote(call.path, "edit") + note + loadWarning(call.path, text, edited, await moduleStyleOf(ctx.sandbox.root)), wrote: call.path };
       }
       case "run_check": {
         const check = ctx.checks.find((c) => c.name === call.name);
@@ -153,8 +153,8 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
  * A warning when a JavaScript draft can no longer load and could before. Run 6 left half of an old
  * function after the closing brace of a replace_in_file edit; nothing told the sub-agent until review.
  */
-export function loadWarning(path: string, before: string | null, after: string): string {
-  const problems = moduleStyleProblems([{ path, original: before, proposed: after }]);
+export function loadWarning(path: string, before: string | null, after: string, style?: ModuleStyle): string {
+  const problems = moduleStyleProblems([{ path, original: before, proposed: after }], style);
   const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
   const hint = hints.length ? `\nCheck: ${hints.join(" ")} Try the function on an odd-length input with run_command (node -e) before you finish.` : "";
   if (!problems.length) return hint;
