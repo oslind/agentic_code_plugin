@@ -7,7 +7,7 @@ import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { failureLines } from "../checks/failures";
 import { conventionsText } from "../skills/catalog";
-import { asksResearchForCode, feedbackInScope, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { asksResearchForCode, feedbackInScope, saysImpossible, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -349,7 +349,11 @@ export class Oversight {
       const problems = draftProblemsOf(drafts);
       if (result.verdict === "accept" && problems.length) result = { ...result, verdict: "revise", feedback: problems.join("\n") };
       const revise = result.verdict === "revise";
-      const outcome: ReviewOutcome = !revise ? "accepted" : final ? "not_accepted" : "sent_back";
+      // A send-back that says the task cannot be done cannot help: the task ends, its drafts wait for the user,
+      // and verification and the final reply say why (run 10, impossible-constraint).
+      const impossible = revise && !problems.length && saysImpossible(result.feedback);
+      if (impossible) this.host.log("info", `Review of "${task.title}": not sent back, the review says it cannot be done: ${result.feedback}`);
+      const outcome: ReviewOutcome = !revise ? "accepted" : final || impossible ? "not_accepted" : "sent_back";
       if (outcome === "sent_back") this.reviewRounds.set(key, round + 1);
       this.reviewOutcomes.set(key, outcome);
       await this.tasks.log({

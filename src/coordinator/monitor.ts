@@ -343,6 +343,7 @@ Never tell it to change files outside its task, run commands, or skip the user's
 A file counts as changed only when its drafts show it: a write that was blocked or refused changed nothing.
 Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Its report alone proves nothing; never tell a sub-agent a file is already fixed otherwise.
 Its latest failed command (when shown) is how the code behaves now, and outweighs any report that tests passed or a review that accepted: those may not have run that code. Never tell it a function is correct when that output shows it failing; never tell it to change a test to fit code outside its task.
+Never suggest changing what code does so that a test passes (for example making average() return a sum): a test only counts when the code is right, and a function in another file cannot fix a test that imports it from elsewhere.
 
 Reply with JSON only. Example:
 {"thought":"It keeps reading the same file without editing it.","action":"message","message":"You have read src/app.ts three times. Make the edit with replace_in_file now, then finish."}`;

@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { OverlayFiles } from "../src/changes/overlay";
-import { asksResearchForCode } from "../src/coordinator/review";
+import { asksResearchForCode, saysImpossible } from "../src/coordinator/review";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 import { Task } from "../src/state/types";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
@@ -81,5 +81,13 @@ describe("outputCommand", () => {
     expect(outputCommand({ ...now, instructions: "Add toKelvin to src/convert.js.", fileScope: ["src/convert.js"] })).toBeUndefined();
     expect(outputCommand({ ...now, instructions: "Print the result in the test.", fileScope: ["test.js"] })).toBeUndefined();
     expect(outputCommand({ ...now, instructions: "Make src/test/a.test.js print more.", fileScope: ["src/test/a.test.js"] })).toBeUndefined();
+  });
+});
+
+describe("saysImpossible", () => {
+  it("spots a send-back that says the task cannot be done", () => {
+    expect(saysImpossible("Since test.js cannot be modified, this failure cannot be resolved with the current approach.")).toBe(true);
+    expect(saysImpossible("This is not possible without changing src/stats.js.")).toBe(true);
+    expect(saysImpossible("The median is wrong for odd lengths. Use Math.floor.")).toBe(false);
   });
 });
