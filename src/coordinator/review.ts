@@ -97,7 +97,7 @@ const SYSTEM = `You are the coordinator of a team of coding sub-agents. You gave
 For each new or changed function, work out by hand, line by line, what it returns for one or two small inputs (for a list: an odd and an even length, such as [3, 1, 2] and [4, 1, 3, 2]). Write that trace in thought. An index into an array must be a whole number: sorted[3 / 2] is sorted[1.5], which is undefined in JavaScript. If no test or command output shows the function working, do not accept on a report that "all tests passed". A draft that also rewrites code its task did not ask for (another function, a bug it noticed) is "revise": ask it to undo that part and mention the bug in its report instead.
 Send back only for a mismatch with what the user asked or a real defect, and quote the draft lines it concerns. Never prescribe new behaviour the user did not ask for: no extra conversions, calls, units or formatting. Before you ask for a change to a value, trace what the existing code returns (a function named in the project may already return the unit asked for). If the task cannot be done within its files and what the user allowed (the problem is in a file the user said not to change, or in another task's file), sending it back cannot help: use "accept" and say in feedback exactly why it cannot be done, naming the file. If your feedback asks for any fix, the verdict is "revise", never "accept". When the sub-agent's new tests and the code disagree on a detail the user did not name (an error message, a wording), the test is wrong: ask it to fix the test, not the code.
 Only the diff lines (+ and -) are changes. Code or comments that are in the whole file but not in the diff are unchanged from the original: never ask to undo them, and never say the sub-agent added them. To undo an unasked change, ask to restore the original lines; never ask to remove or delete code the original file had. After a send-back, judge the diff as it is now: a problem it no longer shows is fixed, whatever the report says. A task that only asks to undo or remove something is done when the diff no longer has it, even with no drafts.
-A research sub-agent can only read and run commands; it cannot change files. Judge its report only on whether it answers its question. Never ask a research sub-agent to write code, drafts or changes: the change is a later task.
+A research sub-agent can only read and run commands; it cannot change files. Judge its report only on whether it answers its question. Never send a research report back because another sub-agent's report says something different: researchers that work side by side can disagree, and another report is not evidence. Only what it read or ran is. Never ask a research sub-agent to write code, drafts or changes: the change is a later task.
 A research report that says what a command would or should print, without having run it (for example because the user declined it), has no result: that is "revise" unless it says plainly that it could not run the command.
 Judge the drafts, not the wording of the report: when the drafts are right and only the report has a typo or a wrong number, accept and mention it in feedback.
 A report that says a file was created or changed while there are no drafts is false: nothing was written. Then use "revise".
@@ -192,6 +192,14 @@ export function saysImpossible(feedback: string): boolean {
   return /\b(cannot|can't|can not) (be )?(resolved|fixed|done|met|achieved|satisf\w+)\b|\bimpossible\b|\bnot possible\b/i.test(feedback);
 }
 
+/**
+ * True when a send-back of a research report rests on other reports. Run 12, rename-everywhere: a review told a
+ * researcher that test.js does not use toCelsius "as confirmed by earlier reports", and it retracted a correct finding.
+ */
+export function overrulesWithOtherReports(feedback: string): boolean {
+  return /\b(earlier|other|previous|another|the other)\s+(sub-?agent'?s?\s+)?(reports?|researchers?|findings?|sub-?agents?)\b|\bas (confirmed|reported|stated|found) (by|in)\b/i.test(feedback);
+}
+
 /** Words that can follow "rename" or "replace" without being a name in the code. */
 const NOT_A_NAME = new Set(["it", "them", "this", "that", "these", "those", "all", "every", "everything", "each", "occurrences", "occurrence", "uses", "function", "variable", "method", "file", "files", "name", "names", "the", "a", "an", "text"]);
 
@@ -201,6 +209,13 @@ const NOT_A_NAME = new Set(["it", "them", "this", "that", "these", "those", "all
  * undefined when the instructions are not a rename or name nothing that
  * looks like code. Read from the task's instructions, which the planner wrote.
  */
+/** The old and new name of a rename ("Rename toCelsius to fahrenheitToCelsius"), or undefined. */
+export function renamePair(instructions: string): { from: string; to: string } | undefined {
+  const m = /\b(?:rename|replace)\b[^.\n]*?[`'"]?([A-Za-z_$][\w$.]*)[`'"]?\s+(?:to|with|by)\s+[`'"]?([A-Za-z_$][\w$]*)/i.exec(instructions);
+  const from = m?.[1]?.replace(/\.$/, "");
+  return from && m?.[2] && !NOT_A_NAME.has(from.toLowerCase()) ? { from, to: m[2] } : undefined;
+}
+
 export function renamedName(instructions: string): string | undefined {
   const m = /\b(?:rename|replace)\b[^.\n]*?[`'"]?([A-Za-z_$][\w$.]*)[`'"]?\s+(?:to|with|by)\s+[`'"]?[A-Za-z_$][\w$]*/i.exec(instructions);
   const name = m?.[1]?.replace(/\.$/, "");

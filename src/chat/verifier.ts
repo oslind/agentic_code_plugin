@@ -38,6 +38,18 @@ async function fileExists(root: string, rel: string): Promise<boolean> {
  * run for what is left. After research, a check that the answer covers the
  * question.
  */
+/** What each file a run changed held before the run's first change to it (new files are left out). */
+export function beforeTheRun(changes: Pick<PendingChange, "path" | "original">[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const seen = new Set<string>();
+  for (const c of changes) {
+    if (seen.has(c.path)) continue;
+    seen.add(c.path);
+    if (c.original !== null) out.set(c.path, c.original);
+  }
+  return out;
+}
+
 export class Verifier {
   private readonly host: ChatHost;
   private readonly tasks: TaskStore;
@@ -302,7 +314,11 @@ export class Verifier {
     };
     try {
       const commands = own.map((f, i) => ({ name: `baseline ${i + 1}`, command: f.line }));
-      const base = await runAllChecks(commands, () => scratch.sync(new Map()), signal, approve, this.host.terminal?.(workspaceRoot));
+      // Run 12, rename-everywhere: drafts accepted during the run are already on disk, so a copy of the folder was
+      // not "without the drafts" at all, and a new failure looked old. The baseline puts back what every file of
+      // the run held before its first change.
+      const before = beforeTheRun((await this.tasks.load(runId)).changes ?? []);
+      const base = await runAllChecks(commands, () => scratch.sync(before), signal, approve, this.host.terminal?.(workspaceRoot));
       // Run 9: the failure a sub-agent saw came from its draft halfway through (a broken import), so it did not match
       // the failure without the drafts, and verification blamed a bug from before the request on the drafts.
       // The command runs again on the drafts as they are now, and that run is what is compared.

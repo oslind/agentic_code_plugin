@@ -1,3 +1,5 @@
+import { matchesAny } from "../tools/paths";
+import { renamePair } from "./review";
 import { ContextSection, estimateTokens, fitToBudget } from "../context/budget";
 import { untrustedSection } from "../context/untrusted";
 import { callStructured, PLAN_MAX_TOKENS } from "../llm/structured";
@@ -66,6 +68,8 @@ export interface PlanResult {
   plan: Plan;
   repairs: Repair[];
   droppedContext: string[];
+  /** Files that use a renamed name which the plan left out, given to an added task by coverReferences(). */
+  addedReferences?: string[];
   /** fileScope paths the planner garbled, put right by snapScopes(). */
   snappedScopes?: { taskId: string; from: string; to: string }[];
 }
@@ -207,8 +211,31 @@ export async function planRequest(
     onThinking: options.onThinking,
   });
   const snapped = snapScopes(plan, pathsOfTree(input.fileTree), [input.request, input.userWords ?? ""].join("\n"));
-  const repaired = repairPlan(snapped.plan);
-  return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped, snappedScopes: snapped.snapped };
+  const covered = coverReferences(snapped.plan, input.references, [input.userWords ?? "", input.request].join("\n"), taskLimit(input));
+  const repaired = repairPlan(covered.plan);
+  return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped, snappedScopes: snapped.snapped, addedReferences: covered.added };
+}
+
+/**
+ * A rename plan covers every file the rule-based search found. Run 12, rename-everywhere: the search listed
+ * test.js, but a review had talked a researcher out of it, and the plan left it out, so the tests broke. A file
+ * no task may change gets a task of its own, after the others, for the same rename.
+ */
+export function coverReferences(plan: Plan, references: PlanInput["references"], said: string, limit: number): { plan: Plan; added: string[] } {
+  const pair = renamePair(said);
+  if (!references || !pair || pair.from !== references.name) return { plan, added: [] };
+  const added = references.files.filter((f) => !plan.tasks.some((t) => matchesAny(f, t.fileScope)));
+  if (!added.length) return { plan, added };
+  const instructions = `Rename ${pair.from} to ${pair.to} in ${added.join(", ")}: change every use of ${pair.from} in these files (imports, calls, exports, tests and docs) to ${pair.to}, and nothing else. These files were found by searching the whole project for ${pair.from}.`;
+  if (plan.tasks.length >= limit) {
+    // No room for another task: the last task takes the files too.
+    const last = plan.tasks[plan.tasks.length - 1]!;
+    return { plan: { tasks: [...plan.tasks.slice(0, -1), { ...last, fileScope: [...last.fileScope, ...added], instructions: `${last.instructions}\n\nAlso: ${instructions}`.slice(0, 1200) }] }, added };
+  }
+  let id = "rename-remaining-files";
+  while (plan.tasks.some((t) => t.id === id)) id = `${id}-x`.slice(0, 40);
+  const task = { id, title: `Rename ${pair.from} in the remaining files`.slice(0, 80), instructions: instructions.slice(0, 1200), dependsOn: plan.tasks.map((t) => t.id), fileScope: added };
+  return { plan: { tasks: [...plan.tasks, task] }, added };
 }
 
 /** Skills a task can be given: those for coding or research sub-agents. */

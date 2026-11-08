@@ -185,6 +185,8 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 
 - research-answer passed.
 - **parallel-changes timed out, not because of parallel running.** The median worker wrote correct code and tried it itself with node -e (odd and even length). But a review said average() "should remain unchanged" and "fix the average function" in the same feedback; the fix was then rejected as unasked, verification asked to revert it, and time ran out. A send-back sentence that asks to fix a function neither the user nor the task named is now left out by rule (as verification already did), and when what is left asks for nothing, the result is accepted. With one GPU, two sub-agents at once are not faster: model calls add up to more than the wall time, so the 30-minute limit is tighter.
+- dependent-changes (17.8 min) and stop-then-continue passed.
+- **rename-everywhere failed, the first finding tied to researchers working side by side.** One researcher correctly found toCelsius in test.js; a review sent it back "as confirmed by earlier reports" (another researcher had only searched src/), and it retracted. The planner had the rule-based list with test.js but followed the reports. Verification then compared npm test with a copy of the project folder, but the accepted drafts were already on disk, so the "without the drafts" copy had them too, and the new failure looked old. Now: the baseline copy puts back what each file held before the run's first change; a rename plan that leaves out a file the search found gets a task for it (coverReferences); and a review never sends a research report back because other reports disagree.
 
 ## Still open
 

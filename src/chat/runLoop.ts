@@ -320,6 +320,7 @@ export class RunLoop {
         });
         if (result.droppedContext.length) this.host.log("warn", `Left out of the plan prompt: ${result.droppedContext.join(", ")}`);
         for (const x of result.snappedScopes ?? []) this.host.log("warn", `Plan task ${x.taskId}: the file "${x.from}" is not in the project; using "${x.to}".`);
+        if (result.addedReferences?.length) this.host.log("warn", `The plan left out files that use the renamed name; added: ${result.addedReferences.join(", ")}.`);
         if (this.s.mode === "act") startRun = run.id;
       };
 

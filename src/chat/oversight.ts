@@ -8,7 +8,7 @@ import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { failureLines } from "../checks/failures";
 import { conventionsText } from "../skills/catalog";
-import { asksResearchForCode, feedbackInScope, saysImpossible, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { asksResearchForCode, overrulesWithOtherReports, feedbackInScope, saysImpossible, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -332,6 +332,11 @@ export class Oversight {
         }
       }
       // A researcher cannot write code, so asking it for code cannot be acted on (run 10, validate-input).
+      // Another researcher's report is not evidence against this one (run 12, rename-everywhere).
+      if (result.verdict === "revise" && research && overrulesWithOtherReports(result.feedback)) {
+        this.host.log("info", `Review of "${task.title}": accepted by rule, it only disagreed with other reports: ${result.feedback}`);
+        result = { ...result, verdict: "accept", feedback: "Accepted by rule: another report is not evidence against what this researcher read." };
+      }
       if (result.verdict === "revise" && research && asksResearchForCode(result.feedback)) {
         this.host.log("info", `Review of "${task.title}": accepted by rule, it asked a research sub-agent for code changes it cannot make.`);
         result = { ...result, verdict: "accept", feedback: "Accepted by rule: research cannot change files; the change is a separate task." };
