@@ -6,7 +6,7 @@ import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acceptChange, changeKind, rejectChange, resolveConflict, revertChange } from "../src/changes/review";
 import { CheckConfig } from "../src/checks/runner";
-import { Orchestrator, OrchestratorOptions } from "../src/coordinator/orchestrator";
+import { mentionsFile, Orchestrator, OrchestratorOptions } from "../src/coordinator/orchestrator";
 import { ProviderError } from "../src/providers/openaiCompatible";
 import { RetryingProvider } from "../src/providers/retrying";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
@@ -187,6 +187,17 @@ describe("Orchestrator without git", () => {
     await make(runId, scripted({ a: [write("a.txt", "ok"), finish] }), { checks }).o.run();
     expect((await changesOf(runId)).map((c) => c.path)).toEqual(["a.txt"]);
     expect(onDisk("artifact.log")).toBeUndefined();
+  });
+
+  it("leaves a failing check to verification while another task that changes the failing file is unfinished", async () => {
+    // e2e run 11B, rename-everywhere: the rename in one file failed npm test until another task updated test.js.
+    const checks: CheckConfig[] = [{ name: "test", command: node("console.log('FAIL: b.txt still uses the old name'); process.exit(1)") }];
+    const runId = await setup([task("a", ["a.txt"]), task("b", ["b.txt"], ["a"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish], b: [write("b.txt", "y"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    // b's own check fails with nothing left to wait for, so it fails as before; a was not retried for b's file.
+    expect(outcome.done).toContain("a");
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_deferred" && e.taskId === "a")).toBe(true);
   });
 
   it("fails a task when checks keep failing, and blocks its dependents", async () => {
@@ -813,5 +824,14 @@ describe("the coordinator reviewing a result", () => {
     const { o } = make(runId, scripted({ a: [finish] }), { reviewResult: async () => (n++, { accept: true }) });
     expect((await o.run()).done).toEqual(["a"]);
     expect(n).toBe(1);
+  });
+});
+
+describe("mentionsFile", () => {
+  it("finds a file by path or base name, not inside another name", () => {
+    expect(mentionsFile("Test failures in test.js need the new name.", "test.js")).toBe(true);
+    expect(mentionsFile("at Object.<anonymous> (/tmp/x/src/convert.js:3:9)", "src/convert.js")).toBe(true);
+    expect(mentionsFile("see mytest.js", "test.js")).toBe(false);
+    expect(mentionsFile("anything", "src/**")).toBe(false);
   });
 });

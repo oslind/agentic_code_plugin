@@ -17,6 +17,15 @@ import { WorkspaceSandbox } from "../tools/sandbox";
 import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 
 
+/** True when a text names a file: its path, or its base name as a word (test.js, src/convert.js). */
+export function mentionsFile(text: string, file: string): boolean {
+  if (/[*?[\]{}]/.test(file)) return false;
+  const base = file.split("/").pop()!;
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const word = (x: string) => new RegExp(`(^|[^\\w.-])${esc(x)}(?![\\w-])`).test(text);
+  return (file.includes("/") && word(file)) || new RegExp(`(^|[^\\w./-])${esc(base)}(?![\\w-])`).test(text);
+}
+
 /** Told to a sub-agent that continues from its checkpoint. */
 export const RESUME_NOTE =
   "VS Code was restarted (or the run was stopped) while you were working, and you now continue where you left off. Everything above is your own earlier work on this task. Your drafts are kept. Files on disk may have changed in the meantime, so read a file again before you change it. Then continue with your task.";
@@ -295,6 +304,18 @@ export class Orchestrator {
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed, skipped: c.skipped })) });
         if (failed.length === 0) break;
+        // Run 11B, rename-everywhere: the convert.js task renamed the function, and npm test then failed on its own
+        // copy because test.js (another task's file) still used the old name. It was retried four times for work it
+        // may not do. While another task of the run that changes the failing file is still to finish, the failure can be a
+        // step in between, so it is left to verification, which runs the checks on all drafts together and sends fix-ups if needed.
+        // Only when the failure or the sub-agent's own report names a file of such a task: a check that fails on
+        // this task's own files still gets its fix rounds.
+        const said = `${failed.map((c) => c.output).join("\n")}\n${result.summary}`;
+        const waiting = (await this.unfinishedSiblings(task)).filter((t) => t.fileScope.some((f) => mentionsFile(said, f)));
+        if (waiting.length) {
+          await this.log("checks_deferred", `Checks failed (${failed.map((c) => c.name).join(", ")}) while ${waiting.map((t) => `"${t.title}"`).join(", ")} still has to finish; left to verification on all drafts together`, task.id, { waiting: waiting.map((t) => t.id) });
+          break;
+        }
         if (round >= this.o.maxFixRounds) {
           throw new OrchestratorError(`Checks failed: ${failed.map((c) => c.name).join(", ")}`);
         }
@@ -336,6 +357,15 @@ export class Orchestrator {
       this.taskControllers.delete(task.id);
       await scratch.remove().catch(() => undefined);
     }
+  }
+
+  /** Other tasks of this run that are not finished yet and change other files than this task. */
+  private async unfinishedSiblings(task: Task): Promise<Task[]> {
+    const run = await this.o.store.load(this.o.runId).catch(() => undefined);
+    const mine = new Set(task.fileScope);
+    return (run?.tasks ?? []).filter(
+      (t) => t.id !== task.id && !["done", "failed", "cancelled"].includes(t.status) && t.fileScope.length > 0 && t.fileScope.some((f) => !mine.has(f)),
+    );
   }
 
   private async saveCheckpoint(taskId: string, turns: number, worker: Worker, overlay: OverlayFiles, earlierTurns: number): Promise<void> {
