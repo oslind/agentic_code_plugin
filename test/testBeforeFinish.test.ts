@@ -91,3 +91,21 @@ describe("saysImpossible", () => {
     expect(saysImpossible("The median is wrong for odd lengths. Use Math.floor.")).toBe(false);
   });
 });
+
+describe("a command that fails the same way across its own changes", () => {
+  it("is said not to be caused by the change", async () => {
+    const run = { tool: "run_command", command: `node -e "console.log('FAIL average of three'); process.exit(1)"`, reason: "run the tests" };
+    const model = scripted([run, WRITE, run, run, FINISH]);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "same-failure-"));
+    await fs.writeFile(path.join(root, "convert.js"), "module.exports = {};\n");
+    const now = new Date().toISOString();
+    const task: Task = { id: "t1", title: "Add toKelvin", instructions: "Add toKelvin to convert.js", dependsOn: [], fileScope: ["convert.js"], status: "running", attempts: 0, createdAt: now, updatedAt: now };
+    const overlay = new OverlayFiles(await WorkspaceSandbox.create(root));
+    await new Worker({ provider: model, sandbox: overlay, task, checks: [], maxTurns: 8, approve: async () => true, log: () => {} }).run();
+    const said = (i: number) => model.requests[i]!.messages.at(-1)!.content;
+    expect(said(1)).not.toMatch(/same failure/);
+    expect(said(3)).toMatch(/exactly the same failure as before your last change/);
+    expect(said(4)).toMatch(/same result as the last time you ran it/);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+});

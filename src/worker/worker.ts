@@ -6,6 +6,7 @@ import { MAX_REVIEW_ROUNDS, reviewFeedback, ReviewSkip, ReviewVerdict } from "..
 import { callStructured } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 import { PendingChange, Task } from "../state/types";
+import { failureLines } from "../checks/failures";
 import { checkToolCall } from "../tools/policy";
 import { ToolCall, workerTurnSchema } from "../tools/protocol";
 import { ProjectFiles } from "../tools/sandbox";
@@ -338,6 +339,29 @@ export class Worker {
   }
 
   /** Puts a command and its result in the chat, like the terminal shows it. */
+  /** Successful writes so far, and how each command last failed (its failure lines, and the write count then). */
+  private writes = 0;
+  private lastFailure = new Map<string, { lines: string; writes: number }>();
+
+  /**
+   * Run 10, swedish-request: the change was right, but the worker reran npm test five times because a failure
+   * in a file outside its task never went away, and the run timed out. A failure that stays the same across its
+   * own changes is not caused by them, and it is told so.
+   */
+  private sameFailureNote(command: string, res: CheckResult): string {
+    if (res.code === 0 || res.timedOut) {
+      this.lastFailure.delete(command);
+      return "";
+    }
+    const lines = failureLines(res.output).join("\n");
+    const before = this.lastFailure.get(command);
+    this.lastFailure.set(command, { lines, writes: this.writes });
+    if (!lines || before?.lines !== lines) return "";
+    return before.writes < this.writes
+      ? "\n\nThis is exactly the same failure as before your last change, so your change does not affect it. If it is about code outside your task's files, it is not yours to fix: do not run it again; finish and name the failing test and file in your summary."
+      : "\n\nThis is exactly the same result as the last time you ran it, and nothing changed in between. Running it again will not change it.";
+  }
+
   private logCommand(command: string, res: CheckResult): void {
     this.opts.log("command", command, commandEventData(command, res));
   }
@@ -493,7 +517,7 @@ export class Worker {
         // Approved above (by the user, or by the "Run commands" switch).
         const res = await runCheck({ name: "command", command: turn.call.command }, await this.commandDir(), signal, 4000, this.opts.terminal);
         this.logCommand(turn.call.command, res);
-        this.messages.push({ role: "user", content: commandResult(turn.call.command, res) });
+        this.messages.push({ role: "user", content: commandResult(turn.call.command, res) + this.sameFailureNote(turn.call.command, res) });
         continue;
       }
       if (turn.call.tool === "request_check") {
@@ -532,6 +556,7 @@ export class Worker {
       if (outcome.wrote) {
         this.changed.add(outcome.wrote);
         this.ranSinceWrite = false;
+        this.writes++;
       }
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });
     }
