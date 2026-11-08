@@ -406,7 +406,7 @@ export const MORE_SCENARIOS: Scenario[] = [
   },
   {
     name: "same-file-parallel",
-    description: "Two independent changes to one file, done by two sub-agents at once: both drafts are combined and nothing that was there is lost.",
+    description: "Two changes to one file asked of two sub-agents: the planner runs them one after the other (run 12C), and both land without losing what was there. Combining drafts that did overlap is covered by test/merge.test.ts.",
     mode: "act",
     files: thermostat,
     permissions: { editFiles: true },

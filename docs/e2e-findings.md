@@ -197,6 +197,11 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 - **rename-everywhere failed on one call.** The plan covered all three files, but the index.js sub-agent renamed only the import and left `toCelsius(70)` on line 4, so node src/index.js threw a ReferenceError. The tests do not run index.js, and the review, verification and final reply all said every call was updated. A rename is now checked by rule: after each write the sub-agent is told which lines still use the old name (and to use replace_in_file with "all": true), and reviews and verification get every file that still uses it, drafted or not, as a problem they cannot accept.
 - **new-module-used failed: the two files did not fit together.** format.js became `module.exports = function formatTemp`, index.js took `{ formatTemp }` from it, and the program crashed with "formatTemp is not a function". index.js also lost its targetTemp call. Nobody ran the program: the reminder to run node src/index.js counted the earlier npm test as a run. Now the program a task prints from must itself run after the last write, and a name a draft takes from a project module (require or import with { }) that the module does not export is a problem checked by rule after the write, in the review and at verification. Reviews noticing removed behaviour (the lost targetTemp call) is still open (item 8).
 
+### Run 12C (two at once, 74f45c9): 3/3
+
+- parallel-changes (26.2 min, its first pass with two sub-agents at once), rename-everywhere (22.2 min) and same-file-parallel (25.0 min) passed.
+- same-file-parallel did not overlap: the plan check makes a task wait for another whose files it shares ("file scopes overlap"), so the second sub-agent started from the first one's accepted result and nothing had to be combined. Combining drafts that did overlap (PR #42) stays covered by the scripted tests in test/merge.test.ts, since a real model cannot be made to produce that case reliably.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
