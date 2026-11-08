@@ -6,7 +6,7 @@ import { TaskStore } from "../state/taskStore";
 import { Run } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
-import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
+import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings, withDeniedNotice, withoutModelWarnings } from "./synthesis";
 import { compactConversation, compactionNote, planCompaction } from "./compaction";
 import { continueChange, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
@@ -144,6 +144,13 @@ export class RunLoop {
     // Every research round of this message, and the coordinator's last reply when it chose to answer.
     // Unless a plan follows, the prompt always ends with one answer that combines all the reports.
     const researchRuns: string[] = [];
+    /** Research questions that do not ask again for a command the user declined in this message's runs. */
+    const withoutDenied = (questions: string[]): string[] => {
+      const denied = researchRuns.flatMap((id) => [...this.s.deniedFor(id)]);
+      const kept = questions.filter((q) => !denied.some((d) => q.includes(d)));
+      if (kept.length < questions.length) this.host.log("info", `Left out ${questions.length - kept.length} research question(s) that asked again for a command you declined.`);
+      return kept;
+    };
     let planned = false;
     let draft: { reply: string; thought?: string; thinking?: string } | undefined;
     let limitReached = false;
@@ -224,8 +231,8 @@ export class RunLoop {
         }
         // The user asked for a change: the research was the first step, the plan is the next.
         if (answer.action === "plan") await makePlan(answer, true);
-        // The reports were too general: send narrower researchers.
-        else if (answer.action === "research") await doResearch(answer);
+        // The reports were too general: send narrower researchers. Never to ask again for a command the user declined (run 9).
+        else if (answer.action === "research" && withoutDenied(answer.questions ?? []).length) await doResearch({ ...answer, questions: withoutDenied(answer.questions ?? []) });
         else {
           // The coordinator's reply is only a draft: the answer combining every report is written below.
           draft = { reply: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) };
@@ -316,8 +323,8 @@ export class RunLoop {
           const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds);
           // A cut-off answer is not a finished one, and the bar says so.
           if (answered.cutOff) ended = { status: "partial", text: "Finished, but the answer was cut off before it was complete." };
-          const open = answered.open;
-          if (!open) break;
+          const open = answered.open && withoutDenied(answered.open);
+          if (!open?.length) break;
           moreRounds--;
           await this.s.append(c.id, {
             author: "coordinator",
@@ -504,7 +511,7 @@ export class RunLoop {
     }
     const result = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
-      { question, reports, draft: draft?.reply, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [] },
+      { question, reports, draft: draft?.reply, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
@@ -615,7 +622,7 @@ export class RunLoop {
       tag: "final reply",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
       runId: run.id,
-      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text,
+      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))),
       thinking: clip(result.thinking),
     });
     return result.cutOff;

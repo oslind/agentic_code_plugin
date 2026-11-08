@@ -50,7 +50,10 @@ export class Approvals {
       rememberLabel: "Allow for the rest of this run",
       text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
     });
-    if (decision?.kind !== "allow") return false;
+    if (decision?.kind !== "allow") {
+      this.s.deniedFor(runId).add(call.command);
+      return false;
+    }
     if (decision.remember) this.s.allowedFor(runId).add(call.command);
     return true;
   }
@@ -156,7 +159,10 @@ export class Approvals {
           rememberLabel: "Allow for the rest of this run",
           text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
         });
-        if (decision?.kind !== "allow") return false;
+        if (decision?.kind !== "allow") {
+          this.s.deniedFor(runId).add(check.command);
+          return false;
+        }
         if (decision.remember) this.s.allowedFor(runId).add(check.command);
         return true;
       },
