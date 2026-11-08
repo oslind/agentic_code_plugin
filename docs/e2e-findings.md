@@ -174,6 +174,9 @@ Thirteen scenarios that failed in run 10 passed in run 11. One clean run does no
 
 ## Run 11B (rename-everywhere, use-strict-everywhere, swedish-request on d978ca4)
 
+- use-strict-everywhere passed in 7.1 minutes (timed out in run 11), with insert_lines.
+- swedish-request did the work right again; it failed only on the English-only answer check, fixed in 7f0fed1.
+
 - **rename-everywhere timed out on a new problem.** Research now found test.js and the plan had the right three tasks, but the convert.js task's own npm test check ran on a copy with only its rename, so "toCelsius is not a function" (test.js was the next task's file). It was sent to fix rounds and retried four times for work it may not do, and the other tasks barely started. Now, when a task's checks fail while another unfinished task of the run changes a file the failure or the sub-agent's report names, the checks are left to verification, which runs them on all drafts together (logged as checks_deferred). A check that fails on the task's own files still gets its fix rounds.
 
 ## Still open
