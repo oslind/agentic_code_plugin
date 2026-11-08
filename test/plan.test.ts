@@ -84,3 +84,14 @@ describe("fix-up tasks the missing work does not ask for", () => {
     expect(offTargetTasks([t("a", ["src/**"])], ["fix src/stats.js"])).toEqual([]);
   });
 });
+
+describe("dependencies on tasks that do not exist", () => {
+  it("are dropped before the plan is checked, so no retry is needed", async () => {
+    const { dropUnknownDependencies, planSchema } = await import("../src/coordinator/plan");
+    const raw = { tasks: [{ ...t("fix-avg"), dependsOn: ["add-user-model", "fix-avg"] }, { ...t("test"), dependsOn: ["fix-avg", "add-user-api"] }] };
+    const fixed = dropUnknownDependencies(raw) as { tasks: { dependsOn: string[] }[] };
+    expect(fixed.tasks.map((x) => x.dependsOn)).toEqual([[], ["fix-avg"]]);
+    expect(planSchema.safeParse(fixed).success).toBe(true);
+    expect(dropUnknownDependencies("not a plan")).toBe("not a plan");
+  });
+});

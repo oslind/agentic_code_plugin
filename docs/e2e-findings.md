@@ -117,6 +117,7 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
   - drafts that keep every original line now say so, checked by rule (`KEEPS_ORIGINAL_FACT`), and undo sentences in a send-back of such drafts are dropped (`withoutMootUndo`);
   - verification drops "fix X()" items for functions that neither the user nor the plan named (`unaskedFixes`).
   The median bug itself is left as a limit of the 8B model, because running unapproved project code to catch it would break the approval rule. The benchmark scores it.
+- **dependent-changes timed out:** it passed in runs 7 and 8. Verification blamed the old average() bug on thermostat.js, and a fix-up kept rewriting targetTemp to make that test pass. The cause: the failure was compared with the project without the drafts using the output a sub-agent saw halfway through its task, which still had its broken import, so it looked new. Now verification runs the failed command again on the drafts as they are now as well as without them, with one approval for both. A command that now passes is dropped. Also, dependsOn ids that name no task (qwen copied "add-user-model" from the prompt's example) are dropped by rule instead of costing a retry (`dropUnknownDependencies`). Still open: one plan call thought for 173 s and returned nothing.
 
 ## Still open
 

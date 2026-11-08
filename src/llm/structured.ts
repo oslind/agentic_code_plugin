@@ -95,6 +95,8 @@ export interface StructuredCallOptions<T> {
   onThinking?: (thinking: string) => void;
   /** Longest reply, in tokens, for this call (the provider's own caps still apply). */
   maxTokens?: number;
+  /** Repairs the parsed JSON before it is validated, for slips that have one safe fix (a retry costs a model call). */
+  repair?: (value: unknown) => unknown;
 }
 
 /**
@@ -147,7 +149,8 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
         thinkingCutOff = true;
         throw new SyntaxError(CUT_OFF);
       }
-      const parsed = schema.safeParse(extractJson(reply.content));
+      const raw = extractJson(reply.content);
+      const parsed = schema.safeParse(options.repair ? options.repair(raw) : raw);
       if (parsed.success) {
         return parsed.data;
       }

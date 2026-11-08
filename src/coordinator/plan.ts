@@ -79,6 +79,22 @@ export const planSchema = z
 
 export type Plan = z.infer<typeof planSchema>;
 
+/**
+ * Drops dependsOn ids that name no task in the plan, or the task itself. Run 9: qwen copied
+ * "add-user-model" from the prompt's example into a real plan, and the retry cost a model call.
+ * A dependency on a task that does not exist cannot be waited for anyway.
+ */
+export function dropUnknownDependencies(value: unknown): unknown {
+  const plan = value as { tasks?: unknown };
+  if (!plan || typeof plan !== "object" || !Array.isArray(plan.tasks)) return value;
+  const tasks = plan.tasks as { id?: unknown; dependsOn?: unknown }[];
+  const ids = new Set(tasks.map((t) => (t && typeof t === "object" ? t.id : undefined)).filter((id): id is string => typeof id === "string"));
+  return {
+    ...plan,
+    tasks: tasks.map((t) => (t && typeof t === "object" && Array.isArray(t.dependsOn) ? { ...t, dependsOn: t.dependsOn.filter((d) => typeof d !== "string" || (ids.has(d) && d !== t.id)) } : t)),
+  };
+}
+
 export function findCycle(tasks: Pick<PlannedTask, "id" | "dependsOn">[]): string[] | undefined {
   const deps = new Map(tasks.map((t) => [t.id, t.dependsOn]));
   const state = new Map<string, "visiting" | "done">();

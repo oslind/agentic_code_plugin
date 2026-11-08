@@ -276,28 +276,49 @@ export class Verifier {
     const root = await this.host.openFolder(workspaceRoot);
     if (!root) return { uncomparedFailures: own };
     const scratch = new ScratchCopy(root, [`baseline-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    const current = new ScratchCopy(root, [`rerun-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
     const caused: FailedCommand[] = [];
     const preexisting: FailedCommand[] = [];
     const uncompared: FailedCommand[] = [];
+    // One approval per command covers both runs: without the drafts, and again with all of them.
+    const asked = new Map<string, Promise<boolean>>();
+    const approve = (check: CheckConfig) => {
+      if (!asked.has(check.command)) {
+        asked.set(check.command, this.approveVerifyCheck(conversationId, runId, check, new Set(), "and again with all drafts, to see whether it failed already before the drafts (a failure that was there before is not this request's to fix)"));
+      }
+      return asked.get(check.command)!;
+    };
     try {
-      const base = await runAllChecks(
-        own.map((f, i) => ({ name: `baseline ${i + 1}`, command: f.line })),
-        () => scratch.sync(new Map()),
+      const commands = own.map((f, i) => ({ name: `baseline ${i + 1}`, command: f.line }));
+      const base = await runAllChecks(commands, () => scratch.sync(new Map()), signal, approve, this.host.terminal?.(workspaceRoot));
+      // Run 9: the failure a sub-agent saw came from its draft halfway through (a broken import), so it did not match
+      // the failure without the drafts, and verification blamed a bug from before the request on the drafts.
+      // The command runs again on the drafts as they are now, and that run is what is compared.
+      const run = await this.tasks.load(runId);
+      const now = await runAllChecks(
+        commands.map((c) => ({ ...c, name: c.name.replace("baseline", "with drafts") })),
+        () => current.sync(pendingBase(run.changes)),
         signal,
-        (check) => this.approveVerifyCheck(conversationId, runId, check, new Set(), "to see whether it failed already before the drafts (a failure that was there before is not this request's to fix)"),
+        approve,
         this.host.terminal?.(workspaceRoot),
       );
       own.forEach((f, i) => {
         const b = base[i];
-        const verdict = !b || b.skipped ? "unknown" : failedBefore(f.output, b);
-        (verdict === "before" ? preexisting : verdict === "new" ? caused : uncompared).push(f);
+        const n = now[i];
+        // It passes with the drafts as they are now: it is no longer a failure at all.
+        if (n && !n.skipped && n.passed) return;
+        const output = n && !n.skipped ? n.output : f.output;
+        const verdict = !b || b.skipped ? "unknown" : failedBefore(output, b);
+        const shown = { ...f, output: output.trim().split("\n").slice(-8).join("\n") };
+        (verdict === "before" ? preexisting : verdict === "new" ? caused : uncompared).push(shown);
       });
     } catch (err) {
       if (signal.aborted) throw err;
       this.host.log("warn", `Could not run the failed commands on the project without the drafts: ${(err as Error).message}`);
-      uncompared.push(...own.filter((f) => !caused.includes(f) && !preexisting.includes(f)));
+      uncompared.push(...own.filter((f) => !caused.some((c) => c.line === f.line) && !preexisting.some((c) => c.line === f.line)));
     } finally {
       await scratch.remove().catch(() => undefined);
+      await current.remove().catch(() => undefined);
     }
     if (preexisting.length) this.host.log("info", `Failed already without the drafts, so not this request's to fix: ${preexisting.map((f) => f.line).join(", ")}.`);
     return { failedCommands: caused, preexistingFailures: preexisting, uncomparedFailures: uncompared };

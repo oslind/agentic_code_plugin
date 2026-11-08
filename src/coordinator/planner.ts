@@ -3,7 +3,7 @@ import { untrustedSection } from "../context/untrusted";
 import { callStructured, PLAN_MAX_TOKENS } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
 import { SkillCatalog, skillIndex, skillText, SKILL_RULE, MAX_TASK_SKILLS } from "../skills/catalog";
-import { DEFAULT_MAX_TASKS, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
+import { DEFAULT_MAX_TASKS, dropUnknownDependencies, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
 
 // Kept short on purpose: small models follow a few concrete rules and one
 // example better than a long policy document.
@@ -134,6 +134,7 @@ export async function planRequest(
       path: ["tasks"],
     }),
     schemaName: "plan",
+    repair: dropUnknownDependencies,
     maxRetries: 3,
     signal: options.signal,
     onAttempt: options.onAttempt,
