@@ -179,7 +179,7 @@ Thirteen scenarios that failed in run 10 passed in run 11. One clean run does no
 
 - **rename-everywhere timed out on a new problem.** Research now found test.js and the plan had the right three tasks, but the convert.js task's own npm test check ran on a copy with only its rename, so "toCelsius is not a function" (test.js was the next task's file). It was sent to fix rounds and retried four times for work it may not do, and the other tasks barely started. Now, when a task's checks fail while another unfinished task of the run changes a file the failure or the sub-agent's report names, the checks are left to verification, which runs them on all drafts together (logged as checks_deferred). A check that fails on the task's own files still gets its fix rounds.
 
-## Run 12: the multi-task scenarios with two sub-agents at once (AGENTIC_E2E_PARALLEL=2, d286e73)
+## Run 12: the multi-task scenarios with two sub-agents at once (AGENTIC_E2E_PARALLEL=2, d286e73): 5/8, 103.9 min
 
 Every earlier run used one sub-agent at a time. Here the tasks really overlapped (interleaved steps, two npm test runs at once), and so far no concurrency problem showed: no drafts leaked between tasks.
 
@@ -188,6 +188,8 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 - dependent-changes (17.8 min) and stop-then-continue passed.
 - **rename-everywhere failed, the first finding tied to researchers working side by side.** One researcher correctly found toCelsius in test.js; a review sent it back "as confirmed by earlier reports" (another researcher had only searched src/), and it retracted. The planner had the rule-based list with test.js but followed the reports. Verification then compared npm test with a copy of the project folder, but the accepted drafts were already on disk, so the "without the drafts" copy had them too, and the new failure looked old. Now: the baseline copy puts back what each file held before the run's first change; a rename plan that leaves out a file the search found gets a task for it (coverReferences); and a review never sends a research report back because other reports disagree.
 - **new-module-used failed.** The index.js worker printed formatTemp(212) instead of the value the user asked for, and neither the review nor verification compared the printed output with the request. The final reply also still named a module error that a fix-up had already fixed, because the rerun on all drafts was only used to decide, never recorded. Now each rerun is shown in the chat, so the final reply goes by the latest result. Comparing printed output with the request is still open (item 7).
+- use-strict-everywhere (7.1 min) passed.
+- The scenarios give each task its own file, so same-file merging under real overlap was not exercised. New scenario same-file-parallel: two sub-agents add one function each to src/convert.js at the same time.
 
 ## Still open
 

@@ -404,4 +404,22 @@ export const MORE_SCENARIOS: Scenario[] = [
       return check.code === 0 ? [] : ["toKelvin(0) is not 273.15"];
     },
   },
+  {
+    name: "same-file-parallel",
+    description: "Two independent changes to one file, done by two sub-agents at once: both drafts are combined and nothing that was there is lost.",
+    mode: "act",
+    files: thermostat,
+    permissions: { editFiles: true },
+    prompts: [
+      "Use two sub-agents, one for each change, both in src/convert.js: add toKelvin(celsius) returning celsius + 273.15, and add toFahrenheit(celsius) returning celsius * 9 / 5 + 32. Export both and keep toCelsius.",
+    ],
+    expect: async (r) => {
+      const check = await r.sh("node", [
+        "-e",
+        "const c=require('./src/convert');const bad=[];if(c.toKelvin?.(0)!==273.15)bad.push('toKelvin');if(c.toFahrenheit?.(100)!==212)bad.push('toFahrenheit');if(c.toCelsius?.(212)!==100)bad.push('toCelsius lost');console.log(bad.join(','));process.exit(bad.length?1:0)",
+      ]);
+      const failures = check.code === 0 ? [] : [`src/convert.js is missing work: ${check.output.slice(0, 300)}`];
+      return [...failures, ...(await sameBehaviour(r))];
+    },
+  },
 ];
