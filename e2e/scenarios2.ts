@@ -328,7 +328,8 @@ export const MORE_SCENARIOS: Scenario[] = [
       const failures: string[] = [];
       if ((await r.read("src/thermostat.js")) !== thermostat["src/thermostat.js"]) failures.push("src/thermostat.js changed in Plan mode");
       const plans = Object.values(r.state.plans);
-      if (plans.some((p) => p.started || p.changes.length)) failures.push("a plan was started or drafted in Plan mode");
+      // Read-only research may run in Plan mode (run 10); only a change plan must wait.
+      if (plans.some((p) => p.kind === "change" && (p.started || p.changes.length))) failures.push("a change plan was started or drafted in Plan mode");
       if (!plans.some((p) => p.kind === "change") && !/act|plan/i.test(r.lastCoordinator?.text ?? "")) failures.push("no plan was proposed and the reply does not say to switch to Act");
       return failures;
     },
