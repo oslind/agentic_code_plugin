@@ -4,6 +4,7 @@ import { Run, RunEvent, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
+import { failureLines } from "../checks/failures";
 import { conventionsText } from "../skills/catalog";
 import { feedbackInScope, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
@@ -125,6 +126,20 @@ export class Oversight {
       });
   }
 
+  /**
+   * A sub-agent's latest command, when it failed: the facts the coordinator must not talk it out of.
+   * Run 9: a test sub-agent's node test.js showed median() returning undefined, and the coordinator,
+   * trusting an earlier "tests passed", told it twice the function was correct and its test was wrong.
+   */
+  async lastFailedCommand(runId: string, taskId: string): Promise<string | undefined> {
+    const events = await this.tasks.readLog(runId).catch(() => []);
+    const last = [...events].reverse().find((e) => e.taskId === taskId && e.type === "command");
+    if (!last || last.data?.passed !== false) return undefined;
+    const output = String(last.data?.output ?? "");
+    const fails = failureLines(output).slice(0, 6);
+    return `$ ${last.message}\n${fails.length ? fails.join("\n") : output.split("\n").slice(-8).join("\n")}`.slice(0, 1200);
+  }
+
   /** One look at a sub-agent that shows a sign of trouble: let it be, send it a note, or stop it. */
   async checkOn(s: Supervision, run: Run, task: Task, concern: Concern): Promise<void> {
     const key = `${run.id}:${task.id}`;
@@ -145,6 +160,7 @@ export class Oversight {
         notesSent,
         learned: learnedSoFar(scope) ?? fresh.briefing,
         team: s.monitor.teamStatus(fresh.tasks, task.id, this.reviewOf(run.id)),
+        failedCommand: await this.lastFailedCommand(run.id, task.id),
       },
       { signal: s.abort.signal },
     );
@@ -201,6 +217,7 @@ export class Oversight {
             team,
             earlier: earlierAnswers(scope),
             fileTree: await this.host.fileTree(c.workspaceRoot, signal).catch(() => undefined),
+            failedCommand: await this.lastFailedCommand(runId, task.id),
           },
           { signal },
         );

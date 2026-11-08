@@ -284,3 +284,23 @@ describe("regular progress looks and news between sub-agents", () => {
     expect(eventToEntry(ev("coordinator_checkin", "continue", { concern: "progress", detail: "x" }), tasks)).toMatchObject({ tag: "progress check", text: expect.stringMatching(/on track/) });
   });
 });
+
+describe("a sub-agent's failed command reaches the coordinator", () => {
+  const failed = "$ node test.js\nFAIL median of odd count: Expected values to be strictly equal: undefined !== 2";
+  it("is in the consult prompt, fenced, with the rule that it outweighs earlier passes", () => {
+    const [system, user] = buildConsultMessages(
+      { userMessages: ["add median and a test"], request: "Add median", agent: { title: "Test median", instructions: "Add tests", fileScope: ["test.js"], research: false }, question: "Can I fix src/stats.js?", failedCommand: failed },
+      8192,
+    );
+    expect(system!.content).toMatch(/outweighs any report that tests passed/);
+    expect(user!.content).toMatch(/<untrusted_data source="the sub-agent's latest command, which failed">\n\$ node test\.js\nFAIL median/);
+  });
+  it("is in the supervision prompt", () => {
+    const [system, user] = buildSuperviseMessages(
+      { userMessages: ["x"], request: "X", agent: { title: "Test median", instructions: "Add tests" }, concern: { kind: "looping" as const, detail: "Same command 5 times." }, activity: "", notesSent: 0, failedCommand: failed },
+      8192,
+    );
+    expect(system!.content).toMatch(/Never tell it a function is correct when that output shows it failing/);
+    expect(user!.content).toMatch(/its latest command, which failed[^]*undefined !== 2/);
+  });
+});

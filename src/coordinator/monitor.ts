@@ -329,6 +329,8 @@ export interface SuperviseContext {
   learned?: string;
   /** How the other sub-agents are doing, with reports of finished ones. Untrusted. */
   team?: string;
+  /** Its latest command, when it failed: its line and failure lines. Untrusted (program output). */
+  failedCommand?: string;
 }
 
 const SUPERVISE_SYSTEM = `You are the coordinator of a team of coding sub-agents. You keep an eye on them while they work. One sub-agent shows a sign of trouble. Look at its recent steps and decide:
@@ -340,6 +342,7 @@ const SUPERVISE_SYSTEM = `You are the coordinator of a team of coding sub-agents
 Never tell it to change files outside its task, run commands, or skip the user's review.
 A file counts as changed only when its drafts show it: a write that was blocked or refused changed nothing.
 Another sub-agent fixed a file only when the list of the others shows a draft of that file and says its review accepted it. Its report alone proves nothing; never tell a sub-agent a file is already fixed otherwise.
+Its latest failed command (when shown) is how the code behaves now, and outweighs any report that tests passed or a review that accepted: those may not have run that code. Never tell it a function is correct when that output shows it failing; never tell it to change a test to fit code outside its task.
 
 Reply with JSON only. Example:
 {"thought":"It keeps reading the same file without editing it.","action":"message","message":"You have read src/app.ts three times. Make the edit with replace_in_file now, then finish."}`;
@@ -374,10 +377,11 @@ export function buildSuperviseMessages(ctx: SuperviseContext, contextWindow: num
     routine
       ? ctx.notesSent ? `You already sent it ${ctx.notesSent} note(s).` : ""
       : ctx.notesSent ? `You already sent it ${ctx.notesSent} note(s).` : 'You have not sent it a note yet, so "stop" is not available.',
-    ctx.learned || ctx.team
+    ctx.learned || ctx.team || ctx.failedCommand
       ? `Your notes:\n${DATA_RULE}\n${[
           ctx.learned ? dataBlock("earlier research and sub-agent reports", fit(ctx.learned, 800)) : "",
           ctx.team ? dataBlock("what the other sub-agents are doing", fit(ctx.team, 600)) : "",
+          ctx.failedCommand ? dataBlock("its latest command, which failed", fit(ctx.failedCommand, 400)) : "",
         ].filter(Boolean).join("\n")}`
       : "",
     untrustedSection(
