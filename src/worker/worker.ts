@@ -132,6 +132,18 @@ const REPLY_RESERVE = 4096;
 /** A report that says something was changed. */
 const CLAIMS_CHANGE = /\b(added|adds|updated|created|changed|fixed|wrote|written|modified|implemented|renamed|removed|inserted|replaced|refactored)\b/i;
 
+/**
+ * The command that runs the program a task is about, when the task is about
+ * what it prints ("use it in src/index.js to print the target"): `node` or
+ * `python` on the first script of its files that its instructions name.
+ */
+export function outputCommand(task: Pick<Task, "instructions" | "fileScope">): string | undefined {
+  if (!/\b(print|prints|printed|printing|output|outputs|console\.log|display|displays)\b/i.test(task.instructions)) return undefined;
+  const file = task.fileScope.find((f) => /^[\w./-]+\.(js|cjs|mjs|py)$/.test(f) && !/(^|\/)(test|tests|__tests__)\/|\.test\.|_test\.|(^|\/)test_/.test(f) && task.instructions.includes(f));
+  if (!file) return undefined;
+  return `${file.endsWith(".py") ? "python" : "node"} ${file}`;
+}
+
 /** The most of a conversation saved for a later follow-up, in estimated tokens. Older tool output goes first. */
 const SAVED_HISTORY_TOKENS = 24000;
 
@@ -414,13 +426,16 @@ export class Worker {
         }
         // Run 10, validate-input: a behaviour change broke an existing test, and nobody ran the tests. With no
         // saved checks, a change task that has not run anything since its last write runs the project's tests once.
-        const test = this.opts.testCommand;
-        if (test && !this.opts.readOnly && !this.opts.followUp && this.changed.size > 0 && !this.ranSinceWrite && !this.toldToTest && this.checks.length === 0) {
+        // Run 10, new-module-used: the task was about what src/index.js prints, and nobody ran it, so a wrong
+        // conversion a review asked for went out. A task about output also runs the program once.
+        const tries = [this.checks.length === 0 ? this.opts.testCommand : undefined, outputCommand(task)].filter((c): c is string => !!c);
+        if (tries.length && !this.opts.readOnly && !this.opts.followUp && this.changed.size > 0 && !this.ranSinceWrite && !this.toldToTest) {
           this.toldToTest = true;
-          this.opts.log("untested", `It changed code without running anything; told to run ${test}`);
+          this.opts.log("untested", `It changed code without running anything; told to run ${tries.join(" and ")}`);
+          const what = tries.map((c) => JSON.stringify(c)).join(" and then ");
           this.messages.push({
             role: "user",
-            content: `Before you finish: you changed code but have not run anything since. Run the project's tests once with run_command (command: ${JSON.stringify(test)}). If a test fails because of your change, fix your change (an existing test shows behaviour the user still expects unless the task says otherwise). If it fails for a reason outside your task, or the command is declined, say so in your summary. Then finish.`,
+            content: `Before you finish: you changed code but have not run anything since. Run ${what} once with run_command, and check the output against your task (for printed text, compare it character by character with what the task asks). If something fails or prints wrong because of your change, fix your change (an existing test shows behaviour the user still expects unless the task says otherwise). If it fails for a reason outside your task, or the command is declined, say so in your summary. Then finish.`,
           });
           continue;
         }
@@ -432,6 +447,8 @@ export class Worker {
           signal?.throwIfAborted();
           if (!skip && !verdict.accept && verdict.feedback?.trim()) {
             this.reviews++;
+            // Its fix is a new change, so it runs the tests (or the program) again before it finishes.
+            this.toldToTest = false;
             this.messages.push({ role: "user", content: reviewFeedback(verdict.feedback, (await this.opts.draftsNow?.()) ?? []) });
             continue;
           }

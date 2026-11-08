@@ -8,7 +8,7 @@ import { asksResearchForCode } from "../src/coordinator/review";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 import { Task } from "../src/state/types";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
-import { Worker } from "../src/worker/worker";
+import { outputCommand, Worker } from "../src/worker/worker";
 
 function scripted(calls: object[]): ModelProvider & { requests: ChatRequest[] } {
   const requests: ChatRequest[] = [];
@@ -42,7 +42,7 @@ describe("a change task that never ran anything", () => {
     const model = scripted([WRITE, FINISH, { tool: "run_command", command: "npm test", reason: "run the tests" }, FINISH]);
     const { w, root } = await worker(model, "npm test");
     await w.run();
-    expect(model.requests[2]!.messages.at(-1)!.content).toMatch(/Run the project's tests once with run_command \(command: "npm test"\)/);
+    expect(model.requests[2]!.messages.at(-1)!.content).toMatch(/Run "npm test" once with run_command/);
     expect(model.requests).toHaveLength(4);
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -67,5 +67,19 @@ describe("asksResearchForCode", () => {
     expect(asksResearchForCode("Implement the check in src/thermostat.js.")).toBe(true);
     expect(asksResearchForCode("Your answer does not say which line handles the night mode. Name the line.")).toBe(false);
     expect(asksResearchForCode("Add the line numbers of each match to your answer.")).toBe(false);
+  });
+});
+
+describe("outputCommand", () => {
+  const now = { instructions: "", fileScope: [] as string[] };
+  it("runs the script a task about printed output names", () => {
+    expect(outputCommand({ ...now, instructions: "Use formatTemp in src/index.js to print the target.", fileScope: ["src/index.js"] })).toBe("node src/index.js");
+    expect(outputCommand({ ...now, instructions: "Make main.py print the total.", fileScope: ["main.py"] })).toBe("python main.py");
+  });
+
+  it("runs nothing when the task is not about output, or names no script of its files", () => {
+    expect(outputCommand({ ...now, instructions: "Add toKelvin to src/convert.js.", fileScope: ["src/convert.js"] })).toBeUndefined();
+    expect(outputCommand({ ...now, instructions: "Print the result in the test.", fileScope: ["test.js"] })).toBeUndefined();
+    expect(outputCommand({ ...now, instructions: "Make src/test/a.test.js print more.", fileScope: ["src/test/a.test.js"] })).toBeUndefined();
   });
 });
