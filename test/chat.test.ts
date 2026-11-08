@@ -476,6 +476,21 @@ describe("ChatController", () => {
       expect(entries.at(-1)!.cutOff).toBeUndefined();
     });
 
+    it("shows a full answer from the conversation alone as an answer, but not a question back", async () => {
+      // Run 10, what-did-you-change: a correct direct answer was a plain message, like a question or a stall.
+      const { controller } = setup(
+        [
+          JSON.stringify({ reply: "I added toFahrenheit to src/convert.js. No other files changed.", action: "none", goal: "answer", complete: true, request: "" }),
+          JSON.stringify({ reply: "Which file do you mean?", action: "none", goal: "answer", complete: true, request: "" }),
+        ],
+        "act",
+      );
+      await controller.send("What did you change?");
+      expect((await controller.state()).current!.entries.at(-1)).toMatchObject({ author: "coordinator", kind: "answer" });
+      await controller.send("And the other one?");
+      expect((await controller.state()).current!.entries.at(-1)!.kind).toBeUndefined();
+    });
+
     it("marks a research answer cut off at the length limit, and the bar does not say it finished", async () => {
       await fs.mkdir(path.join(dir, "ws"), { recursive: true });
       const worker = (thought: string, call: object) => JSON.stringify({ thought, call });

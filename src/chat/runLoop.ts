@@ -184,7 +184,10 @@ export class RunLoop {
         "info",
         `Coordinator (${this.s.mode} mode) chose "${turn.modelAction ?? turn.action}"${turn.modelAction && turn.modelAction !== turn.action ? `, changed to "${turn.action}"` : ""}. Goal: ${turn.goal ?? "not given"}, complete: ${turn.complete ?? "not given"}.`,
       );
-      await this.s.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
+      // A full answer from the conversation alone ("What did you change?") is an answer like one from research:
+      // shown as one, never folded away. A question back to the user is not (run 10, what-did-you-change).
+      const direct = turn.action === "none" && turn.goal === "answer" && turn.complete === true && !/\?\s*$/.test(turn.reply.trim());
+      await this.s.append(c.id, { author: "coordinator", ...(direct ? { kind: "answer" as const } : {}), text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.s.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 
       // Research can take several rounds: a broad first look, then narrower researchers
