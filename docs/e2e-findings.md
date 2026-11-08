@@ -156,6 +156,11 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
 
 Three of the 15 failures were checks that were too strict (outside-workspace, plan-mode-holds-change, what-did-you-change); the other 12 were real, and each has a fix.
 
+## Run 10B (stopped for the full run, d4bb976)
+
+- project-skill-trusted passed (3.8 min).
+- parallel-changes timed out again: toKelvin and away were accepted, but the median task spent its time re-reading a 20-line file to get a replace right. A missed replace_in_file in a short file now also suggests writing the file whole with write_file, keeping every other line.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

@@ -124,7 +124,10 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
             ok: false,
             output:
               count === 0
-                ? `The search text was not found in ${call.path}.${breaksHint}${nearestMatch(text, unescaped ?? search) ?? " Read the file again and copy the text exactly, including indentation."}`
+                ? `The search text was not found in ${call.path}.${breaksHint}${nearestMatch(text, unescaped ?? search) ?? " Read the file again and copy the text exactly, including indentation."}${
+                    // Run 10B, parallel-changes: the median task timed out re-reading a 20-line file to get a replace right.
+                    text.split("\n").length <= 60 ? ` ${call.path} is short: you can also read it once and write it whole with write_file, keeping every line you do not need to change exactly as it is.` : ""
+                  }`
                 : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once, or add "all": true to replace every occurrence (for a rename).`,
           };
         }

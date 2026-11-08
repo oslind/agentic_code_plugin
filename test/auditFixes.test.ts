@@ -235,6 +235,7 @@ describe("bounded reads (audit finding 3)", () => {
     expect(miss.ok).toBe(false);
     // Run 10: the hint only comes when real line breaks would have matched.
     expect(miss.output).not.toMatch(/two characters \\n/);
+    expect(miss.output).toMatch(/convert\.js is short: you can also read it once and write it whole with write_file/);
     const twice = await edit("{\\n", "x");
     expect(twice.ok).toBe(false);
     expect(twice.output).toMatch(/two characters \\n where the file has line breaks/);
