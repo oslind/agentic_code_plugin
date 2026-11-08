@@ -7,6 +7,7 @@ import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
 import { draftsForReview, ReviewSkip, ReviewVerdict } from "./review";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
+import { detectChecks } from "../checks/detect";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
 import { readyTasks, TaskStore } from "../state/taskStore";
@@ -99,6 +100,19 @@ export class Orchestrator {
   private readonly o: Required<Omit<OrchestratorOptions, Optional>> & Pick<OrchestratorOptions, Optional>;
   private readonly taskControllers = new Map<string, AbortController>();
   private root = "";
+
+  private testCommandFound?: Promise<string | undefined>;
+
+  /** The project's own test command (package.json, pytest, cargo...), found once per run, read from disk only. */
+  private testCommand(): Promise<string | undefined> {
+    this.testCommandFound ??= (async () => {
+      const sandbox = await WorkspaceSandbox.create(this.root);
+      const files = await sandbox.listFiles("**", 2000);
+      const found = await detectChecks(files, (p) => sandbox.readFile(p).catch(() => undefined));
+      return found.find((c) => c.name === "test")?.command;
+    })().catch(() => undefined);
+    return this.testCommandFound;
+  }
 
   constructor(options: OrchestratorOptions) {
     this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, compactSteps: false, linkDirs: ["node_modules"], ...options };
@@ -246,6 +260,7 @@ export class Orchestrator {
         task,
         context: note,
         checks: this.o.checks,
+        testCommand: this.o.checks.length ? undefined : await this.testCommand(),
         maxTurns: this.o.maxTurns,
         compactSteps: this.o.compactSteps,
         signal,

@@ -42,6 +42,12 @@ export interface WorkerOptions {
   /** Extra notes for the first message, such as what a failed earlier attempt did. */
   context?: string;
   checks: CheckConfig[];
+  /**
+   * The project's own test command (from detectChecks), for a change task with
+   * no saved checks: run once before it may finish, when it has not run
+   * anything since its last write.
+   */
+  testCommand?: string;
   maxTurns?: number;
   signal?: AbortSignal;
   /** Asks the user about a call the policy flags. Resolves true to allow it. */
@@ -232,6 +238,9 @@ export class Worker {
   private skillLoads = 0;
   /** Set once it was told its report claims a change it never wrote. */
   private toldNoWrites = false;
+  /** Ran a command or check after its last successful write. */
+  private ranSinceWrite = false;
+  private toldToTest = false;
 
   constructor(private readonly opts: WorkerOptions) {
     const role: SkillRole = opts.readOnly ? "research" : "coder";
@@ -369,6 +378,8 @@ export class Worker {
         continue;
       }
 
+      if (turn.call.tool === "run_command" || turn.call.tool === "run_check" || turn.call.tool === "request_check") this.ranSinceWrite = true;
+
       const checks = this.checks;
       const decision = checkToolCall(turn.call, {
         fileScope: task.fileScope,
@@ -398,6 +409,18 @@ export class Worker {
           this.messages.push({
             role: "user",
             content: "You have not changed any file in this task: no write_file or replace_in_file call of yours succeeded, so nothing you describe exists yet. Make the change now with write_file or replace_in_file, then finish. If no change is needed, finish with a summary that says you changed nothing and why.",
+          });
+          continue;
+        }
+        // Run 10, validate-input: a behaviour change broke an existing test, and nobody ran the tests. With no
+        // saved checks, a change task that has not run anything since its last write runs the project's tests once.
+        const test = this.opts.testCommand;
+        if (test && !this.opts.readOnly && !this.opts.followUp && this.changed.size > 0 && !this.ranSinceWrite && !this.toldToTest && this.checks.length === 0) {
+          this.toldToTest = true;
+          this.opts.log("untested", `It changed code without running anything; told to run ${test}`);
+          this.messages.push({
+            role: "user",
+            content: `Before you finish: you changed code but have not run anything since. Run the project's tests once with run_command (command: ${JSON.stringify(test)}). If a test fails because of your change, fix your change (an existing test shows behaviour the user still expects unless the task says otherwise). If it fails for a reason outside your task, or the command is declined, say so in your summary. Then finish.`,
           });
           continue;
         }
@@ -489,7 +512,10 @@ export class Worker {
         terminal: this.opts.terminal,
         onCommand: (command, res) => this.logCommand(command, res),
       });
-      if (outcome.wrote) this.changed.add(outcome.wrote);
+      if (outcome.wrote) {
+        this.changed.add(outcome.wrote);
+        this.ranSinceWrite = false;
+      }
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });
     }
     throw new WorkerError(`Task ${task.id} did not finish within ${maxTurns} turns`);

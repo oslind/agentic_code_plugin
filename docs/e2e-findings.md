@@ -140,6 +140,8 @@ Seen in 8C: turn 1 asked for the amount in only 1 of 2 runs (the other let a wor
 - stop-then-continue passed.
 - secret-file and injection-in-file passed.
 - **rename-everywhere timed out.** The planner guessed which files used the name instead of searching; reviews sent back a correct "this file has no occurrences" report; replace_in_file was a fight with exact matching, one occurrence at a time, and the hint about written-out \n came three times although real line breaks would not have matched either. Now replace_in_file takes `"all": true` to replace every occurrence (and suggests it when the text occurs more than once), the \n hint only comes when it would have helped, and a rename task with no drafts whose files all lack the old name is accepted by rule.
+- one-edit-in-long-file and fix-and-add-test passed.
+- **validate-input failed on a real regression.** "Throw for any mode other than no mode, 'day' or 'night'" was read as the literal string 'no mode', so `targetTemp()` with no argument threw and the existing "default target is 21" test failed. Nobody ran the tests: the worker never ran npm test, the review traced the code by hand, and verification said "no tests were mentioned". Before that, the coordinator first sent the clear change request to research, and two reviews of that research report asked it for code, which a researcher cannot write. Now a change task with no saved checks that has not run anything since its last write is told once to run the project's own test command (found the same way as suggested checks) before it finishes, and a review that asks a research sub-agent for code is accepted by rule.
 
 ## Still open
 

@@ -97,6 +97,7 @@ const SYSTEM = `You are the coordinator of a team of coding sub-agents. You gave
 For each new or changed function, work out by hand, line by line, what it returns for one or two small inputs (for a list: an odd and an even length, such as [3, 1, 2] and [4, 1, 3, 2]). Write that trace in thought. An index into an array must be a whole number: sorted[3 / 2] is sorted[1.5], which is undefined in JavaScript. If no test or command output shows the function working, do not accept on a report that "all tests passed". A draft that also rewrites code its task did not ask for (another function, a bug it noticed) is "revise": ask it to undo that part and mention the bug in its report instead.
 If your feedback asks for any fix, the verdict is "revise", never "accept". When the sub-agent's new tests and the code disagree on a detail the user did not name (an error message, a wording), the test is wrong: ask it to fix the test, not the code.
 Only the diff lines (+ and -) are changes. Code or comments that are in the whole file but not in the diff are unchanged from the original: never ask to undo them, and never say the sub-agent added them. To undo an unasked change, ask to restore the original lines; never ask to remove or delete code the original file had. After a send-back, judge the diff as it is now: a problem it no longer shows is fixed, whatever the report says. A task that only asks to undo or remove something is done when the diff no longer has it, even with no drafts.
+A research sub-agent can only read and run commands; it cannot change files. Judge its report only on whether it answers its question. Never ask a research sub-agent to write code, drafts or changes: the change is a later task.
 A research report that says what a command would or should print, without having run it (for example because the user declined it), has no result: that is "revise" unless it says plainly that it could not run the command.
 Judge the drafts, not the wording of the report: when the drafts are right and only the report has a typo or a wrong number, accept and mention it in feedback.
 A report that says a file was created or changed while there are no drafts is false: nothing was written. Then use "revise".
@@ -166,6 +167,16 @@ export function withoutMootUndo(feedback: string, drafts: string | undefined): {
   const undo = /\b(undo|restore|revert|put back|roll back)\b/i;
   const dropped = sentences.filter((x) => undo.test(x));
   return { kept: sentences.filter((x) => !undo.test(x)).join(" ").trim(), dropped };
+}
+
+/**
+ * True when a send-back asks a research sub-agent for code or drafts, which it
+ * cannot write. Run 10, validate-input: two reviews of a correct research
+ * report said "the draft contains no code changes. Add the mode validation
+ * logic", and the run lost three minutes until a second plan made the change.
+ */
+export function asksResearchForCode(feedback: string): boolean {
+  return /\b(drafts?|code changes?|implement\w*|write_file|replace_in_file|(add|write|insert) (the |a |an )?[\w\s-]{0,40}\b(logic|code|function|check|validation|throw))\b/i.test(feedback);
 }
 
 /** Words that can follow "rename" or "replace" without being a name in the code. */

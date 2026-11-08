@@ -7,7 +7,7 @@ import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { failureLines } from "../checks/failures";
 import { conventionsText } from "../skills/catalog";
-import { feedbackInScope, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { asksResearchForCode, feedbackInScope, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -326,6 +326,11 @@ export class Oversight {
           this.host.log("info", `Review of "${task.title}": left out a request to undo lines the drafts never changed: ${moot.dropped.join(" ")}`);
           result = moot.kept.length >= 10 ? { ...result, feedback: moot.kept } : { ...result, verdict: "accept", feedback: "Accepted: the review only asked to undo changes, but the drafts keep every original line." };
         }
+      }
+      // A researcher cannot write code, so asking it for code cannot be acted on (run 10, validate-input).
+      if (result.verdict === "revise" && research && asksResearchForCode(result.feedback)) {
+        this.host.log("info", `Review of "${task.title}": accepted by rule, it asked a research sub-agent for code changes it cannot make.`);
+        result = { ...result, verdict: "accept", feedback: "Accepted by rule: research cannot change files; the change is a separate task." };
       }
       // A rename with nothing to rename (run 10): the old name is in none of the task's files, so no draft is right.
       if (result.verdict === "revise" && !research && (await this.nothingToRenameIn(c.workspaceRoot, task, drafts))) {
