@@ -34,3 +34,19 @@ export async function outlinesOfNamedFiles(files: Pick<ProjectFiles, "readFile">
   }
   return parts.length ? parts.join("\n") : undefined;
 }
+
+/**
+ * The project files that mention a name as a whole word, searched over the
+ * whole project (bounded). Run 11, rename-everywhere: research only listed
+ * src/**, so test.js kept the old name and its tests broke.
+ */
+export async function filesMentioning(files: Pick<ProjectFiles, "readFile" | "listFiles">, name: string, maxFiles = 400): Promise<string[]> {
+  const word = new RegExp(`(^|[^\\w$])${name.replace(/[$.]/g, (c) => `\\${c}`)}(?![\\w$])`);
+  const list = (await files.listFiles("**", 2000).catch(() => [] as string[])).filter((p) => !/\.(png|jpe?g|gif|ico|pdf|zip|gz|lock|woff2?|ttf|exe|dll|so|bin)$/i.test(p)).slice(0, maxFiles);
+  const out: string[] = [];
+  for (const p of list) {
+    const text = await files.readFile(p, 300_000).catch(() => undefined);
+    if (text !== undefined && word.test(text)) out.push(p);
+  }
+  return out;
+}

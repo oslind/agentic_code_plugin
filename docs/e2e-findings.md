@@ -161,6 +161,11 @@ Three of the 15 failures were checks that were too strict (outside-workspace, pl
 - project-skill-trusted passed (3.8 min).
 - parallel-changes timed out again: toKelvin and away were accepted, but the median task spent its time re-reading a 20-line file to get a replace right. A missed replace_in_file in a short file now also suggests writing the file whole with write_file, keeping every other line.
 
+## Run 11: every scenario (42) on aa4a0a2 (in progress)
+
+- The first 21 passed, including parallel-changes (failed in runs 9, 10 and 10B), dependent-changes, command-denied, outside-workspace and stop-then-continue.
+- **rename-everywhere failed, much closer than in run 10.** Research came first and the plan touched only the right files, but the researcher had only searched src/** (as the tool examples showed), so test.js kept the old name and npm test broke with "toCelsius is not a function". Verification called that an existing issue, although it did not happen without the drafts. Now a rename request gives the planner every project file that mentions the old name (searched by rule over the whole project); the tool examples search the whole project; and a command failure the drafts caused, found by the run without them, is missing work whatever the verdict says.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

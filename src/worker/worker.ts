@@ -172,9 +172,9 @@ function researchPrompt(withSkills = false): string {
 Each reply is one JSON object: {"thought": "...", "call": {"tool": "...", ...}}. Make exactly one tool call per reply.
 
 Tools:
-- {"tool":"list_files","glob":"src/**"}
+- {"tool":"list_files","glob":"**"}
 - {"tool":"read_file","path":"README.md","startLine":1,"endLine":200}
-- {"tool":"search","query":"functionName","glob":"src/**"}
+- {"tool":"search","query":"functionName"}  (searches the whole project, tests and root files included; add "glob":"src/**" only to narrow it)
 - {"tool":"run_command","command":"npm test","reason":"see whether the tests pass"}  (runs in a terminal the user watches; output comes back to you)
 - {"tool":"ask_coordinator","question":"..."}  (ask the coordinator, who knows the user's messages and what other researchers found)
 ${withSkills ? `${SKILL_TOOL}\n` : ""}- {"tool":"finish","summary":"your report"}
@@ -199,7 +199,7 @@ Each reply is one JSON object: {"thought": "...", "call": {"tool": "...", ...}}.
 Tools:
 - {"tool":"read_file","path":"src/a.ts","startLine":1,"endLine":200}
 - {"tool":"list_files","glob":"src/**/*.ts"}
-- {"tool":"search","query":"functionName","glob":"src/**"}
+- {"tool":"search","query":"functionName"}  (searches the whole project; add "glob" only to narrow it)
 - {"tool":"write_file","path":"src/a.ts","content":"full file content"}
 - {"tool":"replace_in_file","path":"src/a.ts","search":"exact old text","replace":"new text"}  (add "all":true to replace every occurrence, for a rename)
 - {"tool":"run_check","name":"${checks[0]?.name ?? "test"}"}  (available: ${checks.map((c) => c.name).join(", ") || "none"})

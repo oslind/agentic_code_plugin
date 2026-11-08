@@ -46,6 +46,8 @@ export interface PlanInput {
   userWords?: string;
   /** The user's earlier messages in this conversation, oldest first, for what the latest one refers to. Trusted. */
   earlierUserWords?: string[];
+  /** For a rename: the old name and every project file that mentions it, searched by rule (filesMentioning). */
+  references?: { name: string; files: string[] };
   /** Top-level outlines of the files the request names (outlinesOfNamedFiles). Read from the project, so fenced. */
   outlines?: string;
   /** Compact file listing of the workspace. Truncated to fit if needed. */
@@ -117,6 +119,20 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
         .filter(Boolean)
         .join("\n\n"),
       priority: 95,
+    });
+  }
+  if (input.references) {
+    const { name, files } = input.references;
+    sections.push({
+      name: "references",
+      text: files.join("\n") || "(none)",
+      priority: 90,
+      wrap: (list) =>
+        untrustedSection(
+          `Every project file that mentions ${name}, searched by rule over the whole project (tests and root files included). A rename must change each of them, so give each one to a task:`,
+          "project files that mention the name",
+          list,
+        ),
     });
   }
   if (input.outlines?.trim()) {

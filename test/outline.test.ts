@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { outlineOf, outlinesOfNamedFiles } from "../src/context/outline";
+import { filesMentioning, outlineOf, outlinesOfNamedFiles } from "../src/context/outline";
 
 describe("outlineOf", () => {
   it("lists top-level functions, classes and exports", () => {
@@ -14,5 +14,18 @@ describe("outlineOf", () => {
     const tree = "src/\n  a.js\n  b.js";
     expect(await outlinesOfNamedFiles(files, tree, ["Change src/a.js"])).toBe("src/a.js:\n  function a() {}");
     expect(await outlinesOfNamedFiles(files, tree, ["Change nothing"])).toBeUndefined();
+  });
+});
+
+describe("filesMentioning", () => {
+  it("finds every file that uses a name as a whole word, root files included", async () => {
+    const texts: Record<string, string> = {
+      "src/convert.js": "function toCelsius(f) {}\nmodule.exports = { toCelsius };\n",
+      "test.js": "const { toCelsius } = require('./src/convert');\n",
+      "src/other.js": "const toCelsiusX = 1;\n",
+      "README.md": "Use `toCelsius(f)`.\n",
+    };
+    const files = { listFiles: async () => Object.keys(texts), readFile: async (p: string) => texts[p]! };
+    expect(await filesMentioning(files, "toCelsius")).toEqual(["src/convert.js", "test.js", "README.md"]);
   });
 });

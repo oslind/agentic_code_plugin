@@ -20,7 +20,8 @@ import { ChatSession } from "./session";
 import { DoneBar } from "./viewState";
 import { clip, clipLine, describePlan, isUnstarted, plural, title } from "./helpers";
 import { learnedSoFar, runScope, userMessagesOf, userRequestOf } from "./scope";
-import { outlinesOfNamedFiles } from "../context/outline";
+import { filesMentioning, outlinesOfNamedFiles } from "../context/outline";
+import { renamedName } from "../coordinator/review";
 import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
@@ -262,6 +263,7 @@ export class RunLoop {
             request: t.request,
             userWords: userRequest,
             earlierUserWords: userMessagesOf(c.entries).filter((m) => m.trim() !== userRequest?.trim()).slice(-3),
+            references: await this.renameReferences(c.workspaceRoot, userRequest ?? t.request),
             outlines: await WorkspaceSandbox.create(c.workspaceRoot)
               .then((files) => outlinesOfNamedFiles(files, fileTree, [t.request, userRequest ?? ""]))
               .catch(() => undefined),
@@ -379,6 +381,16 @@ export class RunLoop {
    * Starts a proposed plan. Running only happens in Act mode; pressing Run in
    * Plan mode is the user switching to Act mode for this conversation.
    */
+  /** For a rename request: the old name and every project file that mentions it, so the plan misses none. */
+  private async renameReferences(workspaceRoot: string, request: string): Promise<{ name: string; files: string[] } | undefined> {
+    const name = renamedName(request);
+    if (!name) return undefined;
+    const files = await WorkspaceSandbox.create(workspaceRoot)
+      .then((sandbox) => filesMentioning(sandbox, name))
+      .catch(() => undefined);
+    return files && { name, files };
+  }
+
   /** The skills for a folder. A folder whose skills cannot be read just gets none. */
   async skillsFor(workspaceRoot: string): Promise<SkillCatalog | undefined> {
     try {

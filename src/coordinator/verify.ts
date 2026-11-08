@@ -1,3 +1,4 @@
+import { failureLines } from "../checks/failures";
 import { z } from "zod";
 import { CheckResult } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
@@ -252,8 +253,21 @@ export function unaskedFixes(missing: string[], words: string[]): string[] {
   });
 }
 
-export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string }): Omit<Verification, "thinking"> {
+/** ": <first failure line>" of a command's output, for a missing-work item. */
+function firstFailure(output: string): string {
+  const line = failureLines(output)[0];
+  return line ? `: ${line.slice(0, 160)}` : "";
+}
+
+export function guardVerification(
+  d: VerifyDecision,
+  ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string; failedCommands?: { line: string; output: string }[] },
+): Omit<Verification, "thinking"> {
   const failed = ctx.checks.filter((c) => !c.passed && !c.skipped);
+  // Run 11, rename-everywhere: npm test failed with "toCelsius is not a function" only with the drafts (a test
+  // file still used the old name), and verification called it "existing issues". A failure the drafts caused,
+  // found by running the command on the project without them, is missing work whatever the model says.
+  const caused = ctx.failedCommands ?? [];
   const unfinished = ctx.tasks.filter((t) => t.unfinished !== undefined);
   // Run 6D: verification called the run done while the toKelvin task's review had said the function was missing.
   const rejected = ctx.tasks.filter((t) => t.unfinished === undefined && t.notAccepted !== undefined);
@@ -263,13 +277,14 @@ export function guardVerification(d: VerifyDecision, ctx: Pick<VerifyContext, "c
   const forced: string[] = [
     ...draftProblemsOf(ctx.drafts ?? ""),
     ...failed.map((c) => `Make the "${checkName(c.name)}" check pass on all drafts together.`),
+    ...caused.map((c) => `Make \`${c.line.slice(0, 120)}\` pass again: it fails with the drafts and not without them${firstFailure(c.output)}.`),
     ...unfinished.map((t) => `Finish "${t.title}", which did not complete${t.unfinished ? `: ${t.unfinished.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
     ...rejected.map((t) => `Finish "${t.title}": its review did not accept its drafts${t.notAccepted ? `: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
   ];
   const evidence = checkEvidence(ctx.checks);
   const summary = d.verified.trim();
   if (forced.length) {
-    const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : unfinished.length ? "a task did not finish" : rejected.length ? "a task's review did not accept its drafts" : "a draft cannot load"}, so it is not.` : undefined;
+    const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : caused.length ? "a command fails because of the drafts" : unfinished.length ? "a task did not finish" : rejected.length ? "a task's review did not accept its drafts" : "a draft cannot load"}, so it is not.` : undefined;
     missing = [...forced, ...missing.filter((m) => !forced.includes(m))].slice(0, 6);
     return { verified: false, evidence, summary, missing, thought: d.thought, adjusted };
   }
