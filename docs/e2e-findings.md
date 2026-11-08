@@ -202,6 +202,10 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 - parallel-changes (26.2 min, its first pass with two sub-agents at once), rename-everywhere (22.2 min) and same-file-parallel (25.0 min) passed.
 - same-file-parallel did not overlap: the plan check makes a task wait for another whose files it shares ("file scopes overlap"), so the second sub-agent started from the first one's accepted result and nothing had to be combined. Combining drafts that did overlap (PR #42) stays covered by the scripted tests in test/merge.test.ts, since a real model cannot be made to produce that case reliably.
 
+### Run 12D (two at once, e2f65fa): 1/1
+
+- new-module-used passed (14.9 min). Every scenario of run 12 has now passed with two sub-agents at once, over runs 12, 12C and 12D.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
