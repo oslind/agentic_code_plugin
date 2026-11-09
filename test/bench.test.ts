@@ -100,6 +100,8 @@ describe("benchmark tasks", () => {
     expect(modulesSaidToThrow("Throwing:\n- mod_001\n- mod_002\n\nNot throwing:\n- mod_003\n- mod_004")).toEqual(new Set([0, 1]));
     expect(modulesSaidToThrow("mod_001 throws because the quantity is not checked before it is used. mod_002 does not throw.")).toEqual(new Set([0]));
     expect(modulesSaidToThrow("mod_001.js - throws a RangeError - mod_003.js - does not throw")).toEqual(new Set([0]));
+    // Check 2026-11-09: a module the answer could not read, or found no lineTotal in, is not said to throw.
+    expect(modulesSaidToThrow("- mod_001.js throws.\n- mod_002.js: File not found.\n- mod_005.js: No lineTotal function.")).toEqual(new Set([0]));
   });
 
   it("spreads the edit ladder's changes over different files", () => {

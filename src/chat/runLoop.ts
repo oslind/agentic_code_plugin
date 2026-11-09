@@ -3,7 +3,7 @@ import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
-import { Run } from "../state/types";
+import { Run, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
 import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings, withDeniedNotice, withoutModelWarnings } from "./synthesis";
@@ -21,12 +21,12 @@ import { DoneBar } from "./viewState";
 import { clip, clipLine, describePlan, isUnstarted, plural, title } from "./helpers";
 import { learnedSoFar, runScope, userMessagesOf, userRequestOf } from "./scope";
 import { filesMentioning, outlinesOfNamedFiles } from "../context/outline";
-import { renamedName } from "../coordinator/review";
+import { renamedName, ReviewVerdict } from "../coordinator/review";
 import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
-import { batchesOf, batchQuestion, coverageFact, coverageNote, coverageOf, fileList, filesAskedAbout, filesRead } from "./coverage";
+import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, filesAskedAbout, filesRead } from "./coverage";
 
 /**
  * The coordinator's run loop for one prompt: its turn (answer, research,
@@ -518,7 +518,9 @@ export class RunLoop {
             approve: async (_reason, call) => call.tool === "run_command" && (await this.approvals.approveAgentCommand(c.id, run.id, task!, call)),
             inbox: () => this.s.drainInbox(run.id, task!.id),
             askCoordinator: (q) => this.oversight.consultCoordinator(c.id, run.id, task!, q, signal),
-            reviewResult: (summary, skip) => this.oversight.reviewResult(c.id, run.id, task!, summary, "", signal, skip),
+            reviewResult: batchFilesOf(task.instructions)
+              ? (summary) => this.reviewBatch(run.id, task!, batchFilesOf(task!.instructions)!, summary)
+              : (summary, skip) => this.oversight.reviewResult(c.id, run.id, task!, summary, "", signal, skip),
             log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
           });
           const result = await worker.run();
@@ -545,6 +547,22 @@ export class RunLoop {
     signal.throwIfAborted();
     await this.s.append(c.id, { author: "coordinator", runId: run.id, text: `Research finished.${await this.reports(run.id)}` });
     return run.id;
+  }
+
+  /** Send-backs per batch researcher, for reviewBatch. */
+  private batchReviews = new Map<string, number>();
+
+  /** A batch researcher's result, reviewed by rule (coverage.ts batchReview): at most two send-backs, then it is flagged. */
+  private async reviewBatch(runId: string, task: Task, batch: string[], summary: string): Promise<ReviewVerdict> {
+    const key = `${runId}:${task.id}`;
+    const rounds = this.batchReviews.get(key) ?? 0;
+    const read = filesRead((await this.tasks.readLog(runId).catch(() => [])).filter((e) => e.taskId === task.id));
+    const r = batchReview(batch, read, summary);
+    const final = !r.accept && rounds >= 2;
+    if (!r.accept && !final) this.batchReviews.set(key, rounds + 1);
+    const message = r.accept ? "accept" : final ? "not_accepted" : "revise";
+    await this.tasks.log({ runId, taskId: task.id, type: "coordinator_review", message, data: { feedback: r.feedback ?? "Every file was opened and reported (checked by rule).", research: true, byRule: true, final: final ? "limit_reached" : undefined } });
+    return r.accept ? { accept: true, outcome: "accepted" } : final ? { accept: true, outcome: "not_accepted" } : { accept: false, feedback: r.feedback, outcome: "sent_back" };
   }
 
   /** Files researchers opened with read_file in these runs. */
@@ -581,7 +599,11 @@ export class RunLoop {
       }
     }
     // How much of a many-file question was read, counted from the logs: the answer must say so (benchmark pass 1).
-    const coverage = asked && coverageOf(asked, await this.filesReadIn(runIds));
+    // A file counts as checked only when a researcher opened it and a report says something about it: a file read
+    // but never reported on is as unknown to the answer as one never opened (check 2026-11-09: mod_042 was in no report).
+    const opened = await this.filesReadIn(runIds);
+    const reported = reports.map((r) => r.text).join("\n");
+    const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f))));
     const result = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
       { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },

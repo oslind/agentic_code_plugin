@@ -45,7 +45,9 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
     switch (call.tool) {
       case "read_file": {
         // Never more than MAX_READ_BYTES is read, however large the file is.
-        const head = await ctx.sandbox.readHead(call.path, MAX_READ_BYTES);
+        const got = await ctx.sandbox.readHead(call.path, MAX_READ_BYTES).catch((err: Error) => ({ error: err.message }));
+        if ("error" in got) return { ok: false, output: `${got.error}${await samePathHint(ctx, call.path)}` };
+        const head = got;
         const lines = head.text.split("\n");
         // The last line of a cut file may be cut too.
         if (head.truncated && lines.length > 1) lines.pop();
@@ -62,12 +64,13 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       case "read_files": {
         // Benchmark pass 1, find-throwing: a researcher given 15 files spent a model call (about 30 s) on each.
         // One call reads them all, each cut to its share of a fixed budget so the reply stays small.
-        const share = Math.max(400, Math.floor(MAX_READ_FILES_CHARS / call.paths.length));
+        const paths = call.paths.map((x) => x.trim()).filter(Boolean);
+        const share = Math.max(400, Math.floor(MAX_READ_FILES_CHARS / Math.max(1, paths.length)));
         const parts: string[] = [];
-        for (const p of call.paths) {
+        for (const p of paths) {
           const head = await ctx.sandbox.readHead(p, MAX_READ_BYTES).catch((err: Error) => ({ error: err.message }));
           if ("error" in head) {
-            parts.push(`${p}: could not be read (${head.error})`);
+            parts.push(`${p}: could not be read (${head.error}).${await samePathHint(ctx, p)}`);
             continue;
           }
           const lines = head.text.split("\n");
@@ -87,7 +90,11 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       }
       case "list_files": {
         const files = await ctx.sandbox.listFiles(call.glob, MAX_LIST + 1);
-        if (files.length === 0) return { ok: true, output: "No files match." };
+        if (files.length === 0) {
+          // Check 2026-11-09: list_files "mod_002.js" (no folder) found nothing, and the file was reported missing.
+          const elsewhere = /[*?[{]/.test(call.glob) ? [] : await ctx.sandbox.listFiles(`**/${call.glob.split("/").pop()}`, 5).catch(() => [] as string[]);
+          return { ok: true, output: elsewhere.length ? `No files match "${call.glob}" exactly, but the project has: ${elsewhere.map(safeFileName).join(", ")}. Paths start at the project root.` : "No files match." };
+        }
         const more = files.length > MAX_LIST ? "\n[more files not shown; use a narrower glob]" : "";
         return { ok: true, output: files.slice(0, MAX_LIST).map(safeFileName).join("\n") + more };
       }
@@ -197,6 +204,16 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
   } catch (err) {
     return { ok: false, output: (err as Error).message };
   }
+}
+
+/**
+ * Project files with the same name as a path that could not be read. Check 2026-11-09: a researcher looked for
+ * mod_002.js without its folder, reported "file not found", and the answer repeated it as a fact.
+ */
+async function samePathHint(ctx: ToolContext, p: string): Promise<string> {
+  const base = p.split("/").pop()!;
+  const found = (await ctx.sandbox.listFiles(`**/${base}`, 5).catch(() => [] as string[])).filter((f) => f !== p);
+  return found.length ? ` The project has ${found.join(", ")}: use that path. Never report a file as missing before you have tried it.` : "";
 }
 
 /** loadWarning(), plus names the draft takes from a project module that does not export them (read through the sandbox). */

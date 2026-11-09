@@ -1,6 +1,6 @@
 /** Benchmark pass 1: questions about many files are split by rule, and the answer says what was read. */
 import { describe, expect, it } from "vitest";
-import { batchesOf, batchQuestion, coverageNote, coverageOf, filesAskedAbout, filesRead, MAX_BATCH } from "../src/chat/coverage";
+import { batchesOf, batchFilesOf, batchQuestion, batchReview, mentionsFile, coverageNote, coverageOf, filesAskedAbout, filesRead, MAX_BATCH } from "../src/chat/coverage";
 
 const shop = [...Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`), "src/shop.js", "test.js", "package.json", "README.md", "node_modules/x/index.js"];
 
@@ -50,5 +50,28 @@ describe("batches and coverage", () => {
     expect(c).toEqual({ files: ["a.js", "b.js"], read: ["a.js"], unread: ["b.js"] });
     expect(coverageNote(c)).toMatch(/^Checked 1 of the 2 files .* \(b\.js\)\.$/);
     expect(coverageNote(coverageOf(["a.js"], read))).toBeUndefined();
+  });
+});
+
+describe("the review of a batch researcher, by rule", () => {
+  const batch = ["src/mod_001.js", "src/mod_002.js"];
+  it("reads its own files back from the question", () => {
+    expect(batchFilesOf(batchQuestion("Which throw?", batch))).toEqual(batch);
+    expect(batchFilesOf("What does src/mod_001.js do?")).toBeUndefined();
+  });
+  it("accepts a report that opened and names every file", () => {
+    expect(batchReview(batch, new Set(batch), "- mod_001.js: throws.\n- src/mod_002.js: returns 0.")).toMatchObject({ accept: true });
+  });
+  it("sends back, naming what is missing and keeping it to its own files (check 2026-11-09)", () => {
+    const r = batchReview(batch, new Set(["src/mod_001.js"]), "mod_001.js throws. mod_002.js: file not found.");
+    expect(r.accept).toBe(false);
+    expect(r.unread).toEqual(["src/mod_002.js"]);
+    expect(r.feedback).toMatch(/only these 2: src\/mod_001\.js, src\/mod_002\.js\. Do not look at other files[\s\S]*not opened src\/mod_002\.js[\s\S]*exactly these paths/);
+    expect(batchReview(batch, new Set(batch), "mod_001.js throws.").unreported).toEqual(["src/mod_002.js"]);
+  });
+  it("matches a file by path or whole file name only", () => {
+    expect(mentionsFile("see mod_01.js", "src/mod_01.js")).toBe(true);
+    expect(mentionsFile("see mod_010.js", "src/mod_01.js")).toBe(false);
+    expect(mentionsFile("see xmod_01.js", "src/mod_01.js")).toBe(false);
   });
 });

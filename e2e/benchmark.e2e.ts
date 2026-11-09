@@ -9,7 +9,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { describe, it } from "vitest";
 import { runScenario } from "./harness";
-import { isOllama, liveConfigFromEnv, liveProvider, unloadOllama } from "./providers";
+import { isOllama, liveConfigFromEnv, liveProvider, saveRecording, unloadOllama } from "./providers";
 import { Attempt, finalAnswerOf, Mode, scoreboard, usageOf } from "./bench/scoreboard";
 import { runSingle } from "./bench/single";
 import { BENCH_TASKS, BenchTask, judge, Judged } from "./bench/tasks";
@@ -62,6 +62,8 @@ async function runAgentic(task: BenchTask, outDir: string): Promise<{ answer: st
       },
     },
   );
+  // Every model call, so a run can be read back (which files researchers opened, what reviews said).
+  await saveRecording(path.join(outDir, "model-calls.jsonl"), result.calls).catch(() => undefined);
   const ended = result.failures.length ? result.failures.join("; ").slice(0, 500) : undefined;
   return { answer, ended, judged: judged ?? judgeNothing(), durationMs: result.durationMs, calls: result.calls };
 }

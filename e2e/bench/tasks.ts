@@ -274,7 +274,7 @@ export function modulesNamed(answer: string): Set<number> {
 }
 
 /** Says a module does not throw: "does not throw", "doesn't throw", "never throws", "returns a negative total". */
-const SAYS_NO_THROW = /\b(?:does|do|did|will|would|can)\s*(?:not|n't)\s+(?:\w+\s+){0,2}throw|\b(?:doesn't|don't|won't|never)\s+(?:\w+\s+){0,2}throw|\bno (?:error|exception)s?\b|\bwithout throwing\b|\bnon-?throwing\b|\bdo(?:es)? not\s*:|\breturns? (?:a )?negative\b|\bclamps?\b/i;
+const SAYS_NO_THROW = /\b(?:does|do|did|will|would|can)\s*(?:not|n't)\s+(?:\w+\s+){0,2}throw|\b(?:doesn't|don't|won't|never)\s+(?:\w+\s+){0,2}throw|\bno (?:error|exception)s?\b|\bwithout throwing\b|\bnon-?throwing\b|\bdo(?:es)? not\s*:|\breturns? (?:a )?negative\b|\bclamps?\b|\bnot found\b|\bcould not (?:be )?(?:read|opened?|found)\b|\bdoes(?: not|n't) exist\b|\bno lineTotal\b|\b(?:still )?unknown\b|\bnot (?:opened|read)\b/i;
 /** A heading that starts a list of modules that do not throw ("Not throwing:", "These do not:"). */
 const NO_THROW_HEADING = /^\s*(?:[#*_>-]+\s*)*(?:modules?|files?|these|others?|the rest|remaining)?[^:]{0,40}\b(?:not|n't|never|no|safe)\b[^:]{0,40}:\s*$/i;
 

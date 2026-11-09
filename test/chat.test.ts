@@ -464,7 +464,7 @@ describe("ChatController", () => {
     }
     const worker = (call: object) => JSON.stringify({ thought: "", call });
     const read = (n: number) => worker({ tool: "read_file", path: `src/mod_${n}.js` });
-    const finish = worker({ tool: "finish", summary: "Checked my files." });
+    const finish = (...n: number[]) => worker({ tool: "finish", summary: n.map((i) => `src/mod_${i}.js: does not throw.`).join("\n") || "Checked my files." });
 
     it("splits the files over researchers by rule, and the answer says which were never opened", async () => {
       const ws = await project();
@@ -472,10 +472,11 @@ describe("ChatController", () => {
         [
           // The coordinator sends one broad researcher; the extension replaces it with batches of 2 (8 files, 5 researchers).
           turn("I'll have a sub-agent check the modules.", "research", "", { questions: ["Which modules in src/ throw?"] }),
-          read(1), read(2), finish,
-          read(3), read(4), finish,
-          read(5), read(6), finish,
-          finish, // the fourth researcher opens nothing
+          read(1), read(2), finish(1, 2),
+          read(3), read(4), finish(3, 4),
+          read(5), read(6), finish(5, 6),
+          // The fourth researcher opens nothing; the rule review sends it back twice, then lets it go, flagged.
+          finish(), finish(), finish(),
           turn("Done.", "none"),
           "mod_1 throws. The other modules do not.",
         ],
@@ -488,9 +489,9 @@ describe("ChatController", () => {
       expect(sent.text).toMatch(/Sending 4 read-only sub-agent/);
       expect(entries.some((e) => /about 8 files\. Splitting them over 4 researcher\(s\), up to 2 files each/.test(e.text))).toBe(true);
       const synthesis = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
-      expect(synthesis).toMatch(/opened only 6 of the 8 files[\s\S]*Not opened: src\/mod_7\.js, src\/mod_8\.js/);
+      expect(synthesis).toMatch(/reported on only 6 of the 8 files[\s\S]*Not checked: src\/mod_7\.js, src\/mod_8\.js/);
       expect(entries.at(-1)).toMatchObject({ kind: "answer", tag: "from research" });
-      expect(entries.at(-1)!.text).toMatch(/^Checked 6 of the 8 files your question is about\. The other 2 were not opened[\s\S]*\(src\/mod_7\.js, src\/mod_8\.js\)/);
+      expect(entries.at(-1)!.text).toMatch(/^Checked 6 of the 8 files your question is about\. The other 2 were not opened or not reported on[\s\S]*\(src\/mod_7\.js, src\/mod_8\.js\)/);
     });
 
     it("sends another round for the files nobody opened before it answers", async () => {
@@ -498,13 +499,13 @@ describe("ChatController", () => {
       const { controller, provider } = setup(
         [
           turn("Checking.", "research", "", { questions: ["Which modules throw?"] }),
-          read(1), read(2), finish,
-          read(3), read(4), finish,
-          read(5), read(6), finish,
-          finish,
+          read(1), read(2), finish(1, 2),
+          read(3), read(4), finish(3, 4),
+          read(5), read(6), finish(5, 6),
+          finish(), finish(), finish(),
           // Round 2, by rule: one researcher each for mod_7 and mod_8.
-          read(7), finish,
-          read(8), finish,
+          read(7), finish(7),
+          read(8), finish(8),
           turn("Done.", "none"),
           "None of the 8 modules throw.",
         ],
@@ -514,7 +515,7 @@ describe("ChatController", () => {
       await controller.send("Which of the modules in src/ throw an error?");
       const entries = (await controller.state()).current!.entries;
       expect(entries.filter((e) => e.kind === "research")).toHaveLength(2);
-      expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/opened all 8 files/);
+      expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/reported on all 8 files/);
       expect(entries.at(-1)!.text).toBe("None of the 8 modules throw.");
     });
   });

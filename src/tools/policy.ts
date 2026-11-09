@@ -280,7 +280,10 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       return { verdict: "allow" };
     }
     case "read_files": {
-      for (const raw of call.paths) {
+      // Check 2026-11-09: blank entries (" ") made whole calls fail; they are skipped instead.
+      const paths = call.paths.filter((x) => x.trim());
+      if (!paths.length) return { verdict: "deny", reason: "read_files needs at least one file path" };
+      for (const raw of paths) {
         const p = normalizeWorkspacePath(raw);
         if (!p) return { verdict: "deny", reason: `'${raw}' is outside the workspace` };
         if (isSecretPath(p)) return { verdict: "deny", reason: `'${p}' may contain secrets and cannot be read; leave it out` };

@@ -17,7 +17,7 @@ import { ModelProvider } from "../../src/providers/types";
 import { Task } from "../../src/state/types";
 import { WorkspaceSandbox } from "../../src/tools/sandbox";
 import { Worker } from "../../src/worker/worker";
-import { RecordingProvider } from "../providers";
+import { RecordingProvider, saveRecording } from "../providers";
 import { BenchTask, judge, Judged, writeProject } from "./tasks";
 import { RecordedCall } from "../providers";
 
@@ -89,6 +89,7 @@ export async function runSingle(task: BenchTask, model: ModelProvider, opts: Sin
   if (opts.outDir) {
     await fs.mkdir(opts.outDir, { recursive: true });
     await fs.writeFile(path.join(opts.outDir, "events.log"), events.join("\n") + "\n");
+    await saveRecording(path.join(opts.outDir, "model-calls.jsonl"), provider.calls).catch(() => undefined);
     await fs.writeFile(path.join(opts.outDir, "answer.md"), `${ended ? `Ended early: ${ended}\n\n` : ""}${answer}\n`);
   }
   await scratch.remove().catch(() => undefined);

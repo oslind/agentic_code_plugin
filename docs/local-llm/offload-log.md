@@ -40,3 +40,4 @@ Every run of the end-to-end suite against a local model adds a line here (writte
 | 2026-11-08 18:33 | qwen3-8b-16k | bench pass 1 (7f3d623) | stopped after about a minute to ask for a new GO, no attempt finished, unloaded qwen3-8b-16k |
 | 2026-11-08 23:58 | qwen3-8b-16k | benchmark: 14 task(s) x single+agentic x 1 | 28 attempt(s), 286.6 min, unloaded qwen3-8b-16k |
 | 2026-11-09 05:40 | qwen3-8b-16k | bench find-throwing ladder (18c6ed0) | stopped after about a minute at Oskar's request (run tonight instead), no attempt finished, unloaded qwen3-8b-16k |
+| 2026-11-09 10:14 | qwen3-8b-16k | benchmark: 4 task(s) x agentic x 2 | 8 attempt(s), 198.8 min, unloaded qwen3-8b-16k |

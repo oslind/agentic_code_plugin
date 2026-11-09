@@ -215,6 +215,11 @@ Results in docs/benchmark-pass1.md. The bigger the question, the less the coordi
 - The scoreboard shows what research answers found and their false alarms next to the score (an empty answer scored 56 to 60%), and "solved and finished" next to "solved".
 - A sub-agent that tries a second time to write a file outside its task is told to stop trying (three-changes timed out on that).
 - First live check (e0ed452): the split worked, but researchers opened one file per model call (about 30 s each), so find-throwing-20 and -50 hit the 30-minute limit before any answer. New read_files tool: up to 20 files in one call, each cut to its share of a 24,000-character budget; batch questions ask for it.
+- Second check (a76e36c, 8 attempts, 60-minute limit, 198.8 min): every attempt answered in time. Throwing modules found in the answer's list: 5 files 2/2 and 1/2, 20 files 6/8 and 8/8, 50 files 21/22 and 22/22, 100 files 44/44 (plus 9 wrong) and 42/44 (pass 1: 2/2, 2/8, 9/22, 2/44). Three lists exactly right. No answer began with "Checked X of N", although files were missed. Fixes:
+  - A model review told a 2-file researcher to check all 100 modules; its widened report put 9 wrong modules in the answer. Batch researchers are now reviewed by rule: every file of the batch opened and named in the report, nothing else, at most two send-backs.
+  - A researcher looked for mod_002.js without src/, reported "file not found", and the answer repeated it. read_file, read_files and list_files now point to the file with that name when a path has no match; the rule review sends back an unopened file.
+  - Files read but in no report (mod_042) were counted as checked. A file now counts as checked only when it was opened and a report names it, so the "Checked X of N" line appears.
+  - read_files skips blank paths instead of refusing the whole call; the bench saves model-calls.jsonl per attempt; the scorer does not count "not found" or "no lineTotal" lines as saying a module throws.
 
 ## Still open
 

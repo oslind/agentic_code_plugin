@@ -130,12 +130,43 @@ export function fileList(files: string[], max = 30): string {
 
 /** What the answer step is told, as a fact checked by rule. */
 export function coverageFact(c: Coverage): string {
-  if (!c.unread.length) return `Checked by rule: the sub-agents opened all ${c.files.length} files your question is about. Answer for every one of them.`;
-  return `Checked by rule: the sub-agents opened only ${c.read.length} of the ${c.files.length} files the question is about. Not opened: ${fileList(c.unread)}. Your first sentence says how many were checked. Say nothing about the files that were not opened: never "the other files ..." or "the rest ...", because nobody read them.`;
+  if (!c.unread.length) return `Checked by rule: the sub-agents opened and reported on all ${c.files.length} files your question is about. Answer for every one of them.`;
+  return `Checked by rule: the sub-agents opened and reported on only ${c.read.length} of the ${c.files.length} files the question is about. Not checked: ${fileList(c.unread)}. Your first sentence says how many were checked. Say nothing about the files that were not opened: never "the other files ..." or "the rest ...", because nobody read them.`;
 }
 
 /** Put in front of an answer that could not read every file, so the user sees the gap first whatever the model wrote. */
 export function coverageNote(c: Coverage): string | undefined {
   if (!c.unread.length) return undefined;
-  return `Checked ${c.read.length} of the ${c.files.length} files your question is about. The other ${c.unread.length} were not opened, so this answer says nothing reliable about them${c.unread.length <= 10 ? ` (${c.unread.join(", ")})` : ""}.`;
+  return `Checked ${c.read.length} of the ${c.files.length} files your question is about. The other ${c.unread.length} were not opened or not reported on, so this answer says nothing reliable about them${c.unread.length <= 10 ? ` (${c.unread.join(", ")})` : ""}.`;
+}
+
+/** The files of a research question made by batchQuestion(), or undefined for any other question. */
+export function batchFilesOf(question: string): string[] | undefined {
+  if (!/^Answer the user's question for each of these \d+ file\(s\)/.test(question)) return undefined;
+  const line = question.split("\n").find((l) => l.startsWith("Files: "));
+  return line ? line.slice("Files: ".length).split(", ").map((f) => f.trim()).filter(Boolean) : undefined;
+}
+
+/** True when a report names a file, by its path or by its file name as a whole word. */
+export function mentionsFile(text: string, file: string): boolean {
+  const base = file.split("/").pop()!;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.includes(file) || new RegExp(`(^|[^\\w./-])${esc(base)}(?![\\w])`).test(text);
+}
+
+/**
+ * The review of a batch researcher, by rule instead of by a model. Benchmark check 2026-11-09: a model review told
+ * a researcher with 2 files that "the task requires checking all 100 modules", and its widened report put 9 wrong
+ * modules in the answer; another accepted "mod_002.js: file not found" from a wrong path. A batch is done when
+ * every one of its files was opened and has a line in the report; anything else is sent back, naming the files.
+ */
+export function batchReview(batch: string[], read: Set<string>, report: string): { accept: boolean; feedback?: string; unread: string[]; unreported: string[] } {
+  const unread = batch.filter((f) => !read.has(f));
+  const unreported = batch.filter((f) => !mentionsFile(report, f));
+  if (!unread.length && !unreported.length) return { accept: true, unread, unreported };
+  const parts = [`Your files are only these ${batch.length}: ${batch.join(", ")}. Do not look at other files; other researchers have them.`];
+  if (unread.length) parts.push(`You have not opened ${unread.join(", ")}. Open ${unread.length === 1 ? "it" : "them"} with read_files, using exactly these paths.`);
+  if (unreported.length) parts.push(`Your report has no line for ${unreported.join(", ")}.`);
+  parts.push("Then finish again with one line for each of your files: the path, then your finding for it.");
+  return { accept: false, feedback: parts.join(" "), unread, unreported };
 }

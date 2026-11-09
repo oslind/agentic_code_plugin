@@ -48,3 +48,21 @@ describe("read_files", () => {
     expect([...read].sort()).toEqual(["src/a.js", "src/b.js"]);
   });
 });
+
+describe("a path without its folder (check 2026-11-09)", () => {
+  it("points to the file with that name instead of only saying it is missing", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "read-files-"));
+    await fs.mkdir(path.join(root, "src"));
+    await fs.writeFile(path.join(root, "src", "mod_002.js"), "x\n");
+    const sandbox = await WorkspaceSandbox.create(root);
+    const one = await executeTool(toolCallSchema.parse({ tool: "read_file", path: "mod_002.js" }), { sandbox, checks: [] });
+    expect(one.ok).toBe(false);
+    expect(one.output).toMatch(/The project has src\/mod_002\.js: use that path/);
+    const many = await executeTool(toolCallSchema.parse({ tool: "read_files", paths: ["mod_002.js", " "] }), { sandbox, checks: [] });
+    expect(many.output).toMatch(/^mod_002\.js: could not be read[\s\S]*src\/mod_002\.js: use that path/);
+    expect(many.output).not.toMatch(/^ :/m);
+    const listed = await executeTool(toolCallSchema.parse({ tool: "list_files", glob: "mod_002.js" }), { sandbox, checks: [] });
+    expect(listed.output).toMatch(/the project has: src\/mod_002\.js/);
+    expect(checkToolCall(toolCallSchema.parse({ tool: "read_files", paths: ["src/a.js", " "] }), { fileScope: [] })).toMatchObject({ verdict: "allow" });
+  });
+});
