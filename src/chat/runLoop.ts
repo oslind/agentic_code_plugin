@@ -26,7 +26,7 @@ import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
-import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, askedScope, filesRead, LIST_LIMIT, readExtents, tooManyNote } from "./coverage";
+import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, askedScope, filesRead, LIST_LIMIT, readExtents, tooManyNote, codeFiles } from "./coverage";
 
 /**
  * The coordinator's run loop for one prompt: its turn (answer, research,
@@ -232,7 +232,7 @@ export class RunLoop {
           });
           t = { ...t, questions: batches.map((b) => batchQuestion(userRequest ?? text, b)) };
         } else if (tooMany && round === 1) {
-          await this.s.append(c.id, { author: "coordinator", text: `Your question is about all ${tooMany} code files of the project, too many to read one by one. The researchers will search instead, and the answer will say that not every file was read. Name a folder to have every file in it read.` });
+          await this.s.append(c.id, { author: "coordinator", text: `Your question is about ${codeFiles(tooMany, askedCut)} of the project, too many to read one by one. The researchers will search instead, and the answer will say that not every file was read. Name a folder to have every file in it read.` });
           if (!t.questions?.length) t = { ...t, questions: [userRequest ?? text] };
         }
         researchRuns.push(await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined));
@@ -622,7 +622,7 @@ export class RunLoop {
     const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f, asked ?? []))), askedCut);
     const result = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
-      { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : tooMany ? `Checked by rule: ${tooManyNote(tooMany)} Your first sentence says that not every file was read.` : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
+      { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : tooMany ? `Checked by rule: ${tooManyNote(tooMany, askedCut)} Your first sentence says that not every file was read.` : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
@@ -639,7 +639,7 @@ export class RunLoop {
         const gaps = [
           coverage?.unread.length ? `${coverage.unread.length} of the ${coverage.files.length} files were not read: ${fileList(coverage.unread, 10)}` : "",
           coverage?.listCut ? `the project has more than ${LIST_LIMIT} files, and files beyond those were not considered` : "",
-          tooMany ? `the question is about all ${tooMany} code files of the project, and they were not all read` : "",
+          tooMany ? `the question is about ${codeFiles(tooMany, askedCut)} of the project, and they were not all read` : "",
         ].filter(Boolean);
         check = { ...check, answered: false, missing: [...check.missing, ...gaps] };
         canResearchMore = false;
@@ -682,7 +682,7 @@ export class RunLoop {
       await this.s.append(c.id, { author: "system", tone: "warning", text: describeCutOff(result.cutOff, "The answer below") });
     }
     // Said first by rule, so the gap shows whatever the model wrote.
-    const gap = coverage ? coverageNote(coverage) : tooMany ? tooManyNote(tooMany) : undefined;
+    const gap = coverage ? coverageNote(coverage) : tooMany ? tooManyNote(tooMany, askedCut) : undefined;
     await this.s.append(c.id, {
       author: "coordinator",
       kind: "answer",

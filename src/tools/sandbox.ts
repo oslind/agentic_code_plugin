@@ -258,7 +258,9 @@ export class WorkspaceSandbox implements ProjectFiles {
             else if (target.split("/").some((part) => SKIP_DIRS.has(part))) onSkipped(childRel, `it links into ${target}, which is not searched`);
             continue;
           }
-          if (this.contains(real) && !isSecretPath(this.relative(real)) && stat?.isFile() && match(childRel)) out.push(childRel);
+          if (!stat?.isFile() || !match(childRel)) continue;
+          if (!this.contains(real)) onSkipped?.(childRel, "it links to a file outside the project");
+          else if (!isSecretPath(this.relative(real))) out.push(childRel);
         }
       }
     };

@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import pkg from "../package.json";
-import { safeLinkDirs, ScratchCopy } from "../src/changes/scratch";
+import { safeLinkDirs, ScratchCopy, setScratchLimits } from "../src/changes/scratch";
 import { checkEnv, runCheck } from "../src/checks/runner";
 import { OpenAICompatibleProvider } from "../src/providers/openaiCompatible";
 import { OverlayFiles } from "../src/changes/overlay";
@@ -418,6 +418,27 @@ describe("project-supplied scratch links and checks", () => {
     await fs.writeFile(path.join(dir, "abs-link.js"), "changed");
     await fs.writeFile(path.join(dir, "shared", "index.js"), "changed");
     expect(await fs.readFile(path.join(root, "common", "index.js"), "utf8")).toBe("real");
+  });
+
+  it.skipIf(!unix)("never copies an excluded or skipped folder under a link's name (audit of PR #54)", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "private-data", "deep"), { recursive: true });
+    await fs.writeFile(path.join(root, "private-data", "deep", "confidential.json"), "{}");
+    await fs.mkdir(path.join(root, ".agentic"));
+    await fs.writeFile(path.join(root, ".agentic", "state.json"), "{}");
+    await fs.writeFile(path.join(root, "a.js"), "a");
+    await fs.symlink("private-data", path.join(root, "data-link"));
+    await fs.symlink("private-data/deep", path.join(root, "deep-link"));
+    await fs.symlink(".agentic", path.join(root, "state-link"));
+    setScratchLimits({ exclude: ["private-data"] });
+    try {
+      const dir = await new ScratchCopy(root, ["t"], []).sync(new Map());
+      const has = (rel: string) => fs.lstat(path.join(dir, rel)).then(() => true, () => false);
+      expect(await has("a.js")).toBe(true);
+      for (const rel of ["private-data", "data-link", "deep-link", "state-link"]) expect(await has(rel)).toBe(false);
+    } finally {
+      setScratchLimits({ exclude: [] });
+    }
   });
 
   it.skipIf(!unix)("copies a folder named in linkDirs instead of linking it, so its secrets stay out", async () => {

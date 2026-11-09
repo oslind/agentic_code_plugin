@@ -96,9 +96,17 @@ export function askedScope(question: string, projectFiles: string[], max = 400):
   return sorted.length >= MIN_COVERAGE_FILES ? { files: sorted } : {};
 }
 
+/**
+ * "all 410 code files", or, when the listing stopped at LIST_LIMIT, "at least 410 code files (...)": audit of
+ * PR #54, the count from a cut listing is only a lower bound.
+ */
+export function codeFiles(n: number, listCut = false): string {
+  return listCut ? `at least ${n} code files (the project has more than ${LIST_LIMIT} files, so the total is not known)` : `all ${n} code files`;
+}
+
 /** What the answer to a question about every file of a big project says first: not every file was read. */
-export function tooManyNote(n: number): string {
-  return `Your question is about all ${n} code files of the project, too many to read one by one, so not every file was read: this answer rests on searches and the files the researchers chose to open. Name a folder to have every file in it read.`;
+export function tooManyNote(n: number, listCut = false): string {
+  return `Your question is about ${codeFiles(n, listCut)} of the project, too many to read one by one, so not every file was read: this answer rests on searches and the files the researchers chose to open. Name a folder to have every file in it read.`;
 }
 
 /** Splits files into at most `researchers` batches of at most MAX_BATCH each, in order. What does not fit waits for a later round. */

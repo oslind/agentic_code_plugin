@@ -252,7 +252,11 @@ export class ScratchCopy {
     const top = new Set([...this.skip, ...safeLinkDirs(this.linkDirs)]);
     const excluded = limits.exclude.length ? picomatch(limits.exclude.flatMap((p) => [p, `${p.replace(/\/+$/, "")}/**`]), { dot: true }) : () => false;
     // Copied entry by entry, so the folders skipped above are never even entered.
-    await this.copyTree(this.projectRoot, dir, "", (rel) => top.has(rel) || excluded(rel), new Set([await fs.realpath(this.projectRoot)]));
+    const rootReal = await fs.realpath(this.projectRoot);
+    // Matched on the path as the copy shows it and on where it really is: audit of PR #54, a link to an excluded
+    // or skipped folder ("data-link -> private-data") copied its files under the link's name.
+    const skip = (rel: string) => top.has(rel.split("/")[0]!) || excluded(rel);
+    await this.copyTree(this.projectRoot, dir, "", "", rootReal, skip, new Set([rootReal]));
     for (const d of safeLinkDirs(this.linkDirs)) {
       const source = path.join(this.projectRoot, d);
       const stat = await fs.lstat(source).catch(() => undefined);
@@ -269,7 +273,7 @@ export class ScratchCopy {
    * itself is skipped, so a loop of links ends. `rel` is the path inside the
    * project as the copy shows it, which secret names and excludes are matched on.
    */
-  private async copyTree(src: string, dest: string, rel: string, skip: (rel: string) => boolean, ancestors: Set<string>): Promise<void> {
+  private async copyTree(src: string, dest: string, rel: string, realRel: string, rootReal: string, skip: (rel: string) => boolean, ancestors: Set<string>): Promise<void> {
     const entries = await fs.readdir(src, { withFileTypes: true });
     for (const e of entries) {
       const from = path.join(src, e.name);
@@ -277,17 +281,21 @@ export class ScratchCopy {
       if (skip(childRel) || isSecretPath(childRel)) continue;
       if (!(await this.keep(from))) continue;
       let source = from;
+      let childReal = realRel ? `${realRel}/${e.name}` : e.name;
       let stat = await fs.lstat(from).catch(() => undefined);
       if (stat?.isSymbolicLink()) {
         source = await fs.realpath(from);
+        childReal = path.relative(rootReal, source).split(path.sep).join("/");
         stat = await fs.stat(source).catch(() => undefined);
       }
+      // The real place is checked too, for the entry and (through realRel) everything below it.
+      if (childReal !== childRel && (skip(childReal) || isSecretPath(childReal))) continue;
       const to = path.join(dest, e.name);
       if (stat?.isDirectory()) {
         const real = await fs.realpath(source);
         if (ancestors.has(real)) continue;
         await fs.mkdir(to, { recursive: true });
-        await this.copyTree(source, to, childRel, skip, new Set([...ancestors, real]));
+        await this.copyTree(source, to, childRel, childReal, rootReal, skip, new Set([...ancestors, real]));
       } else if (stat?.isFile()) {
         this.count(stat.size, true);
         await fs.copyFile(source, to);

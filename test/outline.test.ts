@@ -57,7 +57,9 @@ describe("filesMentioning", () => {
       await fs.writeFile(path.join(outside, "x.js"), "toCelsius(2);\n");
       await fs.symlink(outside, path.join(root, "ext"));
       const r = await filesMentioning(sandbox, "toCelsius");
-      expect(r.incomplete).toMatch(/linked folder\(s\) not searched: ext \(it links to a folder outside the project\)/);
+      expect(r.incomplete).toMatch(/linked file\(s\) or folder\(s\) not searched: ext \(it links to a folder outside the project\)/);
+      await fs.symlink(path.join(outside, "x.js"), path.join(root, "shared.ts"));
+      expect((await filesMentioning(sandbox, "toCelsius")).incomplete).toMatch(/shared\.ts \(it links to a file outside the project\)/);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
       await fs.rm(outside, { recursive: true, force: true });

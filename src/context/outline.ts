@@ -71,7 +71,7 @@ export async function filesMentioning(files: Pick<ProjectFiles, "readFile" | "li
     return { files: [], incomplete: `the project's files could not be listed (${(err as Error).message})` };
   }
   const reasons: string[] = [];
-  if (skipped.length) reasons.push(`linked folder(s) not searched: ${skipped.slice(0, 5).join(", ")}${skipped.length > 5 ? ", …" : ""}`);
+  if (skipped.length) reasons.push(`linked file(s) or folder(s) not searched: ${skipped.slice(0, 5).join(", ")}${skipped.length > 5 ? ", …" : ""}`);
   if (listed.length > MENTION_SEARCH_FILES) reasons.push(`the project has more than ${MENTION_SEARCH_FILES} files, and only the first ${MENTION_SEARCH_FILES} were searched`);
   // Secret files are never read or changed by a sub-agent, so they are not searched either.
   const list = listed.slice(0, MENTION_SEARCH_FILES).filter((p) => !isSecretPath(p) && !/\.(png|jpe?g|gif|ico|pdf|zip|gz|lock|woff2?|ttf|exe|dll|so|bin)$/i.test(p));

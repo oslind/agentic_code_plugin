@@ -42,6 +42,8 @@ describe("filesAskedAbout", () => {
     expect(filesAskedAbout("Which files throw in the whole project?", huge)).toBeUndefined();
     expect(askedScope("What does src/m1/x.js do?", huge)).toEqual({});
     expect(tooManyNote(600)).toMatch(/all 600 code files[\s\S]*not every file was read/);
+    // From a listing cut at 5000 files the count is only a lower bound (audit of PR #54).
+    expect(tooManyNote(600, true)).toMatch(/about at least 600 code files \(the project has more than 5000 files, so the total is not known\)/);
   });
   it("says when the project had more files than could be listed", () => {
     const c = coverageOf(["a.js"], new Set(["a.js"]), true);
