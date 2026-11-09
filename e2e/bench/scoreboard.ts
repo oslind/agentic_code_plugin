@@ -158,3 +158,12 @@ export function scoreboard(attempts: Attempt[], meta: { model: string; time: str
   ladder("edit-ladder", "How many changes one request can hold", "changes, project files", (a) => `${a.asks} changes, ${a.files} files`);
   return out.join("\n") + "\n";
 }
+
+/**
+ * The agentic run's answer to the user: its last answer or final reply. A run stopped by the time limit before
+ * answering has none, so it is scored as an empty answer, not on whatever log line came last (check 2026-11-09:
+ * find-throwing-20 was scored on "Reviewed ...'s result and accepted it").
+ */
+export function finalAnswerOf(entries: { author: string; kind?: string; text: string }[]): string {
+  return [...entries].reverse().find((e) => e.author === "coordinator" && e.kind === "answer")?.text ?? "";
+}

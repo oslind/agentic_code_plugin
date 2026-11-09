@@ -10,7 +10,7 @@ import * as path from "path";
 import { describe, it } from "vitest";
 import { runScenario } from "./harness";
 import { isOllama, liveConfigFromEnv, liveProvider, unloadOllama } from "./providers";
-import { Attempt, Mode, scoreboard, usageOf } from "./bench/scoreboard";
+import { Attempt, finalAnswerOf, Mode, scoreboard, usageOf } from "./bench/scoreboard";
 import { runSingle } from "./bench/single";
 import { BENCH_TASKS, BenchTask, judge, Judged } from "./bench/tasks";
 
@@ -36,6 +36,7 @@ async function loadAttempts(): Promise<Attempt[]> {
 
 async function runAgentic(task: BenchTask, outDir: string): Promise<{ answer: string; ended?: string; judged: Judged; durationMs: number; calls: Parameters<typeof usageOf>[0] }> {
   let judged: Judged | undefined;
+  let answer = "";
   const result = await runScenario(
     {
       name: task.name,
@@ -56,12 +57,13 @@ async function runAgentic(task: BenchTask, outDir: string): Promise<{ answer: st
       outDir,
       log: (m) => log(`${task.name} agentic: ${m}`),
       inspect: async (run) => {
-        judged = await judge(task, run.workspace, run.lastCoordinator?.text ?? "");
+        answer = finalAnswerOf(run.entries);
+        judged = await judge(task, run.workspace, answer);
       },
     },
   );
   const ended = result.failures.length ? result.failures.join("; ").slice(0, 500) : undefined;
-  return { answer: result.answer ?? "", ended, judged: judged ?? judgeNothing(), durationMs: result.durationMs, calls: result.calls };
+  return { answer, ended, judged: judged ?? judgeNothing(), durationMs: result.durationMs, calls: result.calls };
 }
 
 /** When the harness failed before the project could be looked at: nothing counts. */

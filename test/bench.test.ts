@@ -6,7 +6,7 @@
  */
 import { promises as fs } from "fs";
 import { describe, expect, it } from "vitest";
-import { Attempt, rows, scoreboard, foundOf } from "../e2e/bench/scoreboard";
+import { Attempt, rows, scoreboard, finalAnswerOf, foundOf } from "../e2e/bench/scoreboard";
 import { runSingle } from "../e2e/bench/single";
 import { ADMITS_SHORTFALL, BENCH_TASKS, editAsks, judge, modulePath, modulesNamed, modulesSaidToThrow, sh, shopProject, throwingModules, writeProject } from "../e2e/bench/tasks";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
@@ -76,6 +76,12 @@ describe("benchmark tasks", () => {
     const all = Array.from({ length: 20 }, (_, i) => modulePath(i)).join(", ");
     expect((await judged(task, task.files, all)).score).toBeCloseTo(truth.length / 20);
     expect(modulesNamed("mod_007.js, module 12 and src/mod_3.js")).toEqual(new Set([6, 11, 2]));
+  });
+
+  it("scores an agentic run on its answer, and a run that never answered as an empty answer", () => {
+    const log = { author: "coordinator", text: "Reviewed the researcher's result and accepted it." };
+    expect(finalAnswerOf([{ author: "coordinator", kind: "answer", text: "mod_001 throws." }, log])).toBe("mod_001 throws.");
+    expect(finalAnswerOf([{ author: "user", text: "Which throw?" }, log])).toBe("");
   });
 
   it("reports what a research answer found, apart from its score", () => {
