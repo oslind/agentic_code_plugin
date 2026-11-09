@@ -252,25 +252,46 @@ export class ScratchCopy {
     const top = new Set([...this.skip, ...safeLinkDirs(this.linkDirs)]);
     const excluded = limits.exclude.length ? picomatch(limits.exclude.flatMap((p) => [p, `${p.replace(/\/+$/, "")}/**`]), { dot: true }) : () => false;
     // Copied entry by entry, so the folders skipped above are never even entered.
-    for (const entry of await fs.readdir(this.projectRoot)) {
-      if (top.has(entry)) continue;
-      await fs.cp(path.join(this.projectRoot, entry), path.join(dir, entry), {
-        recursive: true,
-        verbatimSymlinks: true,
-        filter: async (source) => {
-          if (excluded(this.rel(source))) return false;
-          if (!(await this.keep(source))) return false;
-          const stat = await fs.lstat(source).catch(() => undefined);
-          if (stat?.isFile()) this.count(stat.size, true);
-          return true;
-        },
-      });
-    }
+    await this.copyTree(this.projectRoot, dir, "", (rel) => top.has(rel) || excluded(rel), new Set([await fs.realpath(this.projectRoot)]));
     for (const d of safeLinkDirs(this.linkDirs)) {
       const source = path.join(this.projectRoot, d);
       const stat = await fs.lstat(source).catch(() => undefined);
       // Only a real folder, never a link to somewhere else.
       if (stat?.isDirectory()) await this.linkTree(source, path.join(dir, d));
+    }
+  }
+
+  /**
+   * Copies a folder into the copy, file by file. A link inside the project is
+   * copied as what it points to, never as a link: audit of PR #54, a link kept
+   * as a link (an absolute one above all) let a command in the copy write
+   * through it into the real project. A link to a folder that holds the folder
+   * itself is skipped, so a loop of links ends. `rel` is the path inside the
+   * project as the copy shows it, which secret names and excludes are matched on.
+   */
+  private async copyTree(src: string, dest: string, rel: string, skip: (rel: string) => boolean, ancestors: Set<string>): Promise<void> {
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const e of entries) {
+      const from = path.join(src, e.name);
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (skip(childRel) || isSecretPath(childRel)) continue;
+      if (!(await this.keep(from))) continue;
+      let source = from;
+      let stat = await fs.lstat(from).catch(() => undefined);
+      if (stat?.isSymbolicLink()) {
+        source = await fs.realpath(from);
+        stat = await fs.stat(source).catch(() => undefined);
+      }
+      const to = path.join(dest, e.name);
+      if (stat?.isDirectory()) {
+        const real = await fs.realpath(source);
+        if (ancestors.has(real)) continue;
+        await fs.mkdir(to, { recursive: true });
+        await this.copyTree(source, to, childRel, skip, new Set([...ancestors, real]));
+      } else if (stat?.isFile()) {
+        this.count(stat.size, true);
+        await fs.copyFile(source, to);
+      }
     }
   }
 
@@ -345,7 +366,7 @@ export class ScratchCopy {
 
   /**
    * Whether an entry goes into the copy. Secret files are left out by name.
-   * Links are kept as links, so they are also followed: one that leads
+   * Links are copied as what they point to (copyTree), so they are followed: one that leads
    * outside the project or to a secret file is left out, and so is one to a
    * folder that holds secret files.
    */

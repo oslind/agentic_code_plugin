@@ -26,7 +26,7 @@ import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
-import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, filesAskedAbout, filesRead, LIST_LIMIT, readExtents } from "./coverage";
+import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, askedScope, filesRead, LIST_LIMIT, readExtents, tooManyNote } from "./coverage";
 
 /**
  * The coordinator's run loop for one prompt: its turn (answer, research,
@@ -159,13 +159,17 @@ export class RunLoop {
     let asked: string[] | undefined | null = null;
     // True when the project had more files than were listed: the answer says so (audit of PR #54).
     let askedCut = false;
+    // A question about every file of a project too big to read one by one: how many files (audit of PR #54).
+    let tooMany: number | undefined;
     const askedFiles = async (): Promise<string[] | undefined> => {
       if (asked === null) {
         asked = await WorkspaceSandbox.create(c.workspaceRoot)
           .then((files) => files.listFiles("**", LIST_LIMIT + 1))
           .then((files) => {
             askedCut = files.length > LIST_LIMIT;
-            return filesAskedAbout(userRequest ?? text, files.slice(0, LIST_LIMIT));
+            const scope = askedScope(userRequest ?? text, files.slice(0, LIST_LIMIT));
+            if ("tooMany" in scope) tooMany = scope.tooMany;
+            return "files" in scope ? scope.files : undefined;
           })
           .catch(() => undefined);
         if (asked) this.host.log("info", `The question is about ${asked.length} files${askedCut ? ` (the project has more than ${LIST_LIMIT} files; only those listed are included)` : ""}; research is split over them by rule.`);
@@ -227,6 +231,9 @@ export class RunLoop {
             text: `Your question is about ${files!.length} files${unread.length < files!.length ? `, and ${unread.length} of them have not been opened yet` : ""}. Splitting them over ${batches.length} researcher(s), up to ${batches[0]!.length} files each, so every file is read${covered < unread.length ? ` (${unread.length - covered} more wait for the next round)` : ""}.`,
           });
           t = { ...t, questions: batches.map((b) => batchQuestion(userRequest ?? text, b)) };
+        } else if (tooMany && round === 1) {
+          await this.s.append(c.id, { author: "coordinator", text: `Your question is about all ${tooMany} code files of the project, too many to read one by one. The researchers will search instead, and the answer will say that not every file was read. Name a folder to have every file in it read.` });
+          if (!t.questions?.length) t = { ...t, questions: [userRequest ?? text] };
         }
         researchRuns.push(await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined));
         c = await this.conversations.load(c.id);
@@ -366,7 +373,7 @@ export class RunLoop {
         startRun = pending.id;
       } else if (turn.action === "research") {
         await doResearch(turn);
-      } else if (turn.action === "none" && turn.goal !== "change" && (await askedFiles())) {
+      } else if (turn.action === "none" && turn.goal !== "change" && ((await askedFiles()) || tooMany)) {
         // A question about many files is never answered from memory: the files are read first.
         await doResearch({ ...turn, action: "research", questions: [] });
       }
@@ -378,7 +385,7 @@ export class RunLoop {
         let moreRounds = verifyRoundLimit(limits.verifyRounds);
         for (;;) {
           const review = limits.verify ? (answer: string) => this.verifier.checkResearchAnswer(c.workspaceRoot, text, answer, abort.signal) : undefined;
-          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds, (await askedFiles()) ?? undefined, askedCut);
+          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds, (await askedFiles()) ?? undefined, askedCut, tooMany);
           // A cut-off answer is not a finished one, and the bar says so.
           if (answered.cutOff) ended = { status: "partial", text: "Finished, but the answer was cut off before it was complete." };
           const open = answered.open && withoutDenied(answered.open);
@@ -402,7 +409,7 @@ export class RunLoop {
       await this.s.append(c.id, { author: "system", kind: "error", text: message, tone: abort.signal.aborted ? "warning" : "error" });
       // Research that finished before the failure still answers the question.
       if (!abort.signal.aborted && researchRuns.length && !planned) {
-        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, undefined, false, asked ?? undefined, askedCut).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
+        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, undefined, false, asked ?? undefined, askedCut, tooMany).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
       }
     } finally {
       this.s.abort = undefined;
@@ -596,6 +603,7 @@ export class RunLoop {
     canResearchMore = false,
     asked?: string[],
     askedCut = false,
+    tooMany?: number,
   ): Promise<{ open?: string[]; cutOff?: CutOff }> {
     this.s.busy = "Coordinator is combining the reports into an answer…";
     this.s.changed();
@@ -611,10 +619,10 @@ export class RunLoop {
     // but never reported on is as unknown to the answer as one never opened (check 2026-11-09: mod_042 was in no report).
     const opened = await this.filesReadIn(runIds);
     const reported = reports.map((r) => r.text).join("\n");
-    const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f))), askedCut);
+    const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f, asked ?? []))), askedCut);
     const result = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
-      { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
+      { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : tooMany ? `Checked by rule: ${tooManyNote(tooMany)} Your first sentence says that not every file was read.` : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
@@ -627,10 +635,11 @@ export class RunLoop {
       check = await review(result.text);
       signal.throwIfAborted();
       // An answer about files nobody opened is not verified, whatever the check says.
-      if (check && (coverage?.unread.length || coverage?.listCut)) {
+      if (check && (coverage?.unread.length || coverage?.listCut || tooMany)) {
         const gaps = [
-          coverage.unread.length ? `${coverage.unread.length} of the ${coverage.files.length} files were not read: ${fileList(coverage.unread, 10)}` : "",
-          coverage.listCut ? `the project has more than ${LIST_LIMIT} files, and files beyond those were not considered` : "",
+          coverage?.unread.length ? `${coverage.unread.length} of the ${coverage.files.length} files were not read: ${fileList(coverage.unread, 10)}` : "",
+          coverage?.listCut ? `the project has more than ${LIST_LIMIT} files, and files beyond those were not considered` : "",
+          tooMany ? `the question is about all ${tooMany} code files of the project, and they were not all read` : "",
         ].filter(Boolean);
         check = { ...check, answered: false, missing: [...check.missing, ...gaps] };
         canResearchMore = false;
@@ -673,7 +682,7 @@ export class RunLoop {
       await this.s.append(c.id, { author: "system", tone: "warning", text: describeCutOff(result.cutOff, "The answer below") });
     }
     // Said first by rule, so the gap shows whatever the model wrote.
-    const gap = coverage ? coverageNote(coverage) : undefined;
+    const gap = coverage ? coverageNote(coverage) : tooMany ? tooManyNote(tooMany) : undefined;
     await this.s.append(c.id, {
       author: "coordinator",
       kind: "answer",

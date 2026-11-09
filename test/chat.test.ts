@@ -520,6 +520,28 @@ describe("ChatController", () => {
     });
   });
 
+  it("says first that not every file was read when the whole project is too big to read one by one (audit of PR #54)", async () => {
+    const ws = path.join(dir, "ws");
+    await fs.mkdir(ws, { recursive: true });
+    for (let i = 0; i < 410; i++) await fs.writeFile(path.join(ws, `m${i}.js`), "1;\n");
+    const worker = (call: object) => JSON.stringify({ thought: "", call });
+    const { controller } = setup(
+      [
+        turn("I know this.", "none", ""),
+        worker({ tool: "finish", summary: "Searched for throw: none found." }),
+        turn("Done.", "none"),
+        "No file throws.",
+      ],
+      "plan",
+      { workspace: ws, maxResearchRounds: 1 },
+    );
+    await controller.send("Which files throw an error in the whole project?");
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => /all 410 code files of the project, too many to read one by one/.test(e.text))).toBe(true);
+    expect(entries.at(-1)).toMatchObject({ kind: "answer" });
+    expect(entries.at(-1)!.text).toMatch(/^Your question is about all 410 code files of the project, too many to read one by one, so not every file was read/);
+  });
+
   describe("a reply that stops partway (Oskar's report)", () => {
     it("never shows \"Here's what was changed:\" with nothing after it as the answer", async () => {
       await fs.mkdir(path.join(dir, "ws"), { recursive: true });

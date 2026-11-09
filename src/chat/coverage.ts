@@ -66,24 +66,39 @@ function foldersNamed(text: string, files: string[]): string[] {
  * without a folder ("every file") in a big project from turning into file-by-file reading at all.
  */
 export function filesAskedAbout(question: string, projectFiles: string[], max = 400): string[] | undefined {
+  const a = askedScope(question, projectFiles, max);
+  return "files" in a ? a.files : undefined;
+}
+
+/**
+ * What a question asks about, file by file: the files, or, for a question about every file of a project too big
+ * to read one by one, how many files that is. Audit of PR #54: such a question used to fall back to an ordinary
+ * answer that never said not every file was read; `tooMany` lets the answer say so.
+ */
+export function askedScope(question: string, projectFiles: string[], max = 400): { files: string[] } | { tooMany: number } | Record<string, never> {
   const files = projectFiles.filter((f) => !ignored(f));
   let set = rangeOf(question, files);
   if (!set) {
-    if (!EVERY.test(question) || ABOUT_THE_CHAT.test(question)) return undefined;
+    if (!EVERY.test(question) || ABOUT_THE_CHAT.test(question)) return {};
     const folder = foldersNamed(question, files)[0];
     // Without a folder, only a question that says it is about the whole project ("every file in the project").
-    if (!folder && !WHOLE_PROJECT.test(question)) return undefined;
+    if (!folder && !WHOLE_PROJECT.test(question)) return {};
     const pool = files.filter((f) => CODE.test(f) && (!folder || f.startsWith(`${folder}/`)));
     // "modules" in a project of .js files means the .js files: the most common code extension wins.
     const counts = new Map<string, number>();
     for (const f of pool) counts.set(f.slice(f.lastIndexOf(".")), (counts.get(f.slice(f.lastIndexOf("."))) ?? 0) + 1);
     const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
     set = top ? pool.filter((f) => f.endsWith(top)) : [];
-    // Without a folder, "every file" in a big project is too vague to read file by file.
-    if (!folder && set.length > max) return undefined;
+    // Without a folder, "every file" in a big project is too vague to read file by file; the answer says so.
+    if (!folder && set.length > max) return { tooMany: set.length };
   }
   const sorted = [...new Set(set)].sort();
-  return sorted.length >= MIN_COVERAGE_FILES ? sorted : undefined;
+  return sorted.length >= MIN_COVERAGE_FILES ? { files: sorted } : {};
+}
+
+/** What the answer to a question about every file of a big project says first: not every file was read. */
+export function tooManyNote(n: number): string {
+  return `Your question is about all ${n} code files of the project, too many to read one by one, so not every file was read: this answer rests on searches and the files the researchers chose to open. Name a folder to have every file in it read.`;
 }
 
 /** Splits files into at most `researchers` batches of at most MAX_BATCH each, in order. What does not fit waits for a later round. */
@@ -212,9 +227,19 @@ export function batchFilesOf(question: string): string[] | undefined {
   return line ? line.slice("Files: ".length).split(", ").map((f) => f.trim()).filter(Boolean) : undefined;
 }
 
-/** True when a report names a file, by its path or by its file name as a whole word. */
-export function mentionsFile(text: string, file: string): boolean {
+/** The path as a whole, so "src/a/index.js" is not found inside "lib/src/a/index.js". */
+function pathMentioned(text: string, file: string): boolean {
+  return new RegExp(`(^|[^\\w./-])(\\./)?${escapeRegExp(file)}(?![\\w])`).test(text);
+}
+
+/**
+ * True when a report names a file, by its path or by its file name as a whole word. When another file of
+ * `among` has the same file name, only the path counts (audit of PR #54: "index.js: ..." used to count as a
+ * report on both src/a/index.js and src/b/index.js).
+ */
+export function mentionsFile(text: string, file: string, among: readonly string[] = []): boolean {
   const base = file.split("/").pop()!;
+  if (among.some((o) => o !== file && o.split("/").pop() === base)) return pathMentioned(text, file);
   return text.includes(file) || new RegExp(`(^|[^\\w./-])${escapeRegExp(base)}(?![\\w])`).test(text);
 }
 
@@ -231,7 +256,7 @@ export function batchReview(
   extents: ReadonlyMap<string, ReadExtent> = new Map(),
 ): { accept: boolean; feedback?: string; unread: string[]; unreported: string[] } {
   const unread = batch.filter((f) => !read.has(f));
-  const unreported = batch.filter((f) => !mentionsFile(report, f));
+  const unreported = batch.filter((f) => !mentionsFile(report, f, batch));
   if (!unread.length && !unreported.length) return { accept: true, unread, unreported };
   const parts = [`Your files are only these ${batch.length}: ${batch.join(", ")}. Do not look at other files; other researchers have them.`];
   // A file read in part is told which lines are missing; one never read (or whose read failed) is told to open it.

@@ -57,7 +57,8 @@ export interface ProjectFiles {
   /** At most the first `maxBytes` of a file, and its size, for tools that only need the start of a big file. */
   readHead(relPath: string, maxBytes: number): Promise<FileHead>;
   writeFile(relPath: string, content: string): Promise<void>;
-  listFiles(glob?: string, limit?: number): Promise<string[]>;
+  /** `onSkipped` hears of every linked folder that is not listed because what it links to is not (see listFiles). */
+  listFiles(glob?: string, limit?: number, onSkipped?: (rel: string, why: string) => void): Promise<string[]>;
 }
 
 /**
@@ -222,7 +223,13 @@ export class WorkspaceSandbox implements ProjectFiles {
    * Lists workspace files matching a glob. Symlinked directories are never
    * entered, and symlinked files are listed only if they point inside.
    */
-  async listFiles(glob = "**", limit = 2000): Promise<string[]> {
+  /**
+   * Project files matching glob. A linked folder is not walked: when it links to a folder inside the project,
+   * those files are listed under their own path already. Audit of PR #54: one that links to a folder that is
+   * not listed (outside the project, or in .git/node_modules/.agentic) used to vanish without a word, so a
+   * project-wide search called itself complete. `onSkipped` is told of each, so a search can say so.
+   */
+  async listFiles(glob = "**", limit = 2000, onSkipped?: (rel: string, why: string) => void): Promise<string[]> {
     if (!normalizeWorkspacePath(glob)) {
       throw new SandboxError(`'${glob}' must be a relative glob inside the workspace`);
     }
@@ -242,7 +249,16 @@ export class WorkspaceSandbox implements ProjectFiles {
         } else if (e.isSymbolicLink()) {
           const real = await fs.realpath(childAbs).catch(() => undefined);
           // A link to a secret file is left out, like the secret file itself would be unreadable.
-          if (real && this.contains(real) && !isSecretPath(this.relative(real)) && (await fs.stat(real)).isFile() && match(childRel)) out.push(childRel);
+          if (!real) continue;
+          const stat = await fs.stat(real).catch(() => undefined);
+          if (stat?.isDirectory()) {
+            if (!onSkipped) continue;
+            const target = this.relative(real);
+            if (!this.contains(real)) onSkipped(childRel, "it links to a folder outside the project");
+            else if (target.split("/").some((part) => SKIP_DIRS.has(part))) onSkipped(childRel, `it links into ${target}, which is not searched`);
+            continue;
+          }
+          if (this.contains(real) && !isSecretPath(this.relative(real)) && stat?.isFile() && match(childRel)) out.push(childRel);
         }
       }
     };

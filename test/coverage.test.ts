@@ -1,6 +1,6 @@
 /** Benchmark pass 1: questions about many files are split by rule, and the answer says what was read. */
 import { describe, expect, it } from "vitest";
-import { batchesOf, batchFilesOf, batchQuestion, batchReview, mentionsFile, coverageNote, coverageOf, filesAskedAbout, filesRead, MAX_BATCH, readExtents } from "../src/chat/coverage";
+import { askedScope, tooManyNote, batchesOf, batchFilesOf, batchQuestion, batchReview, mentionsFile, coverageNote, coverageOf, filesAskedAbout, filesRead, MAX_BATCH, readExtents } from "../src/chat/coverage";
 
 const shop = [...Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`), "src/shop.js", "test.js", "package.json", "README.md", "node_modules/x/index.js"];
 
@@ -35,6 +35,13 @@ describe("filesAskedAbout", () => {
     expect(filesAskedAbout("Which modules in a+b/ throw?", odd)!.every((f) => f.startsWith("a+b/"))).toBe(true);
     const ranged = Array.from({ length: 10 }, (_, i) => `src/m(${i}).js`);
     expect(filesAskedAbout("Check m(0).js to m(9).js", ranged)).toBeUndefined();
+  });
+  it("says when a whole-project question is about too many files to read one by one (audit of PR #54)", () => {
+    const huge = Array.from({ length: 600 }, (_, i) => `src/m${i}/x.js`);
+    expect(askedScope("Which files throw in the whole project?", huge)).toEqual({ tooMany: 600 });
+    expect(filesAskedAbout("Which files throw in the whole project?", huge)).toBeUndefined();
+    expect(askedScope("What does src/m1/x.js do?", huge)).toEqual({});
+    expect(tooManyNote(600)).toMatch(/all 600 code files[\s\S]*not every file was read/);
   });
   it("says when the project had more files than could be listed", () => {
     const c = coverageOf(["a.js"], new Set(["a.js"]), true);
@@ -99,6 +106,14 @@ describe("the review of a batch researcher, by rule", () => {
     const r = batchReview(batch, new Set(["src/mod_001.js"]), "mod_001.js throws. mod_002.js returns.", extents);
     expect(r.accept).toBe(false);
     expect(r.feedback).toMatch(/seen only 80 of the 300 lines of src\/mod_002\.js\. Read the rest with read_file and startLine=81/);
+  });
+  it("needs the path when two files share a name (audit of PR #54)", () => {
+    const twins = ["src/a/index.js", "src/b/index.js"];
+    expect(mentionsFile("index.js: has a handler", "src/a/index.js", twins)).toBe(false);
+    expect(mentionsFile("src/a/index.js: has a handler", "src/a/index.js", twins)).toBe(true);
+    expect(mentionsFile("src/a/index.js: has a handler", "src/b/index.js", twins)).toBe(false);
+    expect(mentionsFile("lib/src/a/index.js: x", "src/a/index.js", twins)).toBe(false);
+    expect(batchReview(twins, new Set(twins), "index.js: has a handler").unreported).toEqual(twins);
   });
   it("matches a file by path or whole file name only", () => {
     expect(mentionsFile("see mod_01.js", "src/mod_01.js")).toBe(true);

@@ -66,8 +66,8 @@ export class OverlayFiles implements ProjectFiles {
     this.writes.set(p, content);
   }
 
-  async listFiles(glob = "**", limit = 2000): Promise<string[]> {
-    const onDisk = await this.disk.listFiles(glob, limit);
+  async listFiles(glob = "**", limit = 2000, onSkipped?: (rel: string, why: string) => void): Promise<string[]> {
+    const onDisk = await this.disk.listFiles(glob, limit, onSkipped);
     const match = picomatch(glob, { dot: true });
     const extra = [...this.base.keys(), ...this.writes.keys()].filter((p) => match(p));
     return [...new Set([...onDisk, ...extra])].sort().slice(0, limit);

@@ -406,6 +406,20 @@ describe("project-supplied scratch links and checks", () => {
     expect(await fs.readFile(path.join(root, "node_modules", "pkg", "index.js"), "utf8")).toBe("real");
   });
 
+  it.skipIf(!unix)("copies what a link inside the project points to, so a command cannot write through it (audit of PR #54)", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "common"));
+    await fs.writeFile(path.join(root, "common", "index.js"), "real");
+    await fs.symlink(path.join(root, "common", "index.js"), path.join(root, "abs-link.js"));
+    await fs.symlink("common", path.join(root, "shared"));
+    await fs.symlink("..", path.join(root, "common", "loop"));
+    const dir = await new ScratchCopy(root, ["t"], []).sync(new Map());
+    for (const rel of ["abs-link.js", "shared", "shared/index.js"]) expect((await fs.lstat(path.join(dir, rel))).isSymbolicLink()).toBe(false);
+    await fs.writeFile(path.join(dir, "abs-link.js"), "changed");
+    await fs.writeFile(path.join(dir, "shared", "index.js"), "changed");
+    expect(await fs.readFile(path.join(root, "common", "index.js"), "utf8")).toBe("real");
+  });
+
   it.skipIf(!unix)("copies a folder named in linkDirs instead of linking it, so its secrets stay out", async () => {
     const root = await tempDir();
     await fs.mkdir(path.join(root, "src"));

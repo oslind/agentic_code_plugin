@@ -39,6 +39,31 @@ describe("filesMentioning", () => {
     expect((await filesMentioning(many, "toCelsius")).incomplete).toMatch(/more than 5000 files/);
   });
 
+  it.skipIf(process.platform === "win32")("finds files behind a linked folder, and says which linked folders it could not search (audit of PR #54)", async () => {
+    const { promises: fs } = await import("fs");
+    const os = await import("os");
+    const path = await import("path");
+    const { WorkspaceSandbox } = await import("../src/tools/sandbox");
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mentions-"));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "mentions-out-"));
+    try {
+      await fs.mkdir(path.join(root, "src"));
+      await fs.mkdir(path.join(root, "common"));
+      await fs.writeFile(path.join(root, "src", "convert.js"), "function toCelsius() {}\n");
+      await fs.writeFile(path.join(root, "common", "index.js"), "toCelsius(1);\n");
+      await fs.symlink("common", path.join(root, "shared"));
+      const sandbox = await WorkspaceSandbox.create(root);
+      expect(await filesMentioning(sandbox, "toCelsius")).toEqual({ files: ["common/index.js", "src/convert.js"], incomplete: undefined });
+      await fs.writeFile(path.join(outside, "x.js"), "toCelsius(2);\n");
+      await fs.symlink(outside, path.join(root, "ext"));
+      const r = await filesMentioning(sandbox, "toCelsius");
+      expect(r.incomplete).toMatch(/linked folder\(s\) not searched: ext \(it links to a folder outside the project\)/);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it("matches a name with regex characters only literally", async () => {
     const files = { listFiles: async () => ["a.js", "b.js"], readFile: async (p: string) => (p === "a.js" ? "a+b(1)" : "aab(1)") };
     expect((await filesMentioning(files, "a+b")).files).toEqual(["a.js"]);
