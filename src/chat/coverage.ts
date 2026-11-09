@@ -36,12 +36,16 @@ const RANGE = /([\w./-]*?[A-Za-z_./-])(\d+)(\.\w+)?\s*(?:to|through|thru|until|\
 function rangeOf(text: string, files: string[]): string[] | undefined {
   const m = RANGE.exec(text);
   if (!m) return undefined;
-  const stem = m[1]!.split("/").pop()!;
+  const parts = m[1]!.replace(/^\.\//, "").split("/");
+  const stem = parts.pop()!;
+  // A folder in the range ("shared/mod_000.js to ...") means that folder, from the project root, and no other
+  // (audit of PR #54: src/mod_*.js used to answer for shared/mod_*.js).
+  const dir = parts.filter(Boolean).join("/");
   const ext = m[3] ?? m[5] ?? "";
   const lo = Math.min(Number(m[2]), Number(m[4]));
   const hi = Math.max(Number(m[2]), Number(m[4]));
   if (!stem || hi - lo > 5000) return undefined;
-  const re = new RegExp(`(^|/)${escapeRegExp(stem)}(\\d+)${escapeRegExp(ext)}$`);
+  const re = new RegExp(`${dir ? `(^${escapeRegExp(dir)}/)` : "(^|/)"}${escapeRegExp(stem)}(\\d+)${escapeRegExp(ext)}$`);
   const hit = files.filter((f) => {
     const n = re.exec(f);
     return n !== null && Number(n[2]) >= lo && Number(n[2]) <= hi;
@@ -94,12 +98,14 @@ export function askedScope(
   let skipped: string[] = [];
   // A range or an every-file question about paths under a linked folder the listing could not follow
   // ("shared/mod_000.js to shared/mod_099.js"): nothing under it was listed, so the link is the whole answer.
-  if (!set && !ABOUT_THE_CHAT.test(question) && (RANGE.test(question) || EVERY.test(question))) {
-    const under = skippedLinks.filter((d) => new RegExp(`(^|[\\s"'\`(])${escapeRegExp(d)}/`).test(question)).sort((a, b) => b.length - a.length)[0];
-    if (under) return { files: [], skipped: [under] };
-  }
+  // Checked whether or not other files matched, so the link is never left out of the answer.
+  const under =
+    !ABOUT_THE_CHAT.test(question) && (RANGE.test(question) || EVERY.test(question))
+      ? skippedLinks.filter((d) => new RegExp(`(^|[\\s"'\`(])${escapeRegExp(d)}/`).test(question)).sort((a, b) => b.length - a.length)[0]
+      : undefined;
+  if (!set && under) return { files: [], skipped: [under] };
   if (set) {
-    skipped = skippedInRange ?? [];
+    skipped = [...new Set([...(skippedInRange ?? []), ...(under ? [under] : [])])];
   } else {
     if (!EVERY.test(question) || ABOUT_THE_CHAT.test(question)) return {};
     const listedFolder = foldersNamed(question, files)[0];

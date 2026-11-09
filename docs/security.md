@@ -82,7 +82,7 @@ Podman, the same without a root daemon (rootless Podman runs the container as yo
 ]
 ```
 
-Use an image that has the project's tools (`node:22` for npm projects, a Python image for Python ones). If you link dependency folders with `agentic.scratch.linkDirs`, mount them read-only at the same place inside the container, for example `"-v", "${project}/node_modules:/workspace/node_modules:ro"`. Commands see `/workspace`, not your folder's real path, so a command that needs the real path will not find it.
+Use an image that has the project's tools (`node:22` for npm projects, a Python image for Python ones). Commands see `/workspace`, not your folder's real path, so a command that needs the real path will not find it. With these examples, leave `agentic.scratch.linkDirs` empty (the default), so dependency folders are copied into `/workspace` with everything else. A linked folder in the copy is a link to its absolute path on your machine (`${project}/node_modules`), which does not exist inside the container. If you do link one on Linux or WSL, mount it read-only at that same absolute path, for example `"-v", "${project}/node_modules:${project}/node_modules:ro"`; with Podman for Windows the host path is a Windows path the Linux container cannot use, so do not link folders there.
 
 bubblewrap on Linux, with the system read-only, only the copy writable and no network:
 

@@ -62,6 +62,10 @@ describe("filesAskedAbout", () => {
     // A range under a linked folder the listing could not follow (only the folder is reported).
     expect(askedScope("Check shared/mod_000.js to shared/mod_099.js for errors.", ["src/shop.js"], 400, ["shared"])).toEqual({ files: [], skipped: ["shared"] });
     expect(askedScope("What does shared/mod_001.js do?", ["src/shop.js"], 400, ["shared"])).toEqual({});
+    // Files of the same names in another folder are not the range the question names.
+    const src = Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`);
+    expect(askedScope("Check shared/mod_000.js to shared/mod_099.js for errors.", src, 400, ["shared"])).toEqual({ files: [], skipped: ["shared"] });
+    expect(askedScope("Check src/mod_000.js to src/mod_009.js for errors.", [...src, "lib/src/mod_001.js"], 400, [])).toEqual({ files: src.slice(0, 10) });
     // Every file of the range a skipped link, and no "which/every" in the question.
     const allLinks = Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`);
     expect(askedScope("Check mod_000.js to mod_099.js for errors.", ["src/shop.js"], 400, allLinks)).toEqual({ files: [], skipped: allLinks });
