@@ -30,9 +30,11 @@ const ABOUT_THE_CHAT = /\b(?:did|have|has)\s+(?:you|the\s+(?:sub-?)?agents?)\b|\
 
 const ignored = (p: string) => /(^|\/)(node_modules|\.git|dist|out|build|coverage|vendor|\.venv|venv|__pycache__)\//.test(p);
 
+const RANGE = /([\w./-]*?[A-Za-z_./-])(\d+)(\.\w+)?\s*(?:to|through|thru|until|\.\.|-|–|—)\s*(?:[\w./-]*?[A-Za-z_./-])?(\d+)(\.\w+)?\b/;
+
 /** A numbered range of file names in the text ("mod_000.js to mod_099.js"), matched against the project. */
 function rangeOf(text: string, files: string[]): string[] | undefined {
-  const m = /([\w./-]*?[A-Za-z_./-])(\d+)(\.\w+)?\s*(?:to|through|thru|until|\.\.|-|–|—)\s*(?:[\w./-]*?[A-Za-z_./-])?(\d+)(\.\w+)?\b/.exec(text);
+  const m = RANGE.exec(text);
   if (!m) return undefined;
   const stem = m[1]!.split("/").pop()!;
   const ext = m[3] ?? m[5] ?? "";
@@ -90,6 +92,12 @@ export function askedScope(
   // Audit of PR #54: a numbered range found the other 99 files and called them the whole set, so the range is
   // matched against the skipped links too; a folder the question names that is itself such a link is one.
   let skipped: string[] = [];
+  // A range or an every-file question about paths under a linked folder the listing could not follow
+  // ("shared/mod_000.js to shared/mod_099.js"): nothing under it was listed, so the link is the whole answer.
+  if (!set && !ABOUT_THE_CHAT.test(question) && (RANGE.test(question) || EVERY.test(question))) {
+    const under = skippedLinks.filter((d) => new RegExp(`(^|[\\s"'\`(])${escapeRegExp(d)}/`).test(question)).sort((a, b) => b.length - a.length)[0];
+    if (under) return { files: [], skipped: [under] };
+  }
   if (set) {
     skipped = skippedInRange ?? [];
   } else {

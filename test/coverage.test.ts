@@ -59,6 +59,9 @@ describe("filesAskedAbout", () => {
     expect(scope).toMatchObject({ skipped: ["src/mod_042.js"] });
     expect("files" in scope && scope.files).toHaveLength(99);
     expect(askedScope("Which modules in shared/ throw?", listed, 400, ["shared"])).toEqual({ files: [], skipped: ["shared"] });
+    // A range under a linked folder the listing could not follow (only the folder is reported).
+    expect(askedScope("Check shared/mod_000.js to shared/mod_099.js for errors.", ["src/shop.js"], 400, ["shared"])).toEqual({ files: [], skipped: ["shared"] });
+    expect(askedScope("What does shared/mod_001.js do?", ["src/shop.js"], 400, ["shared"])).toEqual({});
     // Every file of the range a skipped link, and no "which/every" in the question.
     const allLinks = Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`);
     expect(askedScope("Check mod_000.js to mod_099.js for errors.", ["src/shop.js"], 400, allLinks)).toEqual({ files: [], skipped: allLinks });

@@ -65,24 +65,24 @@ Docker, with no network and only the copy mounted (dependency folders are copied
 ```json
 "agentic.commands.isolation": [
   "docker", "run", "--rm", "--network=none",
-  "-v", "${folder}:${folder}",
-  "-w", "${folder}",
+  "-v", "${folder}:/workspace",
+  "-w", "/workspace",
   "node:22", "sh", "-c", "${command}"
 ]
 ```
 
-Podman, the same without a root daemon (rootless Podman runs the container as your own user). It has to be installed where the extension runs: inside WSL (`sudo apt install podman`) when VS Code is connected to WSL, or Podman for Windows when it is not, where the folder paths are Windows paths:
+Podman, the same without a root daemon (rootless Podman runs the container as your own user). It has to be installed where the extension runs: inside WSL (`sudo apt install podman`) when VS Code is connected to WSL, or Podman for Windows when it is not. The copy is mounted at a fixed Linux path, `/workspace`, so the same setting works with a Windows folder (`C:\...`) as the mount source:
 
 ```json
 "agentic.commands.isolation": [
   "podman", "run", "--rm", "--network=none",
-  "-v", "${folder}:${folder}",
-  "-w", "${folder}",
+  "-v", "${folder}:/workspace",
+  "-w", "/workspace",
   "node:22", "sh", "-c", "${command}"
 ]
 ```
 
-Use an image that has the project's tools (`node:22` for npm projects, a Python image for Python ones). If you link dependency folders with `agentic.scratch.linkDirs`, mount them read-only too, for example `"-v", "${project}/node_modules:${project}/node_modules:ro"`.
+Use an image that has the project's tools (`node:22` for npm projects, a Python image for Python ones). If you link dependency folders with `agentic.scratch.linkDirs`, mount them read-only at the same place inside the container, for example `"-v", "${project}/node_modules:/workspace/node_modules:ro"`. Commands see `/workspace`, not your folder's real path, so a command that needs the real path will not find it.
 
 bubblewrap on Linux, with the system read-only, only the copy writable and no network:
 
