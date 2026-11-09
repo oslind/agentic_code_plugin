@@ -53,6 +53,16 @@ describe("filesAskedAbout", () => {
     expect(coverageNote(c)).toMatch(/could not be followed, so nothing behind them was read: src\/ext\.js/);
     expect(coverageNote(coverageOf(files, new Set(files)))).toBeUndefined();
   });
+  it("counts a skipped link inside a numbered range, and a named folder that is itself a skipped link (audit of PR #54)", () => {
+    const listed = Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`).filter((f) => f !== "src/mod_042.js");
+    const scope = askedScope("Which of mod_000.js to mod_099.js throw?", listed, 400, ["src/mod_042.js", "src/other.js"]);
+    expect(scope).toMatchObject({ skipped: ["src/mod_042.js"] });
+    expect("files" in scope && scope.files).toHaveLength(99);
+    expect(askedScope("Which modules in shared/ throw?", listed, 400, ["shared"])).toEqual({ files: [], skipped: ["shared"] });
+    expect(askedScope("Which modules in src/ throw?", listed, 400, ["shared"])).toEqual({ files: listed });
+    const none = coverageOf([], new Set(), false, ["shared"]);
+    expect(coverageNote(none)).toMatch(/could not be followed[\s\S]*shared/);
+  });
   it("says when the project had more files than could be listed", () => {
     const c = coverageOf(["a.js"], new Set(["a.js"]), true);
     expect(coverageNote(c)).toMatch(/more than 5000 files/);

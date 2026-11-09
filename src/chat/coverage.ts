@@ -83,11 +83,18 @@ export function askedScope(
 ): { files: string[]; skipped?: string[] } | { tooMany: number } | Record<string, never> {
   const files = projectFiles.filter((f) => !ignored(f));
   let set = rangeOf(question, files);
-  // Links the listing could not follow (outside the project, or into a skipped folder), in the asked folder.
+  // Links the listing could not follow (outside the project, or into a skipped folder), in the asked scope.
+  // Audit of PR #54: a numbered range found the other 99 files and called them the whole set, so the range is
+  // matched against the skipped links too; a folder the question names that is itself such a link is one.
   let skipped: string[] = [];
-  if (!set) {
+  if (set) {
+    skipped = rangeOf(question, [...skippedLinks]) ?? [];
+  } else {
     if (!EVERY.test(question) || ABOUT_THE_CHAT.test(question)) return {};
-    const folder = foldersNamed(question, files)[0];
+    const listedFolder = foldersNamed(question, files)[0];
+    const linkFolder = foldersNamed(question, skippedLinks.map((s) => `${s}/_`)).find((d) => skippedLinks.includes(d));
+    if (linkFolder && (!listedFolder || linkFolder.length > listedFolder.length)) return { files: [], skipped: [linkFolder] };
+    const folder = listedFolder;
     // Without a folder, only a question that says it is about the whole project ("every file in the project").
     if (!folder && !WHOLE_PROJECT.test(question)) return {};
     const pool = files.filter((f) => CODE.test(f) && (!folder || f.startsWith(`${folder}/`)));
@@ -101,7 +108,7 @@ export function askedScope(
     skipped = skippedLinks.filter((s) => !folder || s.startsWith(`${folder}/`));
   }
   const sorted = [...new Set(set)].sort();
-  if (sorted.length < MIN_COVERAGE_FILES) return {};
+  if (sorted.length + skipped.length < MIN_COVERAGE_FILES) return {};
   return skipped.length ? { files: sorted, skipped } : { files: sorted };
 }
 
@@ -233,6 +240,7 @@ export function fileList(files: string[], max = 30): string {
 
 /** What the answer step is told, as a fact checked by rule. */
 export function coverageFact(c: Coverage): string {
+  if (!c.files.length) return `Checked by rule: none of the files your question is about could be listed or read. ${skippedText(c)} Your first sentence says so; say nothing about what those files contain.`;
   const gaps = [c.listCut ? CUT : "", skippedText(c)].filter(Boolean).join(" ");
   const cut = gaps ? ` ${gaps} Say so in your first sentence.` : "";
   if (!c.unread.length) return `Checked by rule: the sub-agents read and reported on all ${c.files.length} files your question is about${c.listCut ? " that could be listed" : c.skipped?.length ? " that could be listed" : ""}. Answer for every one of them.${cut}`;
