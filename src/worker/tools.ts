@@ -8,6 +8,8 @@ import { safeFileName } from "../context/untrusted";
 import { renameLeftovers } from "../coordinator/review";
 
 const MAX_READ_LINES = 300;
+/** Characters read_files shows in all, shared out over its files. */
+const MAX_READ_FILES_CHARS = 24_000;
 const MAX_LIST = 200;
 const MAX_MATCHES = 40;
 const MAX_SEARCH_FILE_BYTES = 256 * 1024;
@@ -56,6 +58,32 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const more = end < lines.length ? `\n[lines ${end + 1}-${lines.length} not shown; read again with startLine=${end + 1}]` : "";
         const big = head.truncated ? `\n[the file is ${Math.round(head.size / (1024 * 1024))} MB; only its first ${lines.length} lines can be read. Use search to find something further on]` : "";
         return { ok: true, output: `${call.path} (${head.truncated ? `first ${lines.length}` : lines.length} lines)\n${body}${more}${big}` };
+      }
+      case "read_files": {
+        // Benchmark pass 1, find-throwing: a researcher given 15 files spent a model call (about 30 s) on each.
+        // One call reads them all, each cut to its share of a fixed budget so the reply stays small.
+        const share = Math.max(400, Math.floor(MAX_READ_FILES_CHARS / call.paths.length));
+        const parts: string[] = [];
+        for (const p of call.paths) {
+          const head = await ctx.sandbox.readHead(p, MAX_READ_BYTES).catch((err: Error) => ({ error: err.message }));
+          if ("error" in head) {
+            parts.push(`${p}: could not be read (${head.error})`);
+            continue;
+          }
+          const lines = head.text.split("\n");
+          if (head.truncated && lines.length > 1) lines.pop();
+          const shown: string[] = [];
+          let used = 0;
+          for (const [i, l] of lines.slice(0, MAX_READ_LINES).entries()) {
+            const line = `${String(i + 1).padStart(4)}| ${l}`;
+            if (used + line.length > share && shown.length) break;
+            shown.push(line);
+            used += line.length + 1;
+          }
+          const more = shown.length < lines.length ? `\n[lines ${shown.length + 1}-${lines.length} not shown; read them with read_file and startLine=${shown.length + 1}]` : "";
+          parts.push(`${p} (${lines.length} lines)\n${shown.join("\n")}${more}`);
+        }
+        return { ok: true, output: parts.join("\n\n") };
       }
       case "list_files": {
         const files = await ctx.sandbox.listFiles(call.glob, MAX_LIST + 1);

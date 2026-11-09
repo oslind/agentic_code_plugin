@@ -93,18 +93,19 @@ export function batchesOf(files: string[], researchers: number): string[][] {
 export function batchQuestion(question: string, batch: string[]): string {
   return [
     `Answer the user's question for each of these ${batch.length} file(s), and only these: "${question.replace(/\s+/g, " ").trim().slice(0, 600)}"`,
-    `Open every one of them with read_file; a search alone can miss things. Report one line per file: the path, then your finding for that file and the line it rests on. Say "not opened" for any file you could not read.`,
+    `Open every one of them, all at once with read_files (a search alone can miss things). Report one line per file: the path, then your finding for that file and the line it rests on. Say "not opened" for any file you could not read.`,
     `Files: ${batch.join(", ")}`,
   ].join("\n");
 }
 
-/** Files researchers opened with read_file, from the run logs. Only an opened file counts as checked. */
+/** Files researchers opened with read_file or read_files, from the run logs. Only an opened file counts as checked. */
 export function filesRead(events: RunEvent[]): Set<string> {
   const read = new Set<string>();
   for (const e of events) {
-    if (e.type !== "tool_call" || e.message !== "read_file") continue;
-    const call = (e.data as { call?: { path?: unknown } } | undefined)?.call;
-    if (typeof call?.path === "string") read.add(call.path.replace(/^\.\//, ""));
+    if (e.type !== "tool_call" || (e.message !== "read_file" && e.message !== "read_files")) continue;
+    const call = (e.data as { call?: { path?: unknown; paths?: unknown } } | undefined)?.call;
+    const paths = Array.isArray(call?.paths) ? call.paths : [call?.path];
+    for (const p of paths) if (typeof p === "string") read.add(p.replace(/^\.\//, ""));
   }
   return read;
 }

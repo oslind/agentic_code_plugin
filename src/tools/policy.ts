@@ -279,6 +279,14 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       }
       return { verdict: "allow" };
     }
+    case "read_files": {
+      for (const raw of call.paths) {
+        const p = normalizeWorkspacePath(raw);
+        if (!p) return { verdict: "deny", reason: `'${raw}' is outside the workspace` };
+        if (isSecretPath(p)) return { verdict: "deny", reason: `'${p}' may contain secrets and cannot be read; leave it out` };
+      }
+      return { verdict: "allow" };
+    }
     case "read_file": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };

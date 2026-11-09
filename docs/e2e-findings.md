@@ -214,6 +214,7 @@ Results in docs/benchmark-pass1.md. The bigger the question, the less the coordi
 - The answer is told, checked by rule from the logs, how many of the files were opened, and the extension puts "Checked X of N files; the other Y were not opened" in front of it. Such an answer is never tagged verified.
 - The scoreboard shows what research answers found and their false alarms next to the score (an empty answer scored 56 to 60%), and "solved and finished" next to "solved".
 - A sub-agent that tries a second time to write a file outside its task is told to stop trying (three-changes timed out on that).
+- First live check (e0ed452): the split worked, but researchers opened one file per model call (about 30 s each), so find-throwing-20 and -50 hit the 30-minute limit before any answer. New read_files tool: up to 20 files in one call, each cut to its share of a 24,000-character budget; batch questions ask for it.
 
 ## Still open
 

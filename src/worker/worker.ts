@@ -182,6 +182,7 @@ Each reply is one JSON object: {"thought": "...", "call": {"tool": "...", ...}}.
 Tools:
 - {"tool":"list_files","glob":"**"}
 - {"tool":"read_file","path":"README.md","startLine":1,"endLine":200}
+- {"tool":"read_files","paths":["src/a.js","src/b.js","src/c.js"]}  (reads up to 20 files in one call; use it when you have several files to check)
 - {"tool":"search","query":"functionName"}  (searches the whole project, tests and root files included; add "glob":"src/**" only to narrow it)
 - {"tool":"run_command","command":"npm test","reason":"see whether the tests pass"}  (runs in a terminal the user watches; output comes back to you)
 - {"tool":"ask_coordinator","question":"..."}  (ask the coordinator, who knows the user's messages and what other researchers found)

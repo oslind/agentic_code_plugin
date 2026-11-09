@@ -11,6 +11,10 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
     startLine: z.number().int().min(1).optional(),
     endLine: z.number().int().min(1).optional(),
   }),
+  z.object({
+    tool: z.literal("read_files"),
+    paths: z.array(z.string()).min(1).max(20).describe("Several files to read in one call, each shown from its first line"),
+  }),
   z.object({ tool: z.literal("list_files"), glob: z.string() }),
   z.object({ tool: z.literal("search"), query: z.string().min(1), glob: z.string().optional() }),
   z.object({ tool: z.literal("write_file"), path: z.string(), content: z.string() }),
