@@ -38,3 +38,4 @@ Every run of the end-to-end suite against a local model adds a line here (writte
 | 2026-11-08 18:16 | qwen3-8b-16k | e2e: parallel-changes, rename-everywhere, same-file-parallel | 3/3 passed, 73.4 min, unloaded qwen3-8b-16k |
 | 2026-11-08 18:31 | qwen3-8b-16k | e2e: new-module-used | 1/1 passed, 14.9 min, unloaded qwen3-8b-16k |
 | 2026-11-08 18:33 | qwen3-8b-16k | bench pass 1 (7f3d623) | stopped after about a minute to ask for a new GO, no attempt finished, unloaded qwen3-8b-16k |
+| 2026-11-08 23:58 | qwen3-8b-16k | benchmark: 14 task(s) x single+agentic x 1 | 28 attempt(s), 286.6 min, unloaded qwen3-8b-16k |
