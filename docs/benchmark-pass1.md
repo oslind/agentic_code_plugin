@@ -55,7 +55,7 @@ An empty answer scores 56 to 60% here, because most modules do not throw, so the
 1. Agentic's 89% includes three runs that never finished: the files were right, but there was no verification or final answer. Counting only finished work it is 6 against 6, on different tasks. The 30 minutes is a test setting, not a limit in the extension.
 2. Context size limited nothing (largest prompts 7.5k and 5.2k of 16k). The single conversation failed by stopping early and claiming success, not by running out of room.
 3. Small tasks favour one conversation: the agentic overhead does not pay for itself on a quick fix.
-4. The clearest difference is honesty: every failed single-conversation change claimed success; no agentic one did.
-5. Large questions are the clearest thing to improve: at 100 modules the agentic run checked only a few files.
+4. On change tasks the clearest difference is honesty: every failed single-conversation change claimed success; no agentic one did. The false-"done" count covers change tasks only, though: on find-throwing-100 the agentic answer opened 3 of 100 modules and still said "Other modules either log warnings or lack error-throwing logic", which is false for 42 of them.
+5. Large questions are the clearest thing to improve. The bigger the question, the less the work was split: 5 modules got 5 researchers (one per file, all right), 20 got 3 (5 files opened), 50 got 4 (1 opened; search results showed more), 100 got 1 (3 opened). Splitting the file list across researchers by rule, and making an answer say how much it checked, are the proposed fixes.
 
 Raw results: `C:\Users\Oskar Lind\Documents\agentic-e2e-results\bench\2026-11-08T19-12-03-bench\` (attempts.jsonl, scoreboard.md, scoreboard-rescored.md).
