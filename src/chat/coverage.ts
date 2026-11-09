@@ -75,9 +75,16 @@ export function filesAskedAbout(question: string, projectFiles: string[], max = 
  * to read one by one, how many files that is. Audit of PR #54: such a question used to fall back to an ordinary
  * answer that never said not every file was read; `tooMany` lets the answer say so.
  */
-export function askedScope(question: string, projectFiles: string[], max = 400): { files: string[] } | { tooMany: number } | Record<string, never> {
+export function askedScope(
+  question: string,
+  projectFiles: string[],
+  max = 400,
+  skippedLinks: readonly string[] = [],
+): { files: string[]; skipped?: string[] } | { tooMany: number } | Record<string, never> {
   const files = projectFiles.filter((f) => !ignored(f));
   let set = rangeOf(question, files);
+  // Links the listing could not follow (outside the project, or into a skipped folder), in the asked folder.
+  let skipped: string[] = [];
   if (!set) {
     if (!EVERY.test(question) || ABOUT_THE_CHAT.test(question)) return {};
     const folder = foldersNamed(question, files)[0];
@@ -91,9 +98,11 @@ export function askedScope(question: string, projectFiles: string[], max = 400):
     set = top ? pool.filter((f) => f.endsWith(top)) : [];
     // Without a folder, "every file" in a big project is too vague to read file by file; the answer says so.
     if (!folder && set.length > max) return { tooMany: set.length };
+    skipped = skippedLinks.filter((s) => !folder || s.startsWith(`${folder}/`));
   }
   const sorted = [...new Set(set)].sort();
-  return sorted.length >= MIN_COVERAGE_FILES ? { files: sorted } : {};
+  if (sorted.length < MIN_COVERAGE_FILES) return {};
+  return skipped.length ? { files: sorted, skipped } : { files: sorted };
 }
 
 /**
@@ -199,12 +208,20 @@ export interface Coverage {
   unread: string[];
   /** The project had more files than could be listed, so the question may be about files not in `files`. */
   listCut?: boolean;
+  /** Linked files or folders the listing could not follow, so files behind them are not in `files`. */
+  skipped?: string[];
 }
 
-export function coverageOf(files: string[], read: Set<string>, listCut = false): Coverage {
+export function coverageOf(files: string[], read: Set<string>, listCut = false, skipped: readonly string[] = []): Coverage {
   const c: Coverage = { files, read: files.filter((f) => read.has(f)), unread: files.filter((f) => !read.has(f)) };
   if (listCut) c.listCut = true;
+  if (skipped.length) c.skipped = [...skipped];
   return c;
+}
+
+/** What the answer says about links the listing could not follow (audit of PR #54). */
+function skippedText(c: Coverage): string {
+  return c.skipped?.length ? `Linked files or folders that could not be followed, so nothing behind them was read: ${fileList(c.skipped, 10)}.` : "";
 }
 
 const CUT = `The project has more than ${LIST_LIMIT} files, more than could be listed, so files beyond those listed were not considered at all.`;
@@ -216,14 +233,15 @@ export function fileList(files: string[], max = 30): string {
 
 /** What the answer step is told, as a fact checked by rule. */
 export function coverageFact(c: Coverage): string {
-  const cut = c.listCut ? ` ${CUT} Say so in your first sentence.` : "";
-  if (!c.unread.length) return `Checked by rule: the sub-agents read and reported on all ${c.files.length} files your question is about${c.listCut ? " that could be listed" : ""}. Answer for every one of them.${cut}`;
+  const gaps = [c.listCut ? CUT : "", skippedText(c)].filter(Boolean).join(" ");
+  const cut = gaps ? ` ${gaps} Say so in your first sentence.` : "";
+  if (!c.unread.length) return `Checked by rule: the sub-agents read and reported on all ${c.files.length} files your question is about${c.listCut ? " that could be listed" : c.skipped?.length ? " that could be listed" : ""}. Answer for every one of them.${cut}`;
   return `Checked by rule: the sub-agents read to the end and reported on only ${c.read.length} of the ${c.files.length} files the question is about. Not checked: ${fileList(c.unread)}. Your first sentence says how many were checked. Say nothing about the files that were not read: never "the other files ..." or "the rest ...", because nobody read them.${cut}`;
 }
 
 /** Put in front of an answer that could not read every file, so the user sees the gap first whatever the model wrote. */
 export function coverageNote(c: Coverage): string | undefined {
-  const cut = c.listCut ? CUT : "";
+  const cut = [c.listCut ? CUT : "", skippedText(c)].filter(Boolean).join(" ");
   if (!c.unread.length) return cut || undefined;
   return `Checked ${c.read.length} of the ${c.files.length} files your question is about. The other ${c.unread.length} were not read to the end or not reported on, so this answer says nothing reliable about them${c.unread.length <= 10 ? ` (${c.unread.join(", ")})` : ""}.${cut ? ` ${cut}` : ""}`;
 }

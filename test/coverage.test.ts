@@ -45,6 +45,14 @@ describe("filesAskedAbout", () => {
     // From a listing cut at 5000 files the count is only a lower bound (audit of PR #54).
     expect(tooManyNote(600, true)).toMatch(/about at least 600 code files \(the project has more than 5000 files, so the total is not known\)/);
   });
+  it("keeps the links the listing could not follow in the asked folder, and the answer names them (audit of PR #54)", () => {
+    const files = Array.from({ length: 8 }, (_, i) => `src/m${i}.js`);
+    const scope = askedScope("Which modules in src/ throw?", files, 400, ["src/ext.js", "lib/other"]);
+    expect(scope).toEqual({ files, skipped: ["src/ext.js"] });
+    const c = coverageOf(files, new Set(files), false, ["src/ext.js"]);
+    expect(coverageNote(c)).toMatch(/could not be followed, so nothing behind them was read: src\/ext\.js/);
+    expect(coverageNote(coverageOf(files, new Set(files)))).toBeUndefined();
+  });
   it("says when the project had more files than could be listed", () => {
     const c = coverageOf(["a.js"], new Set(["a.js"]), true);
     expect(coverageNote(c)).toMatch(/more than 5000 files/);

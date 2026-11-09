@@ -494,6 +494,30 @@ describe("ChatController", () => {
       expect(entries.at(-1)!.text).toMatch(/^Checked 6 of the 8 files your question is about\. The other 2 were not read to the end or not reported on[\s\S]*\(src\/mod_7\.js, src\/mod_8\.js\)/);
     });
 
+    it.skipIf(process.platform === "win32")("names a linked file outside the project and does not verify the answer (audit of PR #54)", async () => {
+      const ws = await project();
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "outside-"));
+      await fs.writeFile(path.join(outside, "ext.js"), "throw new Error('x');\n");
+      await fs.symlink(path.join(outside, "ext.js"), path.join(ws, "src", "ext.js"));
+      const { controller } = setup(
+        [
+          turn("Checking.", "research", "", { questions: ["Which modules throw?"] }),
+          read(1), read(2), finish(1, 2),
+          read(3), read(4), finish(3, 4),
+          read(5), read(6), finish(5, 6),
+          read(7), read(8), finish(7, 8),
+          turn("Done.", "none"),
+          "None of the 8 modules throw.",
+        ],
+        "plan",
+        { workspace: ws, maxResearchRounds: 1 },
+      );
+      await controller.send("Which of the modules in src/ throw an error?");
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.at(-1)!.text).toMatch(/could not be followed, so nothing behind them was read: src\/ext\.js[\s\S]*None of the 8 modules throw\./);
+      await fs.rm(outside, { recursive: true, force: true });
+    });
+
     it("sends another round for the files nobody opened before it answers", async () => {
       const ws = await project();
       const { controller, provider } = setup(
