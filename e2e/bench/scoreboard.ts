@@ -94,6 +94,12 @@ export function rowOf(task: string, mode: Mode, attempts: Attempt[]): Row {
 }
 
 const MODES: Mode[] = ["single", "agentic"];
+
+/** For a find-throwing answer: throwing modules it named, how many throw, and modules it named that do not. */
+export function foundOf(a: Pick<Attempt, "parts">): { found: number; total: number; falseAlarms: number } {
+  const named = a.parts.filter((p) => / named$/.test(p.name) && !/ not named$/.test(p.name));
+  return { found: named.filter((p) => p.ok).length, total: named.length, falseAlarms: a.parts.filter((p) => / not named$/.test(p.name) && !p.ok).length };
+}
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const k = (x: number) => (x >= 1000 ? `${(x / 1000).toFixed(x >= 10000 ? 0 : 1)}k` : String(Math.round(x)));
 
@@ -106,15 +112,16 @@ export function rows(attempts: Attempt[]): Row[] {
 export function scoreboard(attempts: Attempt[], meta: { model: string; time: string }): string {
   const out: string[] = [`# Benchmark: agentic chat vs one conversation`, "", `Model ${meta.model}, ${meta.time}. Scores are the share of hidden checks passed (partial credit), averaged over attempts.`, ""];
 
-  out.push("## Totals", "", "| | attempts | mean score | solved | false \"done\" | collateral damage | ended early | median min | total min | mean tokens | peak prompt |", "|---|---|---|---|---|---|---|---|---|---|---|");
+  out.push("## Totals", "", "| | attempts | mean score | solved | solved and finished | false \"done\" | collateral damage | ended early | median min | total min | mean tokens | peak prompt |", "|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const m of MODES) {
     const list = attempts.filter((a) => a.mode === m);
     if (!list.length) continue;
     const changeFails = list.filter((a) => a.kind === "change" && a.score < 1);
     out.push(
-      `| ${m} | ${list.length} | ${pct(mean(list.map((a) => a.score)))} | ${list.filter((a) => a.score === 1).length}/${list.length} | ${list.filter((a) => a.falseDone).length}/${changeFails.length} | ${list.filter((a) => a.collateral.length + a.deleted.length > 0).length} | ${list.filter((a) => a.ended).length} | ${median(list.map((a) => a.minutes)).toFixed(1)} | ${list.reduce((s, a) => s + a.minutes, 0).toFixed(0)} | ${k(mean(list.map((a) => a.promptTokens + a.completionTokens)))} | ${k(Math.max(...list.map((a) => a.peakPromptTokens)))} |`,
+      `| ${m} | ${list.length} | ${pct(mean(list.map((a) => a.score)))} | ${list.filter((a) => a.score === 1).length}/${list.length} | ${list.filter((a) => a.score === 1 && !a.ended).length}/${list.length} | ${list.filter((a) => a.falseDone).length}/${changeFails.length} | ${list.filter((a) => a.collateral.length + a.deleted.length > 0).length} | ${list.filter((a) => a.ended).length} | ${median(list.map((a) => a.minutes)).toFixed(1)} | ${list.reduce((s, a) => s + a.minutes, 0).toFixed(0)} | ${k(mean(list.map((a) => a.promptTokens + a.completionTokens)))} | ${k(Math.max(...list.map((a) => a.peakPromptTokens)))} |`,
     );
   }
+  out.push("", "Solved and finished leaves out attempts that ended early (a time limit), whose files were right but which never gave a final answer.");
   out.push("", "False \"done\" counts change attempts that fell short while the answer did not admit it, out of all change attempts that fell short.", "");
 
   out.push("## Per task", "", "| task | mode | score | solved | false done | collateral | ended early | median min | median calls | mean tokens | peak prompt |", "|---|---|---|---|---|---|---|---|---|---|---|");
@@ -135,6 +142,19 @@ export function scoreboard(attempts: Attempt[], meta: { model: string; time: str
     }
   };
   ladder("research-ladder", "How much code one question can cover", "files in the project", (a) => String(a.files));
+  // Benchmark pass 1: an empty answer scores 56-60% on these questions, because most modules do not throw. What was found says more.
+  const research = attempts.filter((a) => a.group === "research-ladder");
+  if (research.length) {
+    out.push("", "What the answers found (an empty answer still scores the share of modules that do not throw):", "", `| files in the project | ${MODES.map((m) => `${m}: found, false alarms`).join(" | ")} |`, `|---|${MODES.map(() => "---").join("|")}|`);
+    for (const files of [...new Set(research.map((a) => a.files))].sort((a, b) => a - b)) {
+      const cell = (m: Mode) => {
+        const at = research.filter((a) => a.mode === m && a.files === files);
+        if (!at.length) return "-";
+        return at.map((a) => { const f = foundOf(a); return `${f.found} of ${f.total}, ${f.falseAlarms}`; }).join("; ");
+      };
+      out.push(`| ${files} | ${MODES.map(cell).join(" | ")} |`);
+    }
+  }
   ladder("edit-ladder", "How many changes one request can hold", "changes, project files", (a) => `${a.asks} changes, ${a.files} files`);
   return out.join("\n") + "\n";
 }

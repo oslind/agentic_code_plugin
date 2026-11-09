@@ -455,6 +455,70 @@ describe("ChatController", () => {
     expect(entries.some((e) => e.kind === "error")).toBe(false);
   });
 
+  describe("a question about many files (benchmark pass 1)", () => {
+    async function project() {
+      const ws = path.join(dir, "ws");
+      await fs.mkdir(path.join(ws, "src"), { recursive: true });
+      for (let i = 1; i <= 8; i++) await fs.writeFile(path.join(ws, "src", `mod_${i}.js`), `module.exports = ${i};\n`);
+      return ws;
+    }
+    const worker = (call: object) => JSON.stringify({ thought: "", call });
+    const read = (n: number) => worker({ tool: "read_file", path: `src/mod_${n}.js` });
+    const finish = worker({ tool: "finish", summary: "Checked my files." });
+
+    it("splits the files over researchers by rule, and the answer says which were never opened", async () => {
+      const ws = await project();
+      const { controller, provider } = setup(
+        [
+          // The coordinator sends one broad researcher; the extension replaces it with batches of 2 (8 files, 5 researchers).
+          turn("I'll have a sub-agent check the modules.", "research", "", { questions: ["Which modules in src/ throw?"] }),
+          read(1), read(2), finish,
+          read(3), read(4), finish,
+          read(5), read(6), finish,
+          finish, // the fourth researcher opens nothing
+          turn("Done.", "none"),
+          "mod_1 throws. The other modules do not.",
+        ],
+        "plan",
+        { workspace: ws, maxResearchRounds: 1 },
+      );
+      await controller.send("Which of the modules in src/ throw an error?");
+      const entries = (await controller.state()).current!.entries;
+      const sent = entries.find((e) => e.kind === "research")!;
+      expect(sent.text).toMatch(/Sending 4 read-only sub-agent/);
+      expect(entries.some((e) => /about 8 files\. Splitting them over 4 researcher\(s\), up to 2 files each/.test(e.text))).toBe(true);
+      const synthesis = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
+      expect(synthesis).toMatch(/opened only 6 of the 8 files[\s\S]*Not opened: src\/mod_7\.js, src\/mod_8\.js/);
+      expect(entries.at(-1)).toMatchObject({ kind: "answer", tag: "from research" });
+      expect(entries.at(-1)!.text).toMatch(/^Checked 6 of the 8 files your question is about\. The other 2 were not opened[\s\S]*\(src\/mod_7\.js, src\/mod_8\.js\)/);
+    });
+
+    it("sends another round for the files nobody opened before it answers", async () => {
+      const ws = await project();
+      const { controller, provider } = setup(
+        [
+          turn("Checking.", "research", "", { questions: ["Which modules throw?"] }),
+          read(1), read(2), finish,
+          read(3), read(4), finish,
+          read(5), read(6), finish,
+          finish,
+          // Round 2, by rule: one researcher each for mod_7 and mod_8.
+          read(7), finish,
+          read(8), finish,
+          turn("Done.", "none"),
+          "None of the 8 modules throw.",
+        ],
+        "plan",
+        { workspace: ws, maxResearchRounds: 2 },
+      );
+      await controller.send("Which of the modules in src/ throw an error?");
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.filter((e) => e.kind === "research")).toHaveLength(2);
+      expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/opened all 8 files/);
+      expect(entries.at(-1)!.text).toBe("None of the 8 modules throw.");
+    });
+  });
+
   describe("a reply that stops partway (Oskar's report)", () => {
     it("never shows \"Here's what was changed:\" with nothing after it as the answer", async () => {
       await fs.mkdir(path.join(dir, "ws"), { recursive: true });

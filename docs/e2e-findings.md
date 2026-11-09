@@ -206,6 +206,15 @@ Every earlier run used one sub-agent at a time. Here the tasks really overlapped
 
 - new-module-used passed (14.9 min). Every scenario of run 12 has now passed with two sub-agents at once, over runs 12, 12C and 12D.
 
+## Benchmark pass 1 (e0a0df6): questions about many files
+
+Results in docs/benchmark-pass1.md. The bigger the question, the less the coordinator split it: find-throwing-5 got one researcher per file, find-throwing-100 got one researcher that opened 3 files, and the answer said the other 97 "lack error-throwing logic" (42 of them throw). The answer check passed it. Fixes:
+
+- A question about every file of a set (a numbered range like mod_000.js to mod_099.js, or "which/all/every ... modules" in a named folder or the whole project) is split by rule: each researcher gets a batch of at most 15 files and the user's own question, and opens every file. Files nobody opened get another round, while rounds are left. Such a question is never answered from memory.
+- The answer is told, checked by rule from the logs, how many of the files were opened, and the extension puts "Checked X of N files; the other Y were not opened" in front of it. Such an answer is never tagged verified.
+- The scoreboard shows what research answers found and their false alarms next to the score (an empty answer scored 56 to 60%), and "solved and finished" next to "solved".
+- A sub-agent that tries a second time to write a file outside its task is told to stop trying (three-changes timed out on that).
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

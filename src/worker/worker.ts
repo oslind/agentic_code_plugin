@@ -262,6 +262,8 @@ export class Worker {
   private toldNoWrites = false;
   /** Ran a command or check after its last successful write. */
   private ranSinceWrite = false;
+  /** Writes refused because the file is outside the task's files. */
+  private outOfScope = 0;
   /** True once the program a task is about (outputCommand) ran after the last write. Run 12B: npm test ran, index.js never did. */
   private ranOutputSinceWrite = false;
   private toldToTest = false;
@@ -437,7 +439,16 @@ export class Worker {
       });
       if (decision.verdict === "deny") {
         this.opts.log("denied", decision.reason, { call: turn.call });
-        this.messages.push({ role: "user", content: `Not allowed: ${decision.reason}` });
+        // Benchmark pass 1, three-changes: a sub-agent kept trying to write a test file outside its files until time ran out.
+        const outside = /outside this task's file scope/.test(decision.reason);
+        if (outside) this.outOfScope++;
+        this.messages.push({
+          role: "user",
+          content:
+            outside && this.outOfScope >= 2
+              ? `Not allowed: ${decision.reason} This is attempt ${this.outOfScope} to change a file outside your task. It will be refused every time: those files belong to other sub-agents or the user. Stop trying. Finish your own files, then call finish and say in your summary what you would change in that file and why.`
+              : `Not allowed: ${decision.reason}`,
+        });
         continue;
       }
       // A file change is shown before it is made; nothing is written until it is approved.

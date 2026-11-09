@@ -26,6 +26,7 @@ import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
+import { batchesOf, batchQuestion, coverageFact, coverageNote, coverageOf, fileList, filesAskedAbout, filesRead } from "./coverage";
 
 /**
  * The coordinator's run loop for one prompt: its turn (answer, research,
@@ -154,6 +155,18 @@ export class RunLoop {
       return kept;
     };
     let planned = false;
+    // The files the user's question asks about one by one, when it is about many (found by rule, once).
+    let asked: string[] | undefined | null = null;
+    const askedFiles = async (): Promise<string[] | undefined> => {
+      if (asked === null) {
+        asked = await WorkspaceSandbox.create(c.workspaceRoot)
+          .then((files) => files.listFiles("**", 5000))
+          .then((files) => filesAskedAbout(userRequest ?? text, files))
+          .catch(() => undefined);
+        if (asked) this.host.log("info", `The question is about ${asked.length} files; research is split over them by rule.`);
+      }
+      return asked;
+    };
     let draft: { reply: string; thought?: string; thinking?: string } | undefined;
     let limitReached = false;
     try {
@@ -197,8 +210,26 @@ export class RunLoop {
       let round = 0;
       const doResearch = async (t: CoordinatorResult): Promise<void> => {
         round++;
+        // A question about many files: each researcher gets a batch of the files nobody opened yet, by rule.
+        // Benchmark pass 1: asked about 100 modules, the coordinator sent one researcher, which opened 3.
+        const files = await askedFiles();
+        const unread = files && coverageOf(files, await this.filesReadIn(researchRuns)).unread;
+        if (unread?.length) {
+          const batches = batchesOf(unread, this.host.delegationLimits().maxResearchers);
+          const covered = batches.reduce((n, b) => n + b.length, 0);
+          await this.s.append(c.id, {
+            author: "coordinator",
+            text: `Your question is about ${files!.length} files${unread.length < files!.length ? `, and ${unread.length} of them have not been opened yet` : ""}. Splitting them over ${batches.length} researcher(s), up to ${batches[0]!.length} files each, so every file is read${covered < unread.length ? ` (${unread.length - covered} more wait for the next round)` : ""}.`,
+          });
+          t = { ...t, questions: batches.map((b) => batchQuestion(userRequest ?? text, b)) };
+        }
         researchRuns.push(await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined));
         c = await this.conversations.load(c.id);
+        // Files still unopened get another round before the coordinator answers, while rounds are left.
+        if (files && round < maxRounds && coverageOf(files, await this.filesReadIn(researchRuns)).unread.length) {
+          await doResearch({ ...t, questions: [] });
+          return;
+        }
         this.s.busy = "Coordinator is reading the reports…";
         this.s.runningRunId = undefined;
         this.s.changed();
@@ -330,6 +361,9 @@ export class RunLoop {
         startRun = pending.id;
       } else if (turn.action === "research") {
         await doResearch(turn);
+      } else if (turn.action === "none" && turn.goal !== "change" && (await askedFiles())) {
+        // A question about many files is never answered from memory: the files are read first.
+        await doResearch({ ...turn, action: "research", questions: [] });
       }
       if (researchRuns.length && !planned) {
         // Before the answer goes out, the coordinator checks that it answers the question, and sends
@@ -339,7 +373,7 @@ export class RunLoop {
         let moreRounds = verifyRoundLimit(limits.verifyRounds);
         for (;;) {
           const review = limits.verify ? (answer: string) => this.verifier.checkResearchAnswer(c.workspaceRoot, text, answer, abort.signal) : undefined;
-          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds);
+          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds, (await askedFiles()) ?? undefined);
           // A cut-off answer is not a finished one, and the bar says so.
           if (answered.cutOff) ended = { status: "partial", text: "Finished, but the answer was cut off before it was complete." };
           const open = answered.open && withoutDenied(answered.open);
@@ -363,7 +397,7 @@ export class RunLoop {
       await this.s.append(c.id, { author: "system", kind: "error", text: message, tone: abort.signal.aborted ? "warning" : "error" });
       // Research that finished before the failure still answers the question.
       if (!abort.signal.aborted && researchRuns.length && !planned) {
-        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
+        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, undefined, false, asked ?? undefined).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
       }
     } finally {
       this.s.abort = undefined;
@@ -513,6 +547,13 @@ export class RunLoop {
     return run.id;
   }
 
+  /** Files researchers opened with read_file in these runs. */
+  private async filesReadIn(runIds: string[]): Promise<Set<string>> {
+    const read = new Set<string>();
+    for (const id of runIds) for (const f of filesRead(await this.tasks.readLog(id).catch(() => []))) read.add(f);
+    return read;
+  }
+
   /**
    * The guaranteed last step of research that ends in an answer: one model
    * call that combines every report from every round into a reply to the
@@ -528,6 +569,7 @@ export class RunLoop {
     signal: AbortSignal,
     review?: (answer: string) => Promise<AnswerCheck | undefined>,
     canResearchMore = false,
+    asked?: string[],
   ): Promise<{ open?: string[]; cutOff?: CutOff }> {
     this.s.busy = "Coordinator is combining the reports into an answer…";
     this.s.changed();
@@ -538,9 +580,11 @@ export class RunLoop {
         reports.push({ title: t.title, status: t.status.replace("_", " "), text: t.summary ?? (t.error ? `No report: ${t.error}` : "") });
       }
     }
+    // How much of a many-file question was read, counted from the logs: the answer must say so (benchmark pass 1).
+    const coverage = asked && coverageOf(asked, await this.filesReadIn(runIds));
     const result = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
-      { question, reports, draft: draft?.reply, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
+      { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
@@ -552,6 +596,11 @@ export class RunLoop {
       this.s.changed();
       check = await review(result.text);
       signal.throwIfAborted();
+      // An answer about files nobody opened is not verified, whatever the check says.
+      if (check && coverage?.unread.length) {
+        check = { ...check, answered: false, missing: [...check.missing, `${coverage.unread.length} of the ${coverage.files.length} files were not opened: ${fileList(coverage.unread, 10)}`] };
+        canResearchMore = false;
+      }
       // Run 10: the check asked for the output of a command the user declined, so the honest answer was held back
       // for another round that could not run it. What only a declined command could answer is not open.
       const declined = [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))];
@@ -589,12 +638,14 @@ export class RunLoop {
       this.host.log("warn", `The research answer is unfinished (${result.cutOff === "length" ? "stopped at the reply length limit" : "ends with a lead-in and nothing after it"}).`);
       await this.s.append(c.id, { author: "system", tone: "warning", text: describeCutOff(result.cutOff, "The answer below") });
     }
+    // Said first by rule, so the gap shows whatever the model wrote.
+    const gap = coverage ? coverageNote(coverage) : undefined;
     await this.s.append(c.id, {
       author: "coordinator",
       kind: "answer",
       tag: "from research",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
-      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text,
+      text: `${gap ? `${gap}\n\n` : ""}${result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text}`,
       thought: draft?.thought,
       thinking: clip(result.thinking ?? draft?.thinking),
     });

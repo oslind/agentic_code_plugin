@@ -72,6 +72,19 @@ describe("a task about printed output", () => {
   });
 });
 
+describe("writes outside the task's files", () => {
+  it("are refused, and from the second one the sub-agent is told to stop trying (bench pass 1)", async () => {
+    const outside = { tool: "write_file", path: "tests/stats.test.js", content: "x" };
+    const model = scripted([outside, outside, { tool: "finish", summary: "Changed nothing." }]);
+    const { w, root } = await worker(model);
+    await w.run();
+    expect(model.requests[1]!.messages.at(-1)!.content).toMatch(/^Not allowed: .*outside this task's file scope/);
+    expect(model.requests[1]!.messages.at(-1)!.content).not.toMatch(/Stop trying/);
+    expect(model.requests[2]!.messages.at(-1)!.content).toMatch(/attempt 2 to change a file outside your task[\s\S]*Stop trying/);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+});
+
 describe("asksResearchForCode", () => {
   it("spots a send-back that asks a researcher for code", () => {
     expect(asksResearchForCode("The draft contains no code changes. Add the mode validation logic to targetTemp.")).toBe(true);

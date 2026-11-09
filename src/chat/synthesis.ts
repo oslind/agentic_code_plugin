@@ -31,6 +31,8 @@ export interface SynthesisInput {
   failedCommands?: FailedCommand[];
   /** Commands the user declined, so they never ran. */
   deniedCommands?: string[];
+  /** For a question about many files: how many the researchers opened, as a fact checked by rule (coverageFact). */
+  coverage?: string;
 }
 
 export interface SynthesisResult {
@@ -90,6 +92,7 @@ export function suspiciousReports(reports: ResearchReport[]): number[] {
 export function buildSynthesisMessages(input: SynthesisInput, contextWindow: number): ChatMessage[] {
   const head = [`The user's message:\n${input.question.trim()}`];
   if (input.draft?.trim()) head.push(`Your first short reply was (use it only as a hint):\n${input.draft.trim()}`);
+  if (input.coverage) head.push(input.coverage);
   if (input.limitReached) head.push("The research round limit was reached, so no more sub-agents can be sent. Answer with what was found and list what is still unknown.");
   // Run 3 of the e2e suite: researchers ran npm test, it failed, and the answer never said so.
   const failed = input.failedCommands ?? [];
