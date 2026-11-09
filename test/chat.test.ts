@@ -491,7 +491,7 @@ describe("ChatController", () => {
       const synthesis = provider.requests.at(-1)!.messages.map((m) => m.content).join("\n");
       expect(synthesis).toMatch(/reported on only 6 of the 8 files[\s\S]*Not checked: src\/mod_7\.js, src\/mod_8\.js/);
       expect(entries.at(-1)).toMatchObject({ kind: "answer", tag: "from research" });
-      expect(entries.at(-1)!.text).toMatch(/^Checked 6 of the 8 files your question is about\. The other 2 were not opened or not reported on[\s\S]*\(src\/mod_7\.js, src\/mod_8\.js\)/);
+      expect(entries.at(-1)!.text).toMatch(/^Checked 6 of the 8 files your question is about\. The other 2 were not read to the end or not reported on[\s\S]*\(src\/mod_7\.js, src\/mod_8\.js\)/);
     });
 
     it("sends another round for the files nobody opened before it answers", async () => {

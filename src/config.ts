@@ -133,7 +133,7 @@ export function readRunConfig(scope?: vscode.Uri): RunConfig {
     maxTurns: c.get<number>("worker.maxTurns", 40),
     maxFixRounds: c.get<number>("worker.maxFixRounds", 2),
     // User settings only: a project must not choose what gets linked into the scratch copy.
-    linkDirs: safeLinkDirs(c.inspect<unknown>("scratch.linkDirs")?.globalValue ?? ["node_modules"]),
+    linkDirs: safeLinkDirs(c.inspect<unknown>("scratch.linkDirs")?.globalValue ?? []),
   };
 }
 

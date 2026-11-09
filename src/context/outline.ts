@@ -6,6 +6,7 @@
  */
 import { pathsOfTree } from "./budget";
 import { ProjectFiles } from "../tools/sandbox";
+import { isSecretPath } from "../tools/policy";
 
 const DECLARATION =
   /^(export\s+)?(default\s+)?(async\s+)?(function\*?\s+[\w$]+\s*\([^)]*\)|class\s+[\w$]+|(const|let|var)\s+[\w$]+\s*=)|^module\.exports\b|^exports\.[\w$]+\s*=|^(async\s+)?def\s+\w+\s*\([^)]*\)|^class\s+\w+/;
@@ -35,18 +36,59 @@ export async function outlinesOfNamedFiles(files: Pick<ProjectFiles, "readFile">
   return parts.length ? parts.join("\n") : undefined;
 }
 
+/** Escapes every regular-expression character in text, so it matches only itself. */
+export function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The files that mention a name, and whether every file was searched. */
+export interface Mentions {
+  files: string[];
+  /** Why the search did not cover every project file, in plain words; undefined when it did. */
+  incomplete?: string;
+}
+
+/** Most files listed for a whole-project search, and most bytes read in all. */
+export const MENTION_SEARCH_FILES = 5000;
+const MENTION_SEARCH_BYTES = 128 * 1024 * 1024;
+
 /**
  * The project files that mention a name as a whole word, searched over the
- * whole project (bounded). Run 11, rename-everywhere: research only listed
- * src/**, so test.js kept the old name and its tests broke.
+ * whole project. Run 11, rename-everywhere: research only listed src/**, so
+ * test.js kept the old name and its tests broke. Audit of PR #54: it used to
+ * stop silently after 400 files, so a rename could be called complete with
+ * files nobody searched; now every listed file is searched, and anything left
+ * out (a project too large to list, files too large to read, unreadable ones)
+ * is said in `incomplete`.
  */
-export async function filesMentioning(files: Pick<ProjectFiles, "readFile" | "listFiles">, name: string, maxFiles = 400): Promise<string[]> {
-  const word = new RegExp(`(^|[^\\w$])${name.replace(/[$.]/g, (c) => `\\${c}`)}(?![\\w$])`);
-  const list = (await files.listFiles("**", 2000).catch(() => [] as string[])).filter((p) => !/\.(png|jpe?g|gif|ico|pdf|zip|gz|lock|woff2?|ttf|exe|dll|so|bin)$/i.test(p)).slice(0, maxFiles);
-  const out: string[] = [];
-  for (const p of list) {
-    const text = await files.readFile(p, 300_000).catch(() => undefined);
-    if (text !== undefined && word.test(text)) out.push(p);
+export async function filesMentioning(files: Pick<ProjectFiles, "readFile" | "listFiles">, name: string): Promise<Mentions> {
+  const word = new RegExp(`(^|[^\\w$])${escapeRegExp(name)}(?![\\w$])`);
+  let listed: string[];
+  try {
+    listed = await files.listFiles("**", MENTION_SEARCH_FILES + 1);
+  } catch (err) {
+    return { files: [], incomplete: `the project's files could not be listed (${(err as Error).message})` };
   }
-  return out;
+  const reasons: string[] = [];
+  if (listed.length > MENTION_SEARCH_FILES) reasons.push(`the project has more than ${MENTION_SEARCH_FILES} files, and only the first ${MENTION_SEARCH_FILES} were searched`);
+  // Secret files are never read or changed by a sub-agent, so they are not searched either.
+  const list = listed.slice(0, MENTION_SEARCH_FILES).filter((p) => !isSecretPath(p) && !/\.(png|jpe?g|gif|ico|pdf|zip|gz|lock|woff2?|ttf|exe|dll|so|bin)$/i.test(p));
+  const out: string[] = [];
+  const unread: string[] = [];
+  let bytes = 0;
+  for (const [i, p] of list.entries()) {
+    if (bytes > MENTION_SEARCH_BYTES) {
+      reasons.push(`the search stopped after ${i} of ${list.length} files (over ${MENTION_SEARCH_BYTES / (1024 * 1024)} MB read)`);
+      break;
+    }
+    const text = await files.readFile(p, 1024 * 1024).catch(() => undefined);
+    if (text === undefined) {
+      unread.push(p);
+      continue;
+    }
+    bytes += text.length;
+    if (word.test(text)) out.push(p);
+  }
+  if (unread.length) reasons.push(`${unread.length} file(s) could not be read or are over 1 MB (${unread.slice(0, 5).join(", ")}${unread.length > 5 ? ", …" : ""})`);
+  return { files: out, incomplete: reasons.length ? reasons.join("; ") : undefined };
 }

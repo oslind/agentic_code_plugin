@@ -6,9 +6,12 @@
  * rounds for files nobody opened, and tells the answer exactly how much was read.
  */
 import { RunEvent } from "../state/types";
+import { escapeRegExp } from "../context/outline";
 
 /** Below this many files, the coordinator's own research questions are trusted to cover them. */
 export const MIN_COVERAGE_FILES = 6;
+/** Most project files listed to find the files of a question. A project with more is said to be cut, never silently. */
+export const LIST_LIMIT = 5000;
 /** Most files one researcher is given: it opens each one, so this has to fit its step limit. */
 export const MAX_BATCH = 15;
 
@@ -36,7 +39,7 @@ function rangeOf(text: string, files: string[]): string[] | undefined {
   const lo = Math.min(Number(m[2]), Number(m[4]));
   const hi = Math.max(Number(m[2]), Number(m[4]));
   if (!stem || hi - lo > 5000) return undefined;
-  const re = new RegExp(`(^|/)${stem.replace(/[.$]/g, (c) => `\\${c}`)}(\\d+)${ext.replace(/\./g, "\\.")}$`);
+  const re = new RegExp(`(^|/)${escapeRegExp(stem)}(\\d+)${escapeRegExp(ext)}$`);
   const hit = files.filter((f) => {
     const n = re.exec(f);
     return n !== null && Number(n[2]) >= lo && Number(n[2]) <= hi;
@@ -51,13 +54,16 @@ function foldersNamed(text: string, files: string[]): string[] {
     const parts = f.split("/");
     for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
   }
-  return [...dirs].filter((d) => new RegExp(`(^|[\\s"'\`(])${d.replace(/[.$]/g, (c) => `\\${c}`)}/?(?=[\\s"'\`),.:;?!]|$)`).test(text)).sort((a, b) => b.length - a.length);
+  return [...dirs].filter((d) => new RegExp(`(^|[\\s"'\`(])${escapeRegExp(d)}/?(?=[\\s"'\`),.:;?!]|$)`).test(text)).sort((a, b) => b.length - a.length);
 }
 
 /**
  * The project files a question asks about one by one, when it asks about every file of a set: a numbered range
  * ("mod_000.js to mod_099.js"), or "which/all/every/each ... files/modules" in a named folder or the whole project.
  * Undefined for any other question, and for sets smaller than MIN_COVERAGE_FILES. Code files only, sorted.
+ * Every file of the set is returned (audit of PR #54: it used to keep the first 400 without a word); the rounds
+ * that cannot read them all leave the rest unread, and the answer says how many. `max` only stops a question
+ * without a folder ("every file") in a big project from turning into file-by-file reading at all.
  */
 export function filesAskedAbout(question: string, projectFiles: string[], max = 400): string[] | undefined {
   const files = projectFiles.filter((f) => !ignored(f));
@@ -77,7 +83,7 @@ export function filesAskedAbout(question: string, projectFiles: string[], max = 
     if (!folder && set.length > max) return undefined;
   }
   const sorted = [...new Set(set)].sort();
-  return sorted.length >= MIN_COVERAGE_FILES ? sorted.slice(0, max) : undefined;
+  return sorted.length >= MIN_COVERAGE_FILES ? sorted : undefined;
 }
 
 /** Splits files into at most `researchers` batches of at most MAX_BATCH each, in order. What does not fit waits for a later round. */
@@ -98,16 +104,67 @@ export function batchQuestion(question: string, batch: string[]): string {
   ].join("\n");
 }
 
-/** Files researchers opened with read_file or read_files, from the run logs. Only an opened file counts as checked. */
-export function filesRead(events: RunEvent[]): Set<string> {
-  const read = new Set<string>();
+/** How much of one file the reads in a log showed. */
+export interface ReadExtent {
+  /** Lines shown, counted once however often they were read. */
+  seen: number;
+  /** Lines in the file (in the part that could be read, for a file too large to read to its end). */
+  total: number;
+  /** The first line not shown yet, if any. */
+  firstGap?: number;
+  /** The file is too large to be read to its end. */
+  cut: boolean;
+  complete: boolean;
+}
+
+/**
+ * What researchers' reads showed of each file, from the "files_read" events a worker logs after a read worked.
+ * Audit of PR #54: counting the read_file calls themselves counted reads that failed ("file not found") and
+ * files of which only the first lines fit in the reply. A file is complete only when every line was shown.
+ */
+export function readExtents(events: RunEvent[]): Map<string, ReadExtent> {
+  const spans = new Map<string, { ranges: [number, number][]; total: number; cut: boolean }>();
   for (const e of events) {
-    if (e.type !== "tool_call" || (e.message !== "read_file" && e.message !== "read_files")) continue;
-    const call = (e.data as { call?: { path?: unknown; paths?: unknown } } | undefined)?.call;
-    const paths = Array.isArray(call?.paths) ? call.paths : [call?.path];
-    for (const p of paths) if (typeof p === "string") read.add(p.replace(/^\.\//, ""));
+    if (e.type !== "files_read") continue;
+    const reads = (e.data as { reads?: unknown } | undefined)?.reads;
+    if (!Array.isArray(reads)) continue;
+    for (const r of reads as Record<string, unknown>[]) {
+      if (typeof r?.path !== "string" || typeof r.from !== "number" || typeof r.to !== "number" || typeof r.total !== "number" || r.to < r.from) continue;
+      const path = r.path.trim().replace(/^\.\//, "");
+      const s = spans.get(path) ?? { ranges: [], total: 0, cut: false };
+      s.ranges.push([Math.max(1, r.from), r.to]);
+      s.total = Math.max(s.total, r.total);
+      s.cut ||= r.cut === true;
+      spans.set(path, s);
+    }
   }
-  return read;
+  const out = new Map<string, ReadExtent>();
+  for (const [path, s] of spans) {
+    const merged: [number, number][] = [];
+    for (const [a, b] of s.ranges.sort((x, y) => x[0] - y[0])) {
+      const last = merged[merged.length - 1];
+      if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b);
+      else merged.push([a, b]);
+    }
+    let seen = 0;
+    let firstGap: number | undefined;
+    let next = 1;
+    for (const [a, b] of merged) {
+      const to = Math.min(b, s.total);
+      if (a > to) continue;
+      if (a > next && firstGap === undefined) firstGap = next;
+      seen += to - a + 1;
+      next = to + 1;
+    }
+    if (firstGap === undefined && next <= s.total) firstGap = next;
+    out.set(path, { seen, total: s.total, firstGap, cut: s.cut, complete: firstGap === undefined && !s.cut });
+  }
+  return out;
+}
+
+/** Files a researcher read completely, from the run logs. Only a file read to its end counts as checked. */
+export function filesRead(events: RunEvent[]): Set<string> {
+  return new Set([...readExtents(events)].filter(([, x]) => x.complete).map(([p]) => p));
 }
 
 export interface Coverage {
@@ -117,11 +174,17 @@ export interface Coverage {
   read: string[];
   /** Of those, the ones nobody opened. */
   unread: string[];
+  /** The project had more files than could be listed, so the question may be about files not in `files`. */
+  listCut?: boolean;
 }
 
-export function coverageOf(files: string[], read: Set<string>): Coverage {
-  return { files, read: files.filter((f) => read.has(f)), unread: files.filter((f) => !read.has(f)) };
+export function coverageOf(files: string[], read: Set<string>, listCut = false): Coverage {
+  const c: Coverage = { files, read: files.filter((f) => read.has(f)), unread: files.filter((f) => !read.has(f)) };
+  if (listCut) c.listCut = true;
+  return c;
 }
+
+const CUT = `The project has more than ${LIST_LIMIT} files, more than could be listed, so files beyond those listed were not considered at all.`;
 
 /** A short list of file names: all of them up to `max`, then how many more. */
 export function fileList(files: string[], max = 30): string {
@@ -130,14 +193,16 @@ export function fileList(files: string[], max = 30): string {
 
 /** What the answer step is told, as a fact checked by rule. */
 export function coverageFact(c: Coverage): string {
-  if (!c.unread.length) return `Checked by rule: the sub-agents opened and reported on all ${c.files.length} files your question is about. Answer for every one of them.`;
-  return `Checked by rule: the sub-agents opened and reported on only ${c.read.length} of the ${c.files.length} files the question is about. Not checked: ${fileList(c.unread)}. Your first sentence says how many were checked. Say nothing about the files that were not opened: never "the other files ..." or "the rest ...", because nobody read them.`;
+  const cut = c.listCut ? ` ${CUT} Say so in your first sentence.` : "";
+  if (!c.unread.length) return `Checked by rule: the sub-agents read and reported on all ${c.files.length} files your question is about${c.listCut ? " that could be listed" : ""}. Answer for every one of them.${cut}`;
+  return `Checked by rule: the sub-agents read to the end and reported on only ${c.read.length} of the ${c.files.length} files the question is about. Not checked: ${fileList(c.unread)}. Your first sentence says how many were checked. Say nothing about the files that were not read: never "the other files ..." or "the rest ...", because nobody read them.${cut}`;
 }
 
 /** Put in front of an answer that could not read every file, so the user sees the gap first whatever the model wrote. */
 export function coverageNote(c: Coverage): string | undefined {
-  if (!c.unread.length) return undefined;
-  return `Checked ${c.read.length} of the ${c.files.length} files your question is about. The other ${c.unread.length} were not opened or not reported on, so this answer says nothing reliable about them${c.unread.length <= 10 ? ` (${c.unread.join(", ")})` : ""}.`;
+  const cut = c.listCut ? CUT : "";
+  if (!c.unread.length) return cut || undefined;
+  return `Checked ${c.read.length} of the ${c.files.length} files your question is about. The other ${c.unread.length} were not read to the end or not reported on, so this answer says nothing reliable about them${c.unread.length <= 10 ? ` (${c.unread.join(", ")})` : ""}.${cut ? ` ${cut}` : ""}`;
 }
 
 /** The files of a research question made by batchQuestion(), or undefined for any other question. */
@@ -150,8 +215,7 @@ export function batchFilesOf(question: string): string[] | undefined {
 /** True when a report names a file, by its path or by its file name as a whole word. */
 export function mentionsFile(text: string, file: string): boolean {
   const base = file.split("/").pop()!;
-  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return text.includes(file) || new RegExp(`(^|[^\\w./-])${esc(base)}(?![\\w])`).test(text);
+  return text.includes(file) || new RegExp(`(^|[^\\w./-])${escapeRegExp(base)}(?![\\w])`).test(text);
 }
 
 /**
@@ -160,12 +224,28 @@ export function mentionsFile(text: string, file: string): boolean {
  * modules in the answer; another accepted "mod_002.js: file not found" from a wrong path. A batch is done when
  * every one of its files was opened and has a line in the report; anything else is sent back, naming the files.
  */
-export function batchReview(batch: string[], read: Set<string>, report: string): { accept: boolean; feedback?: string; unread: string[]; unreported: string[] } {
+export function batchReview(
+  batch: string[],
+  read: Set<string>,
+  report: string,
+  extents: ReadonlyMap<string, ReadExtent> = new Map(),
+): { accept: boolean; feedback?: string; unread: string[]; unreported: string[] } {
   const unread = batch.filter((f) => !read.has(f));
   const unreported = batch.filter((f) => !mentionsFile(report, f));
   if (!unread.length && !unreported.length) return { accept: true, unread, unreported };
   const parts = [`Your files are only these ${batch.length}: ${batch.join(", ")}. Do not look at other files; other researchers have them.`];
-  if (unread.length) parts.push(`You have not opened ${unread.join(", ")}. Open ${unread.length === 1 ? "it" : "them"} with read_files, using exactly these paths.`);
+  // A file read in part is told which lines are missing; one never read (or whose read failed) is told to open it.
+  const partly = unread.filter((f) => (extents.get(f)?.seen ?? 0) > 0);
+  const never = unread.filter((f) => !partly.includes(f));
+  for (const f of partly) {
+    const x = extents.get(f)!;
+    parts.push(
+      x.cut && x.firstGap === undefined
+        ? `${f} is too large to read to its end; say in your report that only its first ${x.total} lines were read.`
+        : `You have seen only ${x.seen} of the ${x.total} lines of ${f}. Read the rest with read_file and startLine=${x.firstGap ?? 1}.`,
+    );
+  }
+  if (never.length) parts.push(`You have not opened ${never.join(", ")} (or reading ${never.length === 1 ? "it" : "them"} failed). Open ${never.length === 1 ? "it" : "them"} with read_files, using exactly these paths.`);
   if (unreported.length) parts.push(`Your report has no line for ${unreported.join(", ")}.`);
   parts.push("Then finish again with one line for each of your files: the path, then your finding for it.");
   return { accept: false, feedback: parts.join(" "), unread, unreported };

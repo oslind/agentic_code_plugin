@@ -172,7 +172,9 @@ function megabytes(bytes: number): string {
 /**
  * A copy of the project in the extension's own storage, with pending changes
  * written into it, so checks can run against them without touching the
- * user's files. Large folders such as node_modules are linked, not copied.
+ * user's files. Everything is copied, dependency folders too, unless the user
+ * links some (agentic.scratch.linkDirs): a linked folder is the real one, so
+ * a command that installs or changes packages changes it in the project.
  *
  * Files that may hold secrets (.env files, keys, certificates, credentials)
  * are left out, so a check that runs here cannot read them from the copy.
@@ -208,10 +210,10 @@ export class ScratchCopy {
     this.bytes += bytes;
     held.set(this, this.bytes);
     if (this.files > limits.maxFiles) {
-      throw new ScratchError(`The project has more than ${limits.maxFiles} files to copy for running commands. Add folders that commands do not need to agentic.scratch.exclude, or raise agentic.scratch.maxFiles (user settings).`);
+      throw new ScratchError(`The project has more than ${limits.maxFiles} files to copy for running commands. Add folders that commands do not need to agentic.scratch.exclude, raise agentic.scratch.maxFiles, or link dependency folders with agentic.scratch.linkDirs (user settings; a linked folder is shared with your project, so commands can change it).`);
     }
     if (this.bytes > limits.maxBytes) {
-      throw new ScratchError(`The project holds more than ${megabytes(limits.maxBytes)} to copy for running commands. Add large folders that commands do not need to agentic.scratch.exclude, or raise agentic.scratch.maxMegabytes (user settings).`);
+      throw new ScratchError(`The project holds more than ${megabytes(limits.maxBytes)} to copy for running commands. Add large folders that commands do not need to agentic.scratch.exclude, raise agentic.scratch.maxMegabytes, or link dependency folders with agentic.scratch.linkDirs (user settings; a linked folder is shared with your project, so commands can change it).`);
     }
     let total = 0;
     for (const n of held.values()) total += n;
@@ -382,7 +384,7 @@ export const LINKABLE_DIRS = ["node_modules", "bower_components", ".venv", "venv
 
 /** The configured folders that may be linked: only names from LINKABLE_DIRS. */
 export function safeLinkDirs(value: unknown): string[] {
-  if (!Array.isArray(value)) return ["node_modules"];
+  if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((d): d is string => typeof d === "string" && LINKABLE_DIRS.includes(d)))];
 }
 

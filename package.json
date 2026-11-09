@@ -351,10 +351,8 @@
           "items": {
             "type": "string"
           },
-          "default": [
-            "node_modules"
-          ],
-          "description": "Dependency folders linked, not copied, into the scratch copy (kept in the extension's own storage, outside the project) where checks run against pending changes, so they need no reinstall. Only node_modules, bower_components, .venv, venv, vendor, .tox, .gradle and target can be linked, and only from your user settings; a folder with secret files at its top level is not linked. Everything else is copied, without files that may hold secrets (.env, keys, credentials).",
+          "default": [],
+          "description": "Dependency folders linked, not copied, into the scratch copy (kept in the extension's own storage, outside the project) where checks run against pending changes. Empty by default: everything is copied. A linked folder is your real folder, so a command that installs or changes packages (npm install, pip install) changes it in your project, even before you accept anything. Only node_modules, bower_components, .venv, venv, vendor, .tox, .gradle and target can be linked, and only from your user settings; secret files inside are left out. Everything else is copied, without files that may hold secrets (.env, keys, credentials).",
           "scope": "machine"
         },
         "agentic.scratch.exclude": {
@@ -370,7 +368,7 @@
           "type": "number",
           "default": 50000,
           "minimum": 1,
-          "description": "Most files copied into one scratch copy. A larger project is refused with a message instead of filling the disk; linked dependency folders do not count. User settings only.",
+          "description": "Most files copied into one scratch copy. A larger project is refused with a message instead of filling the disk; copied dependency folders count, linked ones (agentic.scratch.linkDirs) do not. User settings only.",
           "scope": "machine"
         },
         "agentic.scratch.maxMegabytes": {

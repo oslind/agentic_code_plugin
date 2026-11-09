@@ -279,7 +279,8 @@ describe("the scratch copy", () => {
   });
   it("only links plain top-level folders", () => {
     expect(safeLinkDirs(["node_modules", "../..", "/etc", "a/b", ".aws", ".git", "", 3, "vendor"])).toEqual(["node_modules", "vendor"]);
-    expect(safeLinkDirs("node_modules")).toEqual(["node_modules"]);
+    expect(safeLinkDirs("node_modules")).toEqual([]);
+    expect(safeLinkDirs(undefined)).toEqual([]);
   });
 });
 
@@ -393,6 +394,16 @@ describe("project-supplied scratch links and checks", () => {
   const unix = process.platform !== "win32";
   it("only links known dependency folders, never a project folder such as src", () => {
     expect(safeLinkDirs(["src", "node_modules", "config", ".venv", "../.."])).toEqual(["node_modules", ".venv"]);
+  });
+
+  it.skipIf(!unix)("copies dependency folders by default, so a command that changes packages in the copy cannot change the project's", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "node_modules", "pkg"), { recursive: true });
+    await fs.writeFile(path.join(root, "node_modules", "pkg", "index.js"), "real");
+    const dir = await new ScratchCopy(root, ["t"], safeLinkDirs(undefined)).sync(new Map());
+    expect((await fs.lstat(path.join(dir, "node_modules"))).isSymbolicLink()).toBe(false);
+    await fs.writeFile(path.join(dir, "node_modules", "pkg", "index.js"), "changed by a command");
+    expect(await fs.readFile(path.join(root, "node_modules", "pkg", "index.js"), "utf8")).toBe("real");
   });
 
   it.skipIf(!unix)("copies a folder named in linkDirs instead of linking it, so its secrets stay out", async () => {

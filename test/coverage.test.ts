@@ -1,6 +1,6 @@
 /** Benchmark pass 1: questions about many files are split by rule, and the answer says what was read. */
 import { describe, expect, it } from "vitest";
-import { batchesOf, batchFilesOf, batchQuestion, batchReview, mentionsFile, coverageNote, coverageOf, filesAskedAbout, filesRead, MAX_BATCH } from "../src/chat/coverage";
+import { batchesOf, batchFilesOf, batchQuestion, batchReview, mentionsFile, coverageNote, coverageOf, filesAskedAbout, filesRead, MAX_BATCH, readExtents } from "../src/chat/coverage";
 
 const shop = [...Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`), "src/shop.js", "test.js", "package.json", "README.md", "node_modules/x/index.js"];
 
@@ -25,6 +25,21 @@ describe("filesAskedAbout", () => {
     expect(filesAskedAbout("Which files did you change in src/?", shop)).toBeUndefined();
     expect(filesAskedAbout("Which modules in src/ throw?", ["src/a.js", "src/b.js", "src/c.js"])).toBeUndefined();
   });
+  it("keeps every file of a big folder, never only the first 400 (audit of PR #54)", () => {
+    const big = Array.from({ length: 900 }, (_, i) => `lib/m${i}.js`);
+    expect(filesAskedAbout("Which modules in lib/ throw?", big)).toHaveLength(900);
+  });
+  it("matches folder names with regex characters only literally", () => {
+    const odd = [...Array.from({ length: 8 }, (_, i) => `a+b/m${i}.js`), ...Array.from({ length: 8 }, (_, i) => `aab/m${i}.js`)];
+    expect(filesAskedAbout("Which modules in aab/ throw?", odd)!.every((f) => f.startsWith("aab/"))).toBe(true);
+    expect(filesAskedAbout("Which modules in a+b/ throw?", odd)!.every((f) => f.startsWith("a+b/"))).toBe(true);
+    const ranged = Array.from({ length: 10 }, (_, i) => `src/m(${i}).js`);
+    expect(filesAskedAbout("Check m(0).js to m(9).js", ranged)).toBeUndefined();
+  });
+  it("says when the project had more files than could be listed", () => {
+    const c = coverageOf(["a.js"], new Set(["a.js"]), true);
+    expect(coverageNote(c)).toMatch(/more than 5000 files/);
+  });
 });
 
 describe("batches and coverage", () => {
@@ -40,16 +55,26 @@ describe("batches and coverage", () => {
   it("asks each researcher the user's own question for its files only", () => {
     expect(batchQuestion("Which throw?", ["a.js", "b.js"])).toMatch(/for each of these 2 file\(s\), and only these: "Which throw\?"[\s\S]*read_file[\s\S]*Files: a\.js, b\.js/);
   });
-  it("counts only files opened with read_file", () => {
+  const fr = (reads: Record<string, unknown>[]) => ({ time: "", runId: "r", type: "files_read", message: "", data: { reads } });
+  it("counts only files whose reads worked and showed every line (audit of PR #54)", () => {
     const read = filesRead([
-      { time: "", runId: "r", type: "tool_call", message: "read_file", data: { call: { tool: "read_file", path: "./a.js" } } },
-      { time: "", runId: "r", type: "tool_call", message: "search_files", data: { call: { tool: "search_files", query: "throw" } } },
+      // A read_file call is logged before it runs: it counts for nothing on its own.
+      { time: "", runId: "r", type: "tool_call", message: "read_file", data: { call: { tool: "read_file", path: "b.js" } } },
+      fr([{ path: "./a.js", from: 1, to: 20, total: 20, cut: false }]),
+      fr([{ path: "c.js", from: 1, to: 120, total: 300, cut: false }]),
+      fr([{ path: "d.js", from: 1, to: 100, total: 200, cut: false }]),
+      fr([{ path: "d.js", from: 101, to: 200, total: 200, cut: false }]),
+      fr([{ path: "e.js", from: 1, to: 50, total: 50, cut: true }]),
     ]);
-    expect([...read]).toEqual(["a.js"]);
+    expect([...read].sort()).toEqual(["a.js", "d.js"]);
     const c = coverageOf(["a.js", "b.js"], read);
     expect(c).toEqual({ files: ["a.js", "b.js"], read: ["a.js"], unread: ["b.js"] });
     expect(coverageNote(c)).toMatch(/^Checked 1 of the 2 files .* \(b\.js\)\.$/);
     expect(coverageNote(coverageOf(["a.js"], read))).toBeUndefined();
+  });
+  it("knows which lines of a partly read file are missing", () => {
+    const x = readExtents([fr([{ path: "c.js", from: 1, to: 120, total: 300, cut: false }]), fr([{ path: "c.js", from: 200, to: 300, total: 300, cut: false }])]).get("c.js")!;
+    expect(x).toMatchObject({ seen: 221, total: 300, firstGap: 121, complete: false });
   });
 });
 
@@ -68,6 +93,12 @@ describe("the review of a batch researcher, by rule", () => {
     expect(r.unread).toEqual(["src/mod_002.js"]);
     expect(r.feedback).toMatch(/only these 2: src\/mod_001\.js, src\/mod_002\.js\. Do not look at other files[\s\S]*not opened src\/mod_002\.js[\s\S]*exactly these paths/);
     expect(batchReview(batch, new Set(batch), "mod_001.js throws.").unreported).toEqual(["src/mod_002.js"]);
+  });
+  it("tells a researcher that saw only part of a file which lines to read next", () => {
+    const extents = readExtents([{ time: "", runId: "r", type: "files_read", message: "", data: { reads: [{ path: "src/mod_002.js", from: 1, to: 80, total: 300, cut: false }] } }]);
+    const r = batchReview(batch, new Set(["src/mod_001.js"]), "mod_001.js throws. mod_002.js returns.", extents);
+    expect(r.accept).toBe(false);
+    expect(r.feedback).toMatch(/seen only 80 of the 300 lines of src\/mod_002\.js\. Read the rest with read_file and startLine=81/);
   });
   it("matches a file by path or whole file name only", () => {
     expect(mentionsFile("see mod_01.js", "src/mod_01.js")).toBe(true);

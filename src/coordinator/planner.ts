@@ -49,7 +49,7 @@ export interface PlanInput {
   /** The user's earlier messages in this conversation, oldest first, for what the latest one refers to. Trusted. */
   earlierUserWords?: string[];
   /** For a rename: the old name and every project file that mentions it, searched by rule (filesMentioning). */
-  references?: { name: string; files: string[] };
+  references?: { name: string; files: string[]; incomplete?: string };
   /** Top-level outlines of the files the request names (outlinesOfNamedFiles). Read from the project, so fenced. */
   outlines?: string;
   /** Compact file listing of the workspace. Truncated to fit if needed. */
@@ -126,10 +126,10 @@ export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
     });
   }
   if (input.references) {
-    const { name, files } = input.references;
+    const { name, files, incomplete } = input.references;
     sections.push({
       name: "references",
-      text: files.join("\n") || "(none)",
+      text: (files.join("\n") || "(none)") + (incomplete ? `\n[Checked by rule: this search did not cover the whole project: ${incomplete}. Files it missed may use ${name} too.]` : ""),
       priority: 90,
       wrap: (list) =>
         untrustedSection(
@@ -210,7 +210,7 @@ export async function planRequest(
     onAttempt: options.onAttempt,
     onThinking: options.onThinking,
   });
-  const snapped = snapScopes(plan, pathsOfTree(input.fileTree), [input.request, input.userWords ?? ""].join("\n"));
+  const snapped = snapScopes(plan, pathsOfTree(input.fileTree), [input.request, input.userWords ?? ""].join("\n"), input.userWords?.trim() || input.request);
   const covered = coverReferences(snapped.plan, input.references, [input.userWords ?? "", input.request].join("\n"), taskLimit(input));
   const repaired = repairPlan(covered.plan);
   return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped, snappedScopes: snapped.snapped, addedReferences: covered.added };

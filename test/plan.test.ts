@@ -106,5 +106,10 @@ describe("garbled file scopes", () => {
     const r = snapScopes(plan, files, "Create src/config.js and use it from src/thermostat.js");
     expect(r.plan.tasks.map((x) => x.fileScope)).toEqual([["src/thermostat.js"], ["src/config.js"], ["src/**"]]);
     expect(r.snapped).toEqual([{ taskId: "away", from: "src/ther,mostat.js", to: "src/thermostat.js" }]);
+    // Only when the user's own words name the file: a request rewritten by a model is not enough (audit of PR #54).
+    const unanchored = snapScopes(plan, files, "Create src/config.js and use it from src/thermostat.js", "Add a config file");
+    expect(unanchored.snapped).toEqual([]);
+    expect(unanchored.plan.tasks[0]!.fileScope).toEqual(["src/ther,mostat.js"]);
+    expect(snapScopes(plan, files, "x", "change thermostat.js please").snapped).toHaveLength(1);
   });
 });

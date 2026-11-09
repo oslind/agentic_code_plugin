@@ -67,11 +67,23 @@ export class TaskStore {
     await fs.rename(tmp, file);
   }
 
+  /** The last pending write of each run's log, so writes land in order and readLog sees every one logged before it. */
+  private writes = new Map<string, Promise<void>>();
+
   async log(event: Omit<RunEvent, "time">): Promise<void> {
     const dir = this.runDir(event.runId);
-    await fs.mkdir(dir, { recursive: true });
     const full: RunEvent = { time: this.now().toISOString(), ...event };
-    await fs.appendFile(path.join(dir, "events.jsonl"), JSON.stringify(full) + "\n", "utf8");
+    // Workers log without waiting; a coverage check that reads the log right after must still see the event.
+    const write = (this.writes.get(event.runId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.appendFile(path.join(dir, "events.jsonl"), JSON.stringify(full) + "\n", "utf8");
+    });
+    this.writes.set(event.runId, write);
+    try {
+      await write;
+    } finally {
+      if (this.writes.get(event.runId) === write) this.writes.delete(event.runId);
+    }
     for (const listener of this.listeners) {
       try {
         listener(full);
@@ -89,6 +101,7 @@ export class TaskStore {
 
   async readLog(runId: string): Promise<RunEvent[]> {
     let raw: string;
+    await this.writes.get(runId)?.catch(() => undefined);
     try {
       raw = await fs.readFile(path.join(this.runDir(runId), "events.jsonl"), "utf8");
     } catch (err) {

@@ -15,7 +15,7 @@ import { ChatMessage, ModelProvider } from "../providers/types";
  *
  * 1. The checks the user approved run once more, on a scratch copy of the
  *    project with every draft of the run in it, so they test the drafts
- *    together. The user's files are not touched.
+ *    together. The checks still run as the user (a copy is not a sandbox).
  * 2. One model call reads the request, the reports, the drafts and the check
  *    results, and says whether the request is done, and if not, what is left.
  *
@@ -149,7 +149,7 @@ export function checkTail(c: CheckResult, max = 1500): string {
 export function checkEvidence(checks: CheckResult[]): string {
   if (checks.length === 0) return "No checks are set up for this project, so nothing was run; I read the drafts against your request.";
   const parts = checks.map((c) => `${checkName(c.name)} ${c.skipped ? "skipped (not approved)" : c.passed ? "passed" : c.timedOut ? "timed out" : "failed"}`);
-  return `I ran the checks on a copy of the project with all drafts together (your files were not touched): ${parts.join(", ")}.`;
+  return `I ran the checks on a copy of the project with all drafts together (the checks run as you, not sandboxed): ${parts.join(", ")}.`;
 }
 
 /** Builds the verification prompt. Trusted parts are plain; everything a model or the project wrote is fenced. */

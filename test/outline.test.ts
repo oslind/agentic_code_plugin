@@ -26,6 +26,21 @@ describe("filesMentioning", () => {
       "README.md": "Use `toCelsius(f)`.\n",
     };
     const files = { listFiles: async () => Object.keys(texts), readFile: async (p: string) => texts[p]! };
-    expect(await filesMentioning(files, "toCelsius")).toEqual(["src/convert.js", "test.js", "README.md"]);
+    expect(await filesMentioning(files, "toCelsius")).toEqual({ files: ["src/convert.js", "test.js", "README.md"], incomplete: undefined });
+  });
+
+  it("searches past 400 files, and says when it could not search every file (audit of PR #54)", async () => {
+    const texts: Record<string, string> = Object.fromEntries(Array.from({ length: 900 }, (_, i) => [`src/f${String(i).padStart(3, "0")}.js`, i === 850 ? "toCelsius(1);\n" : "x;\n"]));
+    const files = { listFiles: async () => [...Object.keys(texts), "src/huge.js"], readFile: async (p: string) => (p in texts ? texts[p]! : Promise.reject(new Error("too large"))) };
+    const r = await filesMentioning(files, "toCelsius");
+    expect(r.files).toEqual(["src/f850.js"]);
+    expect(r.incomplete).toMatch(/1 file\(s\) could not be read or are over 1 MB \(src\/huge\.js\)/);
+    const many = { listFiles: async (_g: string, max: number) => Array.from({ length: max }, (_, i) => `f${i}.js`), readFile: async () => "x" };
+    expect((await filesMentioning(many, "toCelsius")).incomplete).toMatch(/more than 5000 files/);
+  });
+
+  it("matches a name with regex characters only literally", async () => {
+    const files = { listFiles: async () => ["a.js", "b.js"], readFile: async (p: string) => (p === "a.js" ? "a+b(1)" : "aab(1)") };
+    expect((await filesMentioning(files, "a+b")).files).toEqual(["a.js"]);
   });
 });

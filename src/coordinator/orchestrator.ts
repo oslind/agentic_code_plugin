@@ -124,7 +124,7 @@ export class Orchestrator {
   }
 
   constructor(options: OrchestratorOptions) {
-    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, compactSteps: false, linkDirs: ["node_modules"], ...options };
+    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, compactSteps: false, linkDirs: [], ...options };
   }
 
   private log(type: string, message: string, taskId?: string, data?: Record<string, unknown>): Promise<void> {

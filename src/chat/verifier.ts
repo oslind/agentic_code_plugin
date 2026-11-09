@@ -8,6 +8,7 @@ import { TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
 import { isCheckAutoApproved } from "../tools/policy";
+import { COMMAND_RISK } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { mergeSameFileTasks, offTargetTasks } from "../coordinator/plan";
 import { isReadOnlyPlan } from "./coordinatorChat";
@@ -290,11 +291,14 @@ export class Verifier {
     if (!pair || !renamesEverywhere(said)) return [];
     try {
       const files = new OverlayFiles(await WorkspaceSandbox.create(workspaceRoot), pendingBase(changes));
-      const found = (await filesMentioning(files, pair.from)).filter((p) => !drafted.has(p));
-      const texts = await Promise.all(found.map(async (p) => ({ path: p, text: (await files.readFile(p, 300_000).catch(() => undefined)) ?? "" })));
-      return renameLeftovers(texts, said);
-    } catch {
-      return [];
+      const search = await filesMentioning(files, pair.from);
+      const found = search.files.filter((p) => !drafted.has(p));
+      const texts = await Promise.all(found.map(async (p) => ({ path: p, text: (await files.readFile(p, 1024 * 1024).catch(() => undefined)) ?? "" })));
+      // Audit of PR #54: a search that left files out cannot show the rename is complete, so that is a problem too.
+      const gap = search.incomplete ? [`The search for other uses of ${pair.from} did not cover the whole project (${search.incomplete}), so it is not known whether every file was renamed. The rename is not complete until the user has checked those files.`] : [];
+      return [...renameLeftovers(texts, said), ...gap];
+    } catch (err) {
+      return [`The search for other uses of ${pair.from} failed (${(err as Error).message}), so it is not known whether every file was renamed.`];
     }
   }
 
@@ -405,7 +409,7 @@ export class Verifier {
       runId,
       rememberable: true,
       rememberLabel: "Allow for the rest of this run",
-      text: `I'd like to run \`${check.command}\` ${purpose ? `on the project without the drafts, ${purpose}` : `(check "${check.name}") to verify the work with all drafts together`}. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+      text: `I'd like to run \`${check.command}\` ${purpose ? `on the project without the drafts, ${purpose}` : `(check "${check.name}") to verify the work with all drafts together`}. ${COMMAND_RISK} Turn on "Run commands" to stop being asked.`,
     });
     if (decision?.kind !== "allow") return false;
     if (decision.remember) this.s.allowedFor(runId).add(check.command);

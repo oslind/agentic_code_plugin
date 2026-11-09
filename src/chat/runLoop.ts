@@ -26,7 +26,7 @@ import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
-import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, filesAskedAbout, filesRead } from "./coverage";
+import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, filesAskedAbout, filesRead, LIST_LIMIT, readExtents } from "./coverage";
 
 /**
  * The coordinator's run loop for one prompt: its turn (answer, research,
@@ -157,13 +157,18 @@ export class RunLoop {
     let planned = false;
     // The files the user's question asks about one by one, when it is about many (found by rule, once).
     let asked: string[] | undefined | null = null;
+    // True when the project had more files than were listed: the answer says so (audit of PR #54).
+    let askedCut = false;
     const askedFiles = async (): Promise<string[] | undefined> => {
       if (asked === null) {
         asked = await WorkspaceSandbox.create(c.workspaceRoot)
-          .then((files) => files.listFiles("**", 5000))
-          .then((files) => filesAskedAbout(userRequest ?? text, files))
+          .then((files) => files.listFiles("**", LIST_LIMIT + 1))
+          .then((files) => {
+            askedCut = files.length > LIST_LIMIT;
+            return filesAskedAbout(userRequest ?? text, files.slice(0, LIST_LIMIT));
+          })
           .catch(() => undefined);
-        if (asked) this.host.log("info", `The question is about ${asked.length} files; research is split over them by rule.`);
+        if (asked) this.host.log("info", `The question is about ${asked.length} files${askedCut ? ` (the project has more than ${LIST_LIMIT} files; only those listed are included)` : ""}; research is split over them by rule.`);
       }
       return asked;
     };
@@ -373,7 +378,7 @@ export class RunLoop {
         let moreRounds = verifyRoundLimit(limits.verifyRounds);
         for (;;) {
           const review = limits.verify ? (answer: string) => this.verifier.checkResearchAnswer(c.workspaceRoot, text, answer, abort.signal) : undefined;
-          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds, (await askedFiles()) ?? undefined);
+          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds, (await askedFiles()) ?? undefined, askedCut);
           // A cut-off answer is not a finished one, and the bar says so.
           if (answered.cutOff) ended = { status: "partial", text: "Finished, but the answer was cut off before it was complete." };
           const open = answered.open && withoutDenied(answered.open);
@@ -397,7 +402,7 @@ export class RunLoop {
       await this.s.append(c.id, { author: "system", kind: "error", text: message, tone: abort.signal.aborted ? "warning" : "error" });
       // Research that finished before the failure still answers the question.
       if (!abort.signal.aborted && researchRuns.length && !planned) {
-        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, undefined, false, asked ?? undefined).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
+        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, undefined, false, asked ?? undefined, askedCut).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
       }
     } finally {
       this.s.abort = undefined;
@@ -417,13 +422,14 @@ export class RunLoop {
    * Plan mode is the user switching to Act mode for this conversation.
    */
   /** For a rename request: the old name and every project file that mentions it, so the plan misses none. */
-  private async renameReferences(workspaceRoot: string, request: string): Promise<{ name: string; files: string[] } | undefined> {
+  private async renameReferences(workspaceRoot: string, request: string): Promise<{ name: string; files: string[]; incomplete?: string } | undefined> {
     const name = renamedName(request);
     if (!name) return undefined;
-    const files = await WorkspaceSandbox.create(workspaceRoot)
+    const found = await WorkspaceSandbox.create(workspaceRoot)
       .then((sandbox) => filesMentioning(sandbox, name))
-      .catch(() => undefined);
-    return files && { name, files };
+      .catch((err: Error) => ({ files: [] as string[], incomplete: err.message }));
+    if (found.incomplete) this.host.log("warn", `The search for files that use ${name} was incomplete: ${found.incomplete}.`);
+    return { name, files: found.files, incomplete: found.incomplete };
   }
 
   /** The skills for a folder. A folder whose skills cannot be read just gets none. */
@@ -556,8 +562,9 @@ export class RunLoop {
   private async reviewBatch(runId: string, task: Task, batch: string[], summary: string): Promise<ReviewVerdict> {
     const key = `${runId}:${task.id}`;
     const rounds = this.batchReviews.get(key) ?? 0;
-    const read = filesRead((await this.tasks.readLog(runId).catch(() => [])).filter((e) => e.taskId === task.id));
-    const r = batchReview(batch, read, summary);
+    const extents = readExtents((await this.tasks.readLog(runId).catch(() => [])).filter((e) => e.taskId === task.id));
+    const read = new Set([...extents].filter(([, x]) => x.complete).map(([p]) => p));
+    const r = batchReview(batch, read, summary, extents);
     const final = !r.accept && rounds >= 2;
     if (!r.accept && !final) this.batchReviews.set(key, rounds + 1);
     const message = r.accept ? "accept" : final ? "not_accepted" : "revise";
@@ -565,7 +572,7 @@ export class RunLoop {
     return r.accept ? { accept: true, outcome: "accepted" } : final ? { accept: true, outcome: "not_accepted" } : { accept: false, feedback: r.feedback, outcome: "sent_back" };
   }
 
-  /** Files researchers opened with read_file in these runs. */
+  /** Files researchers read to their end in these runs. */
   private async filesReadIn(runIds: string[]): Promise<Set<string>> {
     const read = new Set<string>();
     for (const id of runIds) for (const f of filesRead(await this.tasks.readLog(id).catch(() => []))) read.add(f);
@@ -588,6 +595,7 @@ export class RunLoop {
     review?: (answer: string) => Promise<AnswerCheck | undefined>,
     canResearchMore = false,
     asked?: string[],
+    askedCut = false,
   ): Promise<{ open?: string[]; cutOff?: CutOff }> {
     this.s.busy = "Coordinator is combining the reports into an answer…";
     this.s.changed();
@@ -603,7 +611,7 @@ export class RunLoop {
     // but never reported on is as unknown to the answer as one never opened (check 2026-11-09: mod_042 was in no report).
     const opened = await this.filesReadIn(runIds);
     const reported = reports.map((r) => r.text).join("\n");
-    const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f))));
+    const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f))), askedCut);
     const result = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
       { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
@@ -619,8 +627,12 @@ export class RunLoop {
       check = await review(result.text);
       signal.throwIfAborted();
       // An answer about files nobody opened is not verified, whatever the check says.
-      if (check && coverage?.unread.length) {
-        check = { ...check, answered: false, missing: [...check.missing, `${coverage.unread.length} of the ${coverage.files.length} files were not opened: ${fileList(coverage.unread, 10)}`] };
+      if (check && (coverage?.unread.length || coverage?.listCut)) {
+        const gaps = [
+          coverage.unread.length ? `${coverage.unread.length} of the ${coverage.files.length} files were not read: ${fileList(coverage.unread, 10)}` : "",
+          coverage.listCut ? `the project has more than ${LIST_LIMIT} files, and files beyond those were not considered` : "",
+        ].filter(Boolean);
+        check = { ...check, answered: false, missing: [...check.missing, ...gaps] };
         canResearchMore = false;
       }
       // Run 10: the check asked for the output of a command the user declined, so the honest answer was held back

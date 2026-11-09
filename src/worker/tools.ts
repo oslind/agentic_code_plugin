@@ -32,11 +32,25 @@ export interface ToolContext {
   said?: string;
 }
 
+/** The lines of a file a read actually showed the model, so coverage counts what was seen, not what was asked for. */
+export interface FileRead {
+  path: string;
+  /** First and last line shown, from 1. */
+  from: number;
+  to: number;
+  /** Lines in the part of the file that could be read. */
+  total: number;
+  /** True when the file was too large to read to its end, so no read of it is ever complete. */
+  cut: boolean;
+}
+
 export interface ToolOutcome {
   ok: boolean;
   output: string;
   /** Set when the call changed a file. */
   wrote?: string;
+  /** Set when the call showed (part of) files. */
+  read?: FileRead[];
 }
 
 /** Runs an already policy-checked call. Every file access goes through the sandbox. */
@@ -59,7 +73,8 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
           .join("\n");
         const more = end < lines.length ? `\n[lines ${end + 1}-${lines.length} not shown; read again with startLine=${end + 1}]` : "";
         const big = head.truncated ? `\n[the file is ${Math.round(head.size / (1024 * 1024))} MB; only its first ${lines.length} lines can be read. Use search to find something further on]` : "";
-        return { ok: true, output: `${call.path} (${head.truncated ? `first ${lines.length}` : lines.length} lines)\n${body}${more}${big}` };
+        const read: FileRead[] = end >= start ? [{ path: call.path, from: start, to: end, total: lines.length, cut: head.truncated }] : [];
+        return { ok: true, output: `${call.path} (${head.truncated ? `first ${lines.length}` : lines.length} lines)\n${body}${more}${big}`, read };
       }
       case "read_files": {
         // Benchmark pass 1, find-throwing: a researcher given 15 files spent a model call (about 30 s) on each.
@@ -67,6 +82,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const paths = call.paths.map((x) => x.trim()).filter(Boolean);
         const share = Math.max(400, Math.floor(MAX_READ_FILES_CHARS / Math.max(1, paths.length)));
         const parts: string[] = [];
+        const read: FileRead[] = [];
         for (const p of paths) {
           const head = await ctx.sandbox.readHead(p, MAX_READ_BYTES).catch((err: Error) => ({ error: err.message }));
           if ("error" in head) {
@@ -84,9 +100,11 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
             used += line.length + 1;
           }
           const more = shown.length < lines.length ? `\n[lines ${shown.length + 1}-${lines.length} not shown; read them with read_file and startLine=${shown.length + 1}]` : "";
-          parts.push(`${p} (${lines.length} lines)\n${shown.join("\n")}${more}`);
+          const big = head.truncated ? `\n[the file is too large to read to its end; only its first ${lines.length} lines can be read]` : "";
+          parts.push(`${p} (${lines.length} lines)\n${shown.join("\n")}${more}${big}`);
+          read.push({ path: p, from: 1, to: shown.length, total: lines.length, cut: head.truncated });
         }
-        return { ok: true, output: parts.join("\n\n") };
+        return { ok: true, output: parts.join("\n\n"), read };
       }
       case "list_files": {
         const files = await ctx.sandbox.listFiles(call.glob, MAX_LIST + 1);

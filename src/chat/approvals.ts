@@ -4,7 +4,7 @@ import { CheckConfig } from "../checks/runner";
 import { ToolCall } from "../tools/protocol";
 import { isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted } from "../tools/policy";
 import { acceptChange } from "../changes/review";
-import { commandLeavesProject } from "../tools/commandGuard";
+import { COMMAND_RISK, commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { isUnreviewed } from "../coordinator/review";
 import { AgentMonitor } from "../coordinator/monitor";
@@ -48,7 +48,7 @@ export class Approvals {
       agentName: task.title,
       rememberable: true,
       rememberLabel: "Allow for the rest of this run",
-      text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+      text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. ${COMMAND_RISK} Turn on "Run commands" to stop being asked.`,
     });
     if (decision?.kind !== "allow") {
       this.s.deniedFor(runId).add(call.command);

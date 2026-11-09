@@ -230,13 +230,21 @@ function editDistance(a: string, b: string): number {
   return d[b.length]!;
 }
 
+/** True when text names a file by its path, or by its file name as a whole word. */
+function namesFile(text: string, file: string): boolean {
+  const base = file.split("/").pop()!;
+  return text.includes(file) || new RegExp(`(^|[^\\w./-])${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w])`).test(text);
+}
+
 /**
  * Puts right a fileScope path the planner garbled. Run 10: a plan had "src/ther,mostat.js" for
  * src/thermostat.js, so every write was refused as out of scope and the task did nothing. A plain
  * path that is not in the project, and that the request and the task do not name as a new file, is
- * replaced by the one project file it is a slip away from (at most 2 edits, same folder depth).
+ * replaced by the one project file it is a slip away from (at most 2 edits, same folder depth), and only when the
+ * user's own words name that file (audit of PR #54: a guess the user never anchored could widen a task's scope to
+ * a file nobody asked to change). Otherwise the scope is kept, and a write outside it is refused as usual.
  */
-export function snapScopes(plan: Plan, files: string[], named: string): { plan: Plan; snapped: { taskId: string; from: string; to: string }[] } {
+export function snapScopes(plan: Plan, files: string[], named: string, userWords = named): { plan: Plan; snapped: { taskId: string; from: string; to: string }[] } {
   if (!files.length) return { plan, snapped: [] };
   const known = new Set(files);
   const snapped: { taskId: string; from: string; to: string }[] = [];
@@ -246,7 +254,7 @@ export function snapScopes(plan: Plan, files: string[], named: string): { plan: 
       if (known.has(g) || /[*?[\]{}]/.test(g) || text.includes(g)) return g;
       const depth = g.split("/").length;
       const near = files.filter((f) => f.split("/").length === depth && editDistance(f, g) <= 2);
-      if (near.length !== 1) return g;
+      if (near.length !== 1 || !namesFile(userWords, near[0]!)) return g;
       snapped.push({ taskId: t.id, from: g, to: near[0]! });
       return near[0]!;
     });

@@ -579,6 +579,8 @@ export class Worker {
         onCommand: (command, res) => this.logCommand(command, res),
         said: this.opts.task.instructions,
       });
+      // Logged after the read, with the lines it showed: coverage counts only reads that worked (audit of PR #54).
+      if (outcome.read?.length) this.opts.log("files_read", outcome.read.map((r) => r.path).join(", "), { reads: outcome.read });
       if (outcome.wrote) {
         this.changed.add(outcome.wrote);
         this.ranSinceWrite = false;
