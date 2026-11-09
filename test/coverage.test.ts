@@ -59,6 +59,9 @@ describe("filesAskedAbout", () => {
     expect(scope).toMatchObject({ skipped: ["src/mod_042.js"] });
     expect("files" in scope && scope.files).toHaveLength(99);
     expect(askedScope("Which modules in shared/ throw?", listed, 400, ["shared"])).toEqual({ files: [], skipped: ["shared"] });
+    // Every file of the range a skipped link, and no "which/every" in the question.
+    const allLinks = Array.from({ length: 100 }, (_, i) => `src/mod_${String(i).padStart(3, "0")}.js`);
+    expect(askedScope("Check mod_000.js to mod_099.js for errors.", ["src/shop.js"], 400, allLinks)).toEqual({ files: [], skipped: allLinks });
     expect(askedScope("Which modules in src/ throw?", listed, 400, ["shared"])).toEqual({ files: listed });
     const none = coverageOf([], new Set(), false, ["shared"]);
     expect(coverageNote(none)).toMatch(/could not be followed[\s\S]*shared/);

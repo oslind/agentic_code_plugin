@@ -83,12 +83,15 @@ export function askedScope(
 ): { files: string[]; skipped?: string[] } | { tooMany: number } | Record<string, never> {
   const files = projectFiles.filter((f) => !ignored(f));
   let set = rangeOf(question, files);
+  // A range is matched against both before branching: one whose files are all skipped links is still a range.
+  const skippedInRange = rangeOf(question, [...skippedLinks]);
+  if (!set && skippedInRange) set = [];
   // Links the listing could not follow (outside the project, or into a skipped folder), in the asked scope.
   // Audit of PR #54: a numbered range found the other 99 files and called them the whole set, so the range is
   // matched against the skipped links too; a folder the question names that is itself such a link is one.
   let skipped: string[] = [];
   if (set) {
-    skipped = rangeOf(question, [...skippedLinks]) ?? [];
+    skipped = skippedInRange ?? [];
   } else {
     if (!EVERY.test(question) || ABOUT_THE_CHAT.test(question)) return {};
     const listedFolder = foldersNamed(question, files)[0];
