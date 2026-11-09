@@ -60,17 +60,29 @@ For real isolation, set `agentic.commands.isolation` in your user settings to a 
 
 The wrapper itself is started without a shell, so nothing in it is expanded by the extension. Approval, the outside-the-project text check and the environment clean-up still apply to the command. The terminal shows which wrapper ran it.
 
-Docker or Podman, with no network and only the copy and the project's `node_modules` (read-only) mounted:
+Docker, with no network and only the copy mounted (dependency folders are copied into it, so they need no mount of their own):
 
 ```json
 "agentic.commands.isolation": [
   "docker", "run", "--rm", "--network=none",
   "-v", "${folder}:${folder}",
-  "-v", "${project}/node_modules:${project}/node_modules:ro",
   "-w", "${folder}",
   "node:22", "sh", "-c", "${command}"
 ]
 ```
+
+Podman, the same without a root daemon (rootless Podman runs the container as your own user). It has to be installed where the extension runs: inside WSL (`sudo apt install podman`) when VS Code is connected to WSL, or Podman for Windows when it is not, where the folder paths are Windows paths:
+
+```json
+"agentic.commands.isolation": [
+  "podman", "run", "--rm", "--network=none",
+  "-v", "${folder}:${folder}",
+  "-w", "${folder}",
+  "node:22", "sh", "-c", "${command}"
+]
+```
+
+Use an image that has the project's tools (`node:22` for npm projects, a Python image for Python ones). If you link dependency folders with `agentic.scratch.linkDirs`, mount them read-only too, for example `"-v", "${project}/node_modules:${project}/node_modules:ro"`.
 
 bubblewrap on Linux, with the system read-only, only the copy writable and no network:
 
@@ -80,7 +92,6 @@ bubblewrap on Linux, with the system read-only, only the copy writable and no ne
   "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin",
   "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
   "--bind", "${folder}", "${folder}",
-  "--ro-bind", "${project}/node_modules", "${project}/node_modules",
   "--unshare-all", "--die-with-parent", "--chdir", "${folder}",
   "sh", "-c", "${command}"
 ]
