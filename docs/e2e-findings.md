@@ -221,6 +221,19 @@ Results in docs/benchmark-pass1.md. The bigger the question, the less the coordi
   - Files read but in no report (mod_042) were counted as checked. A file now counts as checked only when it was opened and a report names it, so the "Checked X of N" line appears.
   - read_files skips blank paths instead of refusing the whole call; the bench saves model-calls.jsonl per attempt; the scorer does not count "not found" or "no lineTotal" lines as saying a module throws.
 
+## Run 13: every scenario (43) with two sub-agents at once, on 0878a3a: 35 of 43 passed, 394.3 min
+
+The three run-11 failures (rename-everywhere, use-strict-everywhere, swedish-request) pass now. Eight that passed in run 11 (one sub-agent at a time) failed:
+
+- **readme-typo and two-changes-in-a-row: the user was told a change was made that never happened.** "Fix the spelling mistake in README.md." and "Now also add an 'away' mode ..." went to read-only research. A review asked a researcher to "correct the error in the file", it ran `sed -i` in its throwaway copy, reports said "Added 'away' mode", and the answers said "has been fixed" / "was added". Fixed (0ff1707): after research, a reply that claims a change to an edit request goes on to a plan; a research answer to an edit request that still claims one starts with a by-rule "Nothing in your project was changed" and is not verified; research reports that claim a change are sent back by rule; reviews asking a researcher to fix or correct a file are accepted by rule; a read-only agent's file-writing command is answered with a note that it changed nothing.
+- **python-project and question-then-answer: a missing program became a gate.** A sub-agent added the check `python -m pytest` (in a Node project, and where only python3 exists); "Command not found: python" failed every attempt. Once the right draft was auto-accepted, later attempts had nothing left to draft and reviews rejected them for "no changes". Verification also blamed the old "average of three" failure instead of the new one. Fixed (f45c1b3, 86108f3): a check whose program does not exist is "could not run (command not found)", never a failure to fix, and a sub-agent's own such check is dropped; a "no changes" send-back for files that already have an accepted change in the run is accepted by rule; verification is told which failure lines are new with the drafts and which were there before.
+- **new-module-used: a whole module was one comment line.** write_file content arrived with `\\n` written out, so src/format.js was one line starting with `//` and exported nothing. Fixed (243a3f2): whole-file and inserted text with two or more written-out `\n` and no real line break is read as having line breaks, and the sub-agent is told. The harness now keeps each scenario's run state and src/ in the results.
+- **project-skill-trusted: a JSDoc inside the function body** was accepted as "added with JSDoc". Fixed (c211741): `docInsideBody` flags it after the write and in reviews and verification.
+- **parallel-changes timed out** in its second verification; the median sub-agent had also changed average() unasked, and it was accepted. Now reviews get a by-rule hint for an existing function a draft changed that neither the user nor the task names (b24cf22).
+- **what-did-you-change:** qwen answered without a goal (`{"action":"none","complete":true}`), so the answer was not shown as one. A complete reply with no goal is an answer now (c211741). The reply also misquoted `+ 32` as `+ 3.2` (model error, open).
+
+None of these fixes has run live yet.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
