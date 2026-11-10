@@ -232,6 +232,12 @@ The three run-11 failures (rename-everywhere, use-strict-everywhere, swedish-req
 - **parallel-changes timed out** in its second verification; the median sub-agent had also changed average() unasked, and it was accepted. Now reviews get a by-rule hint for an existing function a draft changed that neither the user nor the task names (b24cf22).
 - **what-did-you-change:** qwen answered without a goal (`{"action":"none","complete":true}`), so the answer was not shown as one. A complete reply with no goal is an answer now (c211741). The reply also misquoted `+ 32` as `+ 3.2` (model error, open).
 
+Big questions (find-throwing 5/20/50/100, agentic, 2 attempts each, 131.8 min): every file was opened in 7 of 8 attempts and no answer named a wrong module. 20 and 50: all found, both attempts; 100: 41 and 37 of 44, each answer starting "Checked 85 of the 100 files".
+
+- **find-throwing-5, attempt 2: answered unread in 18 seconds.** The coordinator chose `none`; the read-every-file rule only started at 6 files. Fixed (e0b9a5a): from 2 files; a set under 6 goes to one researcher.
+- **find-throwing-100: 14 files opened but in no report, at the same places in both attempts.** The batch review sent the researcher back, then let it go flagged, and the files counted as done because they were opened. Now a later round goes back to every asked file that no report names, not only unopened ones.
+- **Scorer:** names under a "Still unknown:" heading counted as named; such a heading now starts a not-named list.
+
 None of these fixes has run live yet.
 
 ## Still open

@@ -98,6 +98,7 @@ describe("benchmark tasks", () => {
     const listed = "mod_001.js mod_002.js\n\n- mod_003.js: checks the quantity but returns 0, so it does not throw.\n- mod_004.js doesn't throw; it clamps the quantity.\n- mod_005.js never throws.";
     expect(modulesSaidToThrow(listed)).toEqual(new Set([0, 1]));
     expect(modulesSaidToThrow("Throwing:\n- mod_001\n- mod_002\n\nNot throwing:\n- mod_003\n- mod_004")).toEqual(new Set([0, 1]));
+    expect(modulesSaidToThrow("Throwing:\n- mod_001\n\nStill unknown:\n- mod_003\n- mod_004")).toEqual(new Set([0]));
     expect(modulesSaidToThrow("mod_001 throws because the quantity is not checked before it is used. mod_002 does not throw.")).toEqual(new Set([0]));
     expect(modulesSaidToThrow("mod_001.js - throws a RangeError - mod_003.js - does not throw")).toEqual(new Set([0]));
     // Check 2026-11-09: a module the answer could not read, or found no lineTotal in, is not said to throw.

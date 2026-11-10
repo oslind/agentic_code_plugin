@@ -542,6 +542,32 @@ describe("ChatController", () => {
       expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/reported on all 8 files/);
       expect(entries.at(-1)!.text).toBe("None of the 8 modules throw.");
     });
+
+    it("sends another round for files that were opened but are in no report (run 13, find-throwing-100)", async () => {
+      const ws = await project();
+      const { controller, provider } = setup(
+        [
+          turn("Checking.", "research", "", { questions: ["Which modules throw?"] }),
+          read(1), read(2), finish(1, 2),
+          read(3), read(4), finish(3, 4),
+          read(5), read(6), finish(5, 6),
+          // The fourth researcher opens its files but never reports on them.
+          read(7), read(8), worker({ tool: "finish", summary: "Checked my files." }), worker({ tool: "finish", summary: "Both checked." }), worker({ tool: "finish", summary: "All done." }),
+          // Round 2, by rule: the two unreported files again.
+          read(7), read(8), finish(7, 8),
+          turn("Done.", "none"),
+          "None of the 8 modules throw.",
+        ],
+        "plan",
+        { workspace: ws, maxResearchRounds: 2 },
+      );
+      await controller.send("Which of the modules in src/ throw an error?");
+      const entries = (await controller.state()).current!.entries;
+      expect(entries.filter((e) => e.kind === "research")).toHaveLength(2);
+      expect(entries.some((e) => /about 8 files, and 2 of them have not been opened yet/.test(e.text))).toBe(true);
+      expect(provider.requests.at(-1)!.messages.map((m) => m.content).join("\n")).toMatch(/reported on all 8 files/);
+      expect(entries.at(-1)!.text).toBe("None of the 8 modules throw.");
+    });
   });
 
   it("says first that not every file was read when the whole project is too big to read one by one (audit of PR #54)", async () => {

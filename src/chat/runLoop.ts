@@ -230,7 +230,7 @@ export class RunLoop {
         // A question about many files: each researcher gets a batch of the files nobody opened yet, by rule.
         // Benchmark pass 1: asked about 100 modules, the coordinator sent one researcher, which opened 3.
         const files = await askedFiles();
-        const unread = files && coverageOf(files, await this.filesReadIn(researchRuns)).unread;
+        const unread = files && coverageOf(files, await this.checkedIn(researchRuns, files)).unread;
         if (unread?.length) {
           const batches = batchesOf(unread, this.host.delegationLimits().maxResearchers);
           const covered = batches.reduce((n, b) => n + b.length, 0);
@@ -246,7 +246,7 @@ export class RunLoop {
         researchRuns.push(await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined));
         c = await this.conversations.load(c.id);
         // Files still unopened get another round before the coordinator answers, while rounds are left.
-        if (files && round < maxRounds && coverageOf(files, await this.filesReadIn(researchRuns)).unread.length) {
+        if (files && round < maxRounds && coverageOf(files, await this.checkedIn(researchRuns, files)).unread.length) {
           await doResearch({ ...t, questions: [] });
           return;
         }
@@ -585,6 +585,19 @@ export class RunLoop {
     const message = r.accept ? "accept" : final ? "not_accepted" : "revise";
     await this.tasks.log({ runId, taskId: task.id, type: "coordinator_review", message, data: { feedback: r.feedback ?? "Every file was opened and reported (checked by rule).", research: true, byRule: true, final: final ? "limit_reached" : undefined } });
     return r.accept ? { accept: true, outcome: "accepted" } : final ? { accept: true, outcome: "not_accepted" } : { accept: false, feedback: r.feedback, outcome: "sent_back" };
+  }
+
+  /**
+   * The asked files a researcher read to the end and a report of these runs names: what the next round need not
+   * send again. Run 13, find-throwing-100: 14 files were opened but in no report, in both attempts; they counted
+   * as done, so no round went back to them and the answer said "Checked 85 of the 100 files".
+   */
+  private async checkedIn(runIds: string[], files: string[]): Promise<Set<string>> {
+    const opened = await this.filesReadIn(runIds);
+    const reported: string[] = [];
+    for (const id of runIds) for (const t of (await this.tasks.load(id).catch(() => undefined))?.tasks ?? []) if (t.summary) reported.push(t.summary);
+    const text = reported.join("\n");
+    return new Set([...opened].filter((f) => mentionsFile(text, f, files)));
   }
 
   /** Files researchers read to their end in these runs. */
