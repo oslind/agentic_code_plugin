@@ -21,7 +21,7 @@ import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
 import { FailedCommand, failedCommandsOf } from "./synthesis";
-import { failedBefore } from "../checks/failures";
+import { failedBefore, splitFailures } from "../checks/failures";
 import { runScope, userMessagesOf, userRequestOf } from "./scope";
 import { promises as fs } from "fs";
 import * as path from "path";
@@ -385,7 +385,14 @@ export class Verifier {
         if (n && !n.skipped && n.passed) return;
         const output = n && !n.skipped ? n.output : f.output;
         const verdict = !b || b.skipped ? "unknown" : failedBefore(output, b);
-        const shown = { ...f, output: output.trim().split("\n").slice(-8).join("\n") };
+        let shown = { ...f, output: output.trim().split("\n").slice(-8).join("\n") };
+        if (verdict === "new" && b && !b.passed) {
+          // Both kinds in one output: said by rule which failure is new, so the old one is not blamed on the drafts.
+          const split = splitFailures(output, b);
+          if (split.added.length && split.before.length) {
+            shown = { ...f, output: `Checked by rule: new with the drafts: ${split.added.slice(0, 4).join(" | ")}. Already failing before the drafts, not this request's to fix: ${split.before.slice(0, 4).join(" | ")}.\n${shown.output}` };
+          }
+        }
         (verdict === "before" ? preexisting : verdict === "new" ? caused : uncompared).push(shown);
       });
     } catch (err) {

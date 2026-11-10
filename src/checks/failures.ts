@@ -30,3 +30,15 @@ export function failedBefore(withDrafts: string, without: { passed: boolean; out
   const base = new Set(failureLines(without.output));
   return now.every((l) => base.has(l)) ? "before" : "new";
 }
+
+/**
+ * For a command that fails with the drafts in a new way, which failure lines are new and which were there
+ * before. Run 13, question-then-answer: verification's "still left" named the old "average of three" failure
+ * (there before the request) instead of the new one, and a fix-up chased a file outside its task.
+ */
+export function splitFailures(withDrafts: string, without: { passed: boolean; output: string }): { added: string[]; before: string[] } {
+  const now = failureLines(withDrafts);
+  if (without.passed) return { added: now, before: [] };
+  const base = new Set(failureLines(without.output));
+  return { added: now.filter((l) => !base.has(l)), before: now.filter((l) => base.has(l)) };
+}
