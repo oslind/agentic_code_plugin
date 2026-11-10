@@ -8,8 +8,13 @@
 import { RunEvent } from "../state/types";
 import { escapeRegExp } from "../context/outline";
 
-/** Below this many files, the coordinator's own research questions are trusted to cover them. */
-export const MIN_COVERAGE_FILES = 6;
+/**
+ * Fewest files a question must ask about one by one to be read file by file by rule. Run 13 benchmark: asked about
+ * 5 modules (below the old limit of 6), the coordinator answered in 18 seconds without opening a file and guessed.
+ */
+export const MIN_COVERAGE_FILES = 2;
+/** A set this small goes to one researcher: one batch, not one researcher per file. */
+export const SMALL_SET = 6;
 /** Most project files listed to find the files of a question. A project with more is said to be cut, never silently. */
 export const LIST_LIMIT = 5000;
 /** Most files one researcher is given: it opens each one, so this has to fit its step limit. */
@@ -142,10 +147,10 @@ export function tooManyNote(n: number, listCut = false): string {
   return `Your question is about ${codeFiles(n, listCut)} of the project, too many to read one by one, so not every file was read: this answer rests on searches and the files the researchers chose to open. Name a folder to have every file in it read.`;
 }
 
-/** Splits files into at most `researchers` batches of at most MAX_BATCH each, in order. What does not fit waits for a later round. */
+/** Splits files into at most `researchers` batches of at most MAX_BATCH each, in order; a small set is one batch. What does not fit waits for a later round. */
 export function batchesOf(files: string[], researchers: number): string[][] {
   const n = Math.max(1, researchers);
-  const size = Math.min(MAX_BATCH, Math.max(1, Math.ceil(files.length / n)));
+  const size = files.length < SMALL_SET ? files.length : Math.min(MAX_BATCH, Math.max(1, Math.ceil(files.length / n)));
   const out: string[][] = [];
   for (let i = 0; i < files.length && out.length < n; i += size) out.push(files.slice(i, i + size));
   return out;

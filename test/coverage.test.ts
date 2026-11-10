@@ -23,7 +23,8 @@ describe("filesAskedAbout", () => {
   it("leaves other questions, small sets and questions about the chat alone", () => {
     expect(filesAskedAbout("What does src/shop.js do?", shop)).toBeUndefined();
     expect(filesAskedAbout("Which files did you change in src/?", shop)).toBeUndefined();
-    expect(filesAskedAbout("Which modules in src/ throw?", ["src/a.js", "src/b.js", "src/c.js"])).toBeUndefined();
+    expect(filesAskedAbout("Which modules in src/ throw?", ["src/a.js", "src/b.js", "src/c.js"])).toEqual(["src/a.js", "src/b.js", "src/c.js"]);
+    expect(filesAskedAbout("Which modules in src/ throw?", ["src/a.js"])).toBeUndefined();
   });
   it("keeps every file of a big folder, never only the first 400 (audit of PR #54)", () => {
     const big = Array.from({ length: 900 }, (_, i) => `lib/m${i}.js`);
@@ -88,6 +89,14 @@ describe("batches and coverage", () => {
     const big = batchesOf(Array.from({ length: 300 }, (_, i) => `f${i}.js`), 8);
     expect(big.every((x) => x.length === MAX_BATCH)).toBe(true);
     expect(big.flat()).toHaveLength(8 * MAX_BATCH);
+  });
+  it("reads a small set file by file too, all with one researcher (run 13: 5 modules answered unread)", () => {
+    const five = Array.from({ length: 5 }, (_, i) => `src/mod_00${i}.js`);
+    const q = "Which of the 5 modules in src/ (mod_000.js to mod_004.js) make lineTotal throw an error?";
+    expect(askedScope(q, [...five, "src/shop.js", "test/shop.test.js"])).toEqual({ files: five });
+    expect(batchesOf(five, 8)).toEqual([five]);
+    expect(askedScope("Which of mod_000.js to mod_000.js throw?", five)).toEqual({});
+    expect(askedScope("What does src/mod_001.js do?", five)).toEqual({});
   });
   it("asks each researcher the user's own question for its files only", () => {
     expect(batchQuestion("Which throw?", ["a.js", "b.js"])).toMatch(/for each of these 2 file\(s\), and only these: "Which throw\?"[\s\S]*read_file[\s\S]*Files: a\.js, b\.js/);
