@@ -440,6 +440,10 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
     const header = [`# ${scenario.name}: ${result.passed ? "passed" : "FAILED"}`, "", scenario.description, "", ...failures.map((f) => `- ${f}`), ""].join("\n");
     await fs.writeFile(path.join(opts.outDir, "transcript.md"), `${header}\n${transcript}\n`);
     await fs.writeFile(path.join(opts.outDir, "commands.log"), commandLog.join("\n") + "\n");
+    // Run 13: the run state and event logs were deleted with the project, so a failure could not be traced.
+    // Kept for every scenario (they are small): state/ holds runs/<id>/state.json and events.jsonl.
+    await fs.cp(stateDir, path.join(opts.outDir, "state"), { recursive: true }).catch(() => undefined);
+    await fs.cp(path.join(ws, "src"), path.join(opts.outDir, "project-src"), { recursive: true }).catch(() => undefined);
   }
   await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
   return result;

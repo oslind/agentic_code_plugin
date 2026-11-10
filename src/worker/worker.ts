@@ -17,7 +17,7 @@ export { isConventionSkill };
 import { Skill, SkillRole } from "../skills/skill";
 import { compactHistory } from "./history";
 import { compactSteps, planStepCompaction } from "./stepSummary";
-import { executeTool } from "./tools";
+import { executeTool, realBreaks } from "./tools";
 
 /** A message waiting for a sub-agent's next step: from the user, or from the coordinator keeping an eye on it. */
 export interface InboxMessage {
@@ -596,7 +596,7 @@ export class Worker {
 /** What a file change will do, for the approval card. Small enough to read; long changes are cut. */
 export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max = 6000): Promise<string | undefined> {
   if (call.tool === "insert_lines") {
-    const text = `Insert before line ${call.line}:\n${call.text.split("\n").map((l) => `+ ${l}`).join("\n")}`;
+    const text = `Insert before line ${call.line}:\n${realBreaks(call.text).text.split("\n").map((l) => `+ ${l}`).join("\n")}`;
     return text.length > max ? `${text.slice(0, max)}\n[… cut, ${text.length - max} more characters]` : text;
   }
   if (call.tool !== "write_file" && call.tool !== "replace_in_file") return undefined;
@@ -605,9 +605,10 @@ export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max =
   if (call.tool === "replace_in_file") {
     text = [...call.search.split("\n").map((l) => `- ${l}`), ...call.replace.split("\n").map((l) => `+ ${l}`)].join("\n");
   } else if (before === undefined) {
-    text = `New file:\n${call.content.split("\n").map((l) => `+ ${l}`).join("\n")}`;
+    // Shown as it will be written (realBreaks), so the approval matches the draft.
+    text = `New file:\n${realBreaks(call.content).text.split("\n").map((l) => `+ ${l}`).join("\n")}`;
   } else {
-    text = lineDiff(before, call.content);
+    text = lineDiff(before, realBreaks(call.content).text);
   }
   return text.length > max ? `${text.slice(0, max)}\n[… cut, ${text.length - max} more characters]` : text;
 }

@@ -149,19 +149,23 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       }
       case "write_file": {
         const before = /\.(c|m)?js$/i.test(call.path) ? await ctx.sandbox.readFile(call.path).catch(() => null) : null;
-        await ctx.sandbox.writeFile(call.path, call.content);
-        return { ok: true, output: draftNote(call.path, `${call.content.split("\n").length} lines`) + (await writeWarning(ctx, call.path, before, call.content)), wrote: call.path };
+        // Run 13, new-module-used: qwen wrote "\\n" in its JSON, so src/format.js became one line starting with
+        // "//": the whole module was a comment, exported nothing, and the next task failed for 30 minutes.
+        const { text: content, note } = realBreaks(call.content);
+        await ctx.sandbox.writeFile(call.path, content);
+        return { ok: true, output: draftNote(call.path, `${content.split("\n").length} lines`) + note + (await writeWarning(ctx, call.path, before, content)), wrote: call.path };
       }
       case "insert_lines": {
         // Run 11, use-strict-everywhere: "add a line at the top" was a fight with exact matching in every file.
         const text = await ctx.sandbox.readFile(call.path);
         const lines = text.split("\n");
         if (call.line > lines.length + 1) return { ok: false, output: `${call.path} has ${lines.length} lines; line must be between 1 and ${lines.length + 1}.` };
-        const added = call.text.replace(/\n$/, "").split("\n");
+        const { text: inserted, note } = realBreaks(call.text);
+        const added = inserted.replace(/\n$/, "").split("\n");
         lines.splice(call.line - 1, 0, ...added);
         const edited = lines.join("\n");
         await ctx.sandbox.writeFile(call.path, edited);
-        return { ok: true, output: draftNote(call.path, `${added.length} line(s) inserted at line ${call.line}`) + (await writeWarning(ctx, call.path, text, edited)), wrote: call.path };
+        return { ok: true, output: draftNote(call.path, `${added.length} line(s) inserted at line ${call.line}`) + note + (await writeWarning(ctx, call.path, text, edited)), wrote: call.path };
       }
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
@@ -296,6 +300,20 @@ export function nearestMatch(text: string, search: string): string | undefined {
 /** True when a text has line breaks written out as backslash-n and no real ones. */
 export function writtenOutBreaks(text: string): boolean {
   return /\\n/.test(text) && !text.includes("\n");
+}
+
+/**
+ * Text for a whole file or new lines with its line breaks written out (two or more "\\n" and no real line
+ * break) is read as having line breaks, and the model is told: a file of one line that holds "\\n" twice is far
+ * more often a JSON slip than intended. Anything else is left as it is.
+ */
+export function realBreaks(text: string): { text: string; note: string } {
+  if (!writtenOutBreaks(text) || (text.match(/\\n/g) ?? []).length < 2) return { text, note: "" };
+  const fixed = unescapeBreaks(text);
+  return {
+    text: fixed,
+    note: ` Your text had \\n written out instead of line breaks (one line in all), so they were read as line breaks: ${fixed.split("\n").length} lines. Next time put real line breaks in it (one \\n in the JSON string, not two). If you meant the two characters \\n inside a string, read the file and fix it.`,
+  };
 }
 
 /** Turns written-out \\n, \\r\\n and \\t into the characters they stand for. */
