@@ -331,3 +331,44 @@ export function docInsideBody(changes: { path: string; original: string | null; 
   }
   return out;
 }
+
+/** Top-level functions of a JavaScript text by name, with their whole text (brace counted, strings ignored roughly). */
+function functionBodies(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const re = /^(?:export\s+)?(?:async\s+)?function\s*\*?\s*([\w$]+)\s*\(|^(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[\w$]+\s*=>)/gm;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const name = (m[1] ?? m[2])!;
+    const open = text.indexOf("{", m.index);
+    if (open < 0) continue;
+    let depth = 0;
+    let end = open;
+    for (; end < text.length; end++) {
+      if (text[end] === "{") depth++;
+      else if (text[end] === "}" && --depth === 0) break;
+    }
+    out.set(name, text.slice(m.index, end + 1).replace(/\s+/g, " "));
+  }
+  return out;
+}
+
+/**
+ * Existing functions a draft changed that neither the user nor the task names. Run 13, parallel-changes: the
+ * median task also "fixed" average(), and the review accepted it. Said as a fact for the review, not a refusal:
+ * a requested change sometimes needs a helper changed too.
+ */
+export function unaskedFunctionChanges(changes: { path: string; original: string | null; proposed: string }[], said: string | undefined): string[] {
+  if (!said) return [];
+  const out: string[] = [];
+  for (const c of changes) {
+    if (c.original === null || isTestPath(c.path) || !/\.(c|m)?[jt]sx?$/i.test(c.path)) continue;
+    const before = functionBodies(c.original);
+    const after = functionBodies(c.proposed);
+    for (const [name, body] of before) {
+      const now = after.get(name);
+      if (now === undefined || now === body) continue;
+      if (new RegExp(`(^|[^\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(said)) continue;
+      out.push(`${name}() in ${c.path} was changed, but neither the user nor the task names it. Unless the requested change cannot work without it, send it back and ask to restore ${name}() exactly as it was.`);
+    }
+  }
+  return out;
+}
