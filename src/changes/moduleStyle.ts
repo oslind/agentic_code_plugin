@@ -304,3 +304,30 @@ export function moduleStyleOf(root: string, now = Date.now()): Promise<ModuleSty
   styleCache.set(root, { at: now, style });
   return style;
 }
+
+/**
+ * A doc comment ("/** ... *\/") a draft put as the first thing inside a function's body, where it documents
+ * nothing. Run 13, project-skill-trusted: `function toKelvin(celsius) { /** Converts ...` was accepted by the
+ * review and verification as "added with JSDoc".
+ */
+export function docInsideBody(changes: { path: string; original: string | null; proposed: string }[]): string[] {
+  const out: string[] = [];
+  const head = /\b(?:function\s*\*?\s*([\w$]*)\s*\([^)]*\)|([\w$]+)\s*\([^)]*\)|=>)\s*\{\s*$/;
+  for (const c of changes) {
+    if (!/\.(c|m)?[jt]sx?$/i.test(c.path)) continue;
+    const before = new Set((c.original ?? "").split("\n").map((l) => l.trim()));
+    const lines = c.proposed.split("\n");
+    for (let i = 0; i + 1 < lines.length; i++) {
+      const m = head.exec(lines[i]!);
+      const next = lines[i + 1]!.trim();
+      if (!m || !next.startsWith("/**") || before.has(next)) continue;
+      const name = m[1] || m[2] || "the function";
+      out.push(`In ${c.path}, the doc comment at line ${i + 2} is inside the body of ${name}; a doc comment goes on the lines just above the function, not after its opening brace.`);
+    }
+    // The same, written on the line of the opening brace.
+    for (const [i, l] of lines.entries()) {
+      if (/\)\s*\{\s*\/\*\*/.test(l) && !before.has(l.trim())) out.push(`In ${c.path}, the doc comment on line ${i + 1} is inside a function body; put it on the lines just above the function.`);
+    }
+  }
+  return out;
+}

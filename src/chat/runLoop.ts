@@ -215,7 +215,9 @@ export class RunLoop {
       );
       // A full answer from the conversation alone ("What did you change?") is an answer like one from research:
       // shown as one, never folded away. A question back to the user is not (run 10, what-did-you-change).
-      const direct = turn.action === "none" && turn.goal === "answer" && turn.complete === true && !/\?\s*$/.test(turn.reply.trim());
+      // Run 13, what-did-you-change: qwen left out "goal" ({"action":"none","complete":true}), so the answer was
+      // folded away like a remark. A complete reply with no goal given is an answer too; a change goal is not.
+      const direct = turn.action === "none" && (turn.goal === "answer" || turn.goal === undefined) && turn.complete === true && !/\?\s*$/.test(turn.reply.trim());
       await this.s.append(c.id, { author: "coordinator", ...(direct ? { kind: "answer" as const } : {}), text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.s.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 

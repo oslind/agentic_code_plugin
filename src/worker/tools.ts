@@ -1,4 +1,4 @@
-import { exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
+import { docInsideBody, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
@@ -250,7 +250,7 @@ async function writeWarning(ctx: ToolContext, path: string, before: string | nul
  * function after the closing brace of a replace_in_file edit; nothing told the sub-agent until review.
  */
 export function loadWarning(path: string, before: string | null, after: string, style?: ModuleStyle, said?: string): string {
-  const unexported = unexportedProblems([{ path, original: before, proposed: after }], said);
+  const unexported = [...unexportedProblems([{ path, original: before, proposed: after }], said), ...docInsideBody([{ path, original: before, proposed: after }])];
   const problems = moduleStyleProblems([{ path, original: before, proposed: after }], style);
   const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
   const exportsHint = exportStyleHints(path, before, after);

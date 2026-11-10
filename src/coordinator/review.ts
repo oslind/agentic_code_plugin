@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { lineDiff } from "../changes/lineDiff";
 import { estimateTokens, truncateToTokens } from "../context/budget";
-import { DRAFT_PROBLEMS_HEADING, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleProblems, unexportedProblems, untestedFunctions } from "../changes/moduleStyle";
+import { docInsideBody, DRAFT_PROBLEMS_HEADING, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleProblems, unexportedProblems, untestedFunctions } from "../changes/moduleStyle";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
@@ -130,7 +130,7 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
   // Facts found by rule go last and are never cut, so a review or verification cannot miss them.
   // Drafts of the files a rename is about are checked here; verification adds files no draft touched (extra).
   const leftovers = renameLeftovers(changes.map((c) => ({ path: c.path, text: c.proposed })), said);
-  const problems = [...moduleStyleProblems(changes, style), ...unexportedProblems(changes, said), ...leftovers, ...extra.filter((e) => !leftovers.includes(e))];
+  const problems = [...moduleStyleProblems(changes, style), ...unexportedProblems(changes, said), ...docInsideBody(changes), ...leftovers, ...extra.filter((e) => !leftovers.includes(e))];
   const untested = tests?.trim() ? untestedFunctions(changes, tests) : [];
   const hints = [
     ...changes.flatMap((c) => [...halfIndexHints(c.path, c.proposed), ...exportStyleHints(c.path, c.original, c.proposed)]),
