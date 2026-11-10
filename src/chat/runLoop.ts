@@ -8,7 +8,7 @@ import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
 import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings, withDeniedNotice, withoutModelWarnings } from "./synthesis";
 import { compactConversation, compactionNote, planCompaction } from "./compaction";
-import { continueChange, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
+import { asksForEdit, claimsChangeMade, continueChange, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { AnswerCheck, Verification, verifyRoundLimit } from "../coordinator/verify";
@@ -635,6 +635,7 @@ export class RunLoop {
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
     // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
     // Neither is a cut-off answer: it is unfinished whatever a check says, and the user is told so below.
+    const falseChange = asksForEdit(question) && claimsChangeMade(result.text);
     let check: AnswerCheck | undefined;
     if (review && !result.fallback && !result.cutOff) {
       this.s.busy = "Coordinator is checking that the answer covers your question…";
@@ -642,6 +643,7 @@ export class RunLoop {
       check = await review(result.text);
       signal.throwIfAborted();
       // An answer about files nobody opened is not verified, whatever the check says.
+      if (check && falseChange) check = { ...check, answered: false, missing: [...check.missing, "the request asks for a change, and research changed nothing"] };
       if (check && (coverage?.unread.length || coverage?.listCut || coverage?.skipped?.length || tooMany)) {
         const gaps = [
           coverage?.unread.length ? `${coverage.unread.length} of the ${coverage.files.length} files were not read: ${fileList(coverage.unread, 10)}` : "",
@@ -690,7 +692,10 @@ export class RunLoop {
       await this.s.append(c.id, { author: "system", tone: "warning", text: describeCutOff(result.cutOff, "The answer below") });
     }
     // Said first by rule, so the gap shows whatever the model wrote.
-    const gap = coverage ? coverageNote(coverage) : tooMany ? tooManyNote(tooMany, askedCut) : undefined;
+    const coverageGap = coverage ? coverageNote(coverage) : tooMany ? tooManyNote(tooMany, askedCut) : undefined;
+    // Research only reads, so an answer to an edit request that says something was changed is false (run 13,
+    // readme-typo: "has been fixed", nothing drafted). Said first by rule; the check below cannot pass it either.
+    const gap = [falseChange ? "Nothing in your project was changed: research only reads files, so where the answer below says something was fixed, added or changed, that did not happen. Ask again to have the change made." : "", coverageGap ?? ""].filter(Boolean).join("\n\n") || undefined;
     await this.s.append(c.id, {
       author: "coordinator",
       kind: "answer",

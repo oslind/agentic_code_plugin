@@ -182,7 +182,11 @@ export function withoutMootUndo(feedback: string, drafts: string | undefined): {
  * logic", and the run lost three minutes until a second plan made the change.
  */
 export function asksResearchForCode(feedback: string): boolean {
-  return /\b(drafts?|code changes?|implement\w*|write_file|replace_in_file|(add|write|insert) (the |a |an )?[\w\s-]{0,40}\b(logic|code|function|check|validation|throw))\b/i.test(feedback);
+  return (
+    /\b(drafts?|code changes?|implement\w*|write_file|replace_in_file|(add|write|insert) (the |a |an )?[\w\s-]{0,40}\b(logic|code|function|check|validation|throw))\b/i.test(feedback) ||
+    // Run 13, readme-typo: "Please correct the error in the file" sent a researcher to run sed -i in its copy.
+    /\b(correct|fix|change|edit|update|modify|rewrite|patch|apply|rename|remove)\s+(?:the |this |that |these |those |a |an )?(?:spelling\s+|same\s+)?(?:error|errors|typo|typos|spelling|mistake|mistakes|bug|bugs|file|files|line|lines|code|function|readme|[\w./-]+\.\w{1,5})\b/i.test(feedback)
+  );
 }
 
 /**

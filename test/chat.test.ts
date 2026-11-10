@@ -12,7 +12,7 @@ import { runAllChecks, runCheck } from "../src/checks/runner";
 import { previewChange } from "../src/worker/worker";
 import { WorkspaceSandbox } from "../src/tools/sandbox";
 import { ConversationStore, trimEntries } from "../src/chat/conversationStore";
-import { buildCoordinatorMessages, continueChange, coordinatorTurn, enforceMode, isGoAhead, isReadOnlyPlan, routeTurn } from "../src/chat/coordinatorChat";
+import { asksForEdit, buildCoordinatorMessages, claimsChangeMade, continueChange, coordinatorTurn, enforceMode, isGoAhead, isReadOnlyPlan, routeTurn } from "../src/chat/coordinatorChat";
 import { eventToEntry } from "../src/chat/eventFeed";
 import { extractThinking } from "../src/llm/structured";
 import { ChatEntry, ChatMode } from "../src/chat/types";
@@ -2485,6 +2485,18 @@ describe("routing follows the model's own structured choice", () => {
     expect(route(asks, "Write docs/usage.md")).toBe(asks);
   });
 
+  it("finds replies that say a change was made, and edit requests (run 13)", () => {
+    expect(claimsChangeMade("The spelling mistake in README.md has been fixed.")).toBe(true);
+    expect(claimsChangeMade("I've updated src/a.js.")).toBe(true);
+    expect(claimsChangeMade("No changes were made to files or code.")).toBe(false);
+    expect(claimsChangeMade("The typo was not fixed.")).toBe(false);
+    expect(claimsChangeMade("README.md misspells controller as controler.")).toBe(false);
+    expect(asksForEdit("Fix the spelling mistake in README.md.")).toBe(true);
+    expect(asksForEdit("Now also add an 'away' mode to targetTemp.")).toBe(true);
+    expect(asksForEdit("Which files did you change?")).toBe(false);
+    expect(asksForEdit("Summarize what src/a.js does.")).toBe(false);
+  });
+
   it("turns an answer after research into a plan when the user first asked for a change", () => {
     // qwen3:8b in the e2e suite: researched a bug fix, then answered "I've fixed it" with nothing changed.
     const claimed = { reply: "I've fixed it by dividing by readings.length.", action: "none" as const, request: "", goal: "answer" as const, complete: true };
@@ -2495,7 +2507,11 @@ describe("routing follows the model's own structured choice", () => {
     const asks = { ...claimed, reply: "Should it ignore empty lists?" };
     expect(continueChange(asks, "change", "Fix it")).toBe(asks);
     expect(continueChange(claimed, "answer", "Why is it wrong?")).toBe(claimed);
-    expect(continueChange(claimed, undefined, "Fix it")).toBe(claimed);
+    // Run 13: no goal at all, but the reply says it fixed what the user asked to fix, and research changes nothing.
+    expect(continueChange(claimed, undefined, "Fix it").action).toBe("plan");
+    expect(continueChange({ ...claimed, reply: "The 'away' mode was added and returns 16." }, "answer", "Now also add an 'away' mode to targetTemp in src/thermostat.js that returns 16.").action).toBe("plan");
+    // A description of the code as it is, or a claim that is denied, is not a claim of a change made now.
+    expect(continueChange({ ...claimed, reply: "No changes were made; the function is not fixed." }, undefined, "Fix it")).toMatchObject({ action: "none" });
     // The first turn gave no goal, but the turn after research says it is a change.
     expect(continueChange({ ...claimed, goal: "change" }, undefined, "Fix it").action).toBe("plan");
   });

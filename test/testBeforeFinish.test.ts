@@ -91,6 +91,10 @@ describe("asksResearchForCode", () => {
     expect(asksResearchForCode("Implement the check in src/thermostat.js.")).toBe(true);
     expect(asksResearchForCode("Your answer does not say which line handles the night mode. Name the line.")).toBe(false);
     expect(asksResearchForCode("Add the line numbers of each match to your answer.")).toBe(false);
+    // Run 13, readme-typo.
+    expect(asksResearchForCode("Please correct the error in the file.")).toBe(true);
+    expect(asksResearchForCode("Fix the typo in README.md.")).toBe(true);
+    expect(asksResearchForCode("Correct your report: line 12 says controler, not line 10.")).toBe(false);
   });
 });
 

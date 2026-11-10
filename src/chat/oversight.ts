@@ -13,6 +13,7 @@ import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordin
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
+import { claimsChangeMade } from "./coordinatorChat";
 import { earlierAnswers, learnedSoFar, runScope, userMessagesOf } from "./scope";
 
 /** A sentence that asks for a change ("Add …", "Please fix …", "Restore the original lines"). */
@@ -290,6 +291,17 @@ export class Oversight {
       return { accept: true, outcome: "off" };
     }
     if (this.s.budget.exhausted(runId)) return unreviewed("over_budget");
+    // Run 13, two-changes-in-a-row: researchers reported "Added 'away' mode ... tests now pass" and were accepted.
+    // A read-only report that says it changed something is sent back by rule, once; after that it is flagged.
+    if (research && claimsChangeMade(summary)) {
+      if (!final && round < limit) {
+        this.reviewRounds.set(key, round + 1);
+        const feedback = "Checked by rule: you are a read-only researcher, so you changed nothing in the user's project, but your report says something was changed, added or fixed. Rewrite your report: say only what you found in the files, and what would have to change and where. Never say it was done.";
+        await this.tasks.log({ runId, taskId: task.id, type: "coordinator_review", message: "revise", data: { feedback, research, byRule: true } });
+        return { accept: false, feedback, outcome: "sent_back" };
+      }
+      return unreviewed("not_accepted", { byRule: true, why: "the report claims a change research cannot make" });
+    }
     this.checkingOn.set(key, task.title);
     this.s.changed();
     try {

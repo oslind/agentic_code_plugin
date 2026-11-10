@@ -131,6 +131,9 @@ export class WorkerError extends Error {
 const REPLY_RESERVE = 4096;
 
 /** A report that says something was changed. */
+/** Commands that change files: sed -i, perl -i, redirects into a file, mv, cp, rm, tee, patch, git apply. */
+const WRITES_FILES = /\b(?:sed|perl)\s+(?:-\w*\s+)*-i\b|\bsed\s+-i|(?:^|[^>2&])>>?\s*[\w./-]|\b(?:mv|cp|rm|tee|patch|truncate|touch)\b|\bgit\s+apply\b/;
+
 const CLAIMS_CHANGE = /\b(added|adds|updated|created|changed|fixed|wrote|written|modified|implemented|renamed|removed|inserted|replaced|refactored)\b/i;
 
 /**
@@ -542,7 +545,11 @@ export class Worker {
         // Approved above (by the user, or by the "Run commands" switch).
         const res = await runCheck({ name: "command", command: turn.call.command }, await this.commandDir(), signal, 4000, this.opts.terminal);
         this.logCommand(turn.call.command, res);
-        this.messages.push({ role: "user", content: commandResult(turn.call.command, res) + this.sameFailureNote(turn.call.command, res) });
+        // Run 13, readme-typo: a researcher "fixed" README.md with sed -i in its copy, and the answer said it was fixed.
+        const readOnlyNote = this.opts.readOnly && WRITES_FILES.test(turn.call.command)
+          ? "\nNote: you are a read-only researcher. This command ran in a scratch copy that is thrown away, so it changed nothing in the user's project. Do not say in your report that anything was changed or fixed; report what you found, and what should change."
+          : "";
+        this.messages.push({ role: "user", content: commandResult(turn.call.command, res) + this.sameFailureNote(turn.call.command, res) + readOnlyNote });
         continue;
       }
       if (turn.call.tool === "request_check") {

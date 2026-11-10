@@ -335,8 +335,34 @@ export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterR
  * the request, unless the answer asks the user a question. Anything else is
  * left alone.
  */
+const CHANGE_DONE = "fixed|added|updated|changed|corrected|created|renamed|removed|modified|implemented|replaced|inserted|applied|edited|written";
+const CLAIM = new RegExp(
+  `\\b(?:has|have|had)\\s+been\\s+(?:${CHANGE_DONE})\\b|\\b(?:was|were|is\\s+now|are\\s+now)\\s+(?:successfully\\s+)?(?:${CHANGE_DONE})\\b|\\b(?:I|I've|I\\s+have|we|we've|we\\s+have|the\\s+(?:sub-?)?agents?|a\\s+(?:sub-?)?agent)\\s+(?:successfully\\s+|also\\s+|now\\s+)?(?:${CHANGE_DONE})\\b`,
+  "i",
+);
+
+/**
+ * True when a reply says, in some sentence without a "not", that a change was made: "has been fixed", "was added",
+ * "I've updated". Run 13, readme-typo and two-changes-in-a-row: research answered "The spelling mistake in
+ * README.md has been fixed" and "The 'away' mode was added" although nothing was drafted.
+ */
+export function claimsChangeMade(text: string): boolean {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .some((s) => CLAIM.test(s) && !/\b(?:not|never|no)\b|n't\b/i.test(s));
+}
+
+/** A message that starts by asking for an edit ("Fix ...", "Now also add ..."), not a question about one. */
+export function asksForEdit(text: string): boolean {
+  return !text.includes("?") && /^\s*(?:(?:now|also|please|and|then|ok|okay)[\s,]+)*(?:fix|add|change|update|rename|remove|delete|correct|make|implement|create|write|replace|insert|refactor|move|edit)\b/i.test(text);
+}
+
 export function continueChange(answer: CoordinatorResult, firstGoal: CoordinatorTurn["goal"], userText: string): CoordinatorResult {
-  if ((firstGoal !== "change" && answer.goal !== "change") || answer.action !== "none" || answer.reply.includes("?") || !userText.trim()) return answer;
+  // Research cannot change files, so a reply after research that says a change was made never made it: when the
+  // user's message is not a question, the change is planned (run 13: "Fix the spelling mistake in README.md.").
+  const falseClaim = answer.action === "none" && claimsChangeMade(answer.reply) && asksForEdit(userText);
+  if (!falseClaim && ((firstGoal !== "change" && answer.goal !== "change") || answer.action !== "none" || answer.reply.includes("?") || !userText.trim())) return answer;
+  if (!userText.trim()) return answer;
   const request = `${userText.trim()}\n\n${answer.reply.trim()}`.slice(0, 3000);
   return { ...answer, action: "plan", request: request.length >= 10 ? request : `${request} (as the user asked)`, overridden: undefined };
 }
