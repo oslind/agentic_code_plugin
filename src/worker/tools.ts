@@ -211,6 +211,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         if (!check) return { ok: false, output: `Unknown check '${call.name}'.` };
         const res = await runCheck(check, ctx.checkDir ? await ctx.checkDir() : ctx.sandbox.root, ctx.signal, undefined, ctx.terminal);
         ctx.onCommand?.(check.command, res);
+        if (res.notFound) return { ok: false, output: `${check.name}: could not run, its command does not exist in this project (${res.output}). It is not a check of your work; do not run it again.` };
         return { ok: res.passed, output: `${check.name}: ${res.passed ? "passed" : "FAILED"}\n${res.output}` };
       }
       case "finish":

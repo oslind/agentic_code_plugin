@@ -4,7 +4,7 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import pkg from "../package.json";
 import { safeLinkDirs, ScratchCopy, setScratchLimits } from "../src/changes/scratch";
-import { checkEnv, runCheck } from "../src/checks/runner";
+import { checkEnv, checkStatus, runCheck } from "../src/checks/runner";
 import { OpenAICompatibleProvider } from "../src/providers/openaiCompatible";
 import { OverlayFiles } from "../src/changes/overlay";
 import { checkToolCall, isCheckAutoApproved, setExtraSecretPatterns, isAutoApproved, isChangeAutoAccepted, isProtectedPath, isSecretPath, isSensitivePath } from "../src/tools/policy";
@@ -303,8 +303,10 @@ describe("check commands", () => {
   });
   it.skipIf(process.platform === "win32")("reports a missing program plainly", async () => {
     const res = await runCheck({ name: "t", command: "definitely-not-a-real-program-xyz --x" }, await tempDir());
-    expect(res.passed).toBe(false);
+    // Reported as not run, never as a failure the sub-agents could fix (run 13, python-project).
+    expect(res).toMatchObject({ skipped: true, notFound: true });
     expect(res.output).toContain("Command not found");
+    expect(checkStatus(res)).toBe("could not run (command not found)");
   });
 });
 

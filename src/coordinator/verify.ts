@@ -1,6 +1,6 @@
 import { failureLines } from "../checks/failures";
 import { z } from "zod";
-import { CheckResult } from "../checks/runner";
+import { CheckResult, checkStatus } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE } from "../context/untrusted";
@@ -148,7 +148,7 @@ export function checkTail(c: CheckResult, max = 1500): string {
 /** How the work was verified, in plain words, from facts only. */
 export function checkEvidence(checks: CheckResult[]): string {
   if (checks.length === 0) return "No checks are set up for this project, so nothing was run; I read the drafts against your request.";
-  const parts = checks.map((c) => `${checkName(c.name)} ${c.skipped ? "skipped (not approved)" : c.passed ? "passed" : c.timedOut ? "timed out" : "failed"}`);
+  const parts = checks.map((c) => `${checkName(c.name)} ${checkStatus(c)}`);
   return `I ran the checks on a copy of the project with all drafts together (the checks run as you, not sandboxed): ${parts.join(", ")}.`;
 }
 
@@ -174,7 +174,7 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
 
   // How each check ended is a fact and stays plain; its name comes from settings a project can propose, so names are fenced.
   if (ctx.checks.length) {
-    const results = ctx.checks.map((c, i) => `- check ${i + 1}: ${c.skipped ? "skipped, the user did not approve it" : c.passed ? "passed" : c.timedOut ? "timed out" : "failed"}`).join("\n");
+    const results = ctx.checks.map((c, i) => `- check ${i + 1}: ${c.notFound ? "could not run, its command does not exist here" : c.skipped ? "skipped, the user did not approve it" : c.passed ? "passed" : c.timedOut ? "timed out" : "failed"}`).join("\n");
     const names = ctx.checks.map((c, i) => `check ${i + 1}: ${checkName(c.name)}`).join("\n");
     parts.push(`Checks on all drafts together:\n${results}\nTheir names, from the project's check settings:\n${dataBlock("the names of the checks", names)}`);
   } else {

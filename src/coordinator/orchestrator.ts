@@ -301,6 +301,13 @@ export class Orchestrator {
           const command = w.checks.find((k) => k.name === c.name)?.command;
           if (!c.skipped && command) await this.log("command", command, task.id, { ...commandEventData(command, c), check: c.name });
         }
+        // Run 13, python-project: a sub-agent added a check "python -m pytest" in a Node project; "Command not found:
+        // python" then failed every attempt. A check the sub-agent added whose program does not exist is dropped, not a gate.
+        for (const m of checks.filter((c) => c.notFound)) {
+          const i = w.extraChecks.findIndex((k) => k.name === m.name);
+          if (i >= 0) w.extraChecks.splice(i, 1);
+          await this.log("check_dropped", `${m.name}: ${m.output}`, task.id, { check: m.name, reason: "not_found" });
+        }
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed, skipped: c.skipped })) });
         if (failed.length === 0) break;

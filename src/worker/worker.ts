@@ -622,7 +622,7 @@ export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max =
 
 /** What the model is told after run_command. */
 export function commandResult(command: string, res: CheckResult): string {
-  const status = res.timedOut ? "timed out" : res.code === 0 ? "exit code 0" : res.code === undefined || res.code === null ? "did not run" : `exit code ${res.code}`;
+  const status = res.notFound ? "did not run: the command does not exist here" : res.timedOut ? "timed out" : res.code === 0 ? "exit code 0" : res.code === undefined || res.code === null ? "did not run" : `exit code ${res.code}`;
   return `Result of \`${command}\` (${status}):\n${res.output.trim() || "(no output)"}`;
 }
 

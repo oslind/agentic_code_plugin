@@ -14,6 +14,10 @@ import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
 import { claimsChangeMade } from "./coordinatorChat";
+import { matchesAny } from "../tools/paths";
+
+/** A send-back because nothing was drafted. */
+const NO_CHANGES = /\bno (?:code |file )?(?:changes?|drafts?|edits?|modifications?)\b|\bnothing (?:was |has been )?(?:changed|drafted|written|modified)\b|\b(?:did not|didn't|has not|hasn't|have not|haven't) (?:make|made|change|changed|modify|modified|write|written|draft|drafted)\b/i;
 import { earlierAnswers, learnedSoFar, runScope, userMessagesOf } from "./scope";
 
 /** A sentence that asks for a change ("Add …", "Please fix …", "Restore the original lines"). */
@@ -370,6 +374,15 @@ export class Oversight {
           // What is left must still ask for something; "average() is wrong but should stay as it is" asks for nothing.
           const asks = kept.split(/(?<=[.!?])\s+/).some((x) => IMPERATIVE.test(x));
           result = kept.length >= 10 && asks ? { ...result, feedback: kept } : { ...result, verdict: "accept", feedback: `Accepted: the review only asked to fix code outside the task (${unasked.join(" ")})` };
+        }
+      }
+      // Run 13, question-then-answer: the task's change was auto-accepted and written in an earlier attempt, so a
+      // later attempt or fix-up had nothing left to draft, and every review sent it back for "no changes".
+      if (result.verdict === "revise" && !research && !drafts.trim() && NO_CHANGES.test(result.feedback)) {
+        const written = (run.changes ?? []).filter((x) => x.status === "accepted" && task.fileScope.some((g) => matchesAny(x.path, [g]))).map((x) => x.path);
+        if (written.length) {
+          this.host.log("info", `Review of "${task.title}": accepted by rule, its files were already changed and accepted earlier in this run (${written.join(", ")}).`);
+          result = { ...result, verdict: "accept", feedback: `Accepted by rule: ${[...new Set(written)].join(", ")} already has an accepted change from earlier in this run, so there was nothing left to draft.` };
         }
       }
       // A send-back for work in files the sub-agent may not change cannot be done: that part is left out.

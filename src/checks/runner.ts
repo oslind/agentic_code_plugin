@@ -24,6 +24,13 @@ export function isolatedArgv(wrapper: readonly string[], command: string, folder
   return wrapper.map((a) => a.split("${command}").join(command).split("${folder}").join(folder).split("${project}").join(project));
 }
 
+/** A check's result in a few words, for the chat and prompts. */
+export function checkStatus(c: Pick<CheckResult, "passed" | "skipped" | "timedOut" | "notFound">): string {
+  if (c.notFound) return "could not run (command not found)";
+  if (c.skipped) return "skipped (not approved)";
+  return c.passed ? "passed" : c.timedOut ? "timed out" : "failed";
+}
+
 /** A check the user configured, such as `npm test`. Workers can only run these by name. */
 export interface CheckConfig {
   name: string;
@@ -42,6 +49,8 @@ export interface CheckResult {
   /** The exit code, when the command ran to the end. */
   code?: number | null;
   timedOut?: boolean;
+  /** The command's program does not exist here (ENOENT), so it never ran. */
+  notFound?: boolean;
 }
 
 /** Names of environment variables that usually hold credentials. */
@@ -150,6 +159,9 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
         ? `Command not found: ${isolation ? `${isolation[0]} (from agentic.commands.isolation)` : check.command.trim().split(/\s+/)[0]}`
         : e.message;
     view?.end({ code: null, stopped, error: stopped ? undefined : output, durationMs: Date.now() - started });
+    // A program that does not exist here never ran: it is reported as not run, never as a failure that the
+    // sub-agents could fix (run 13, python-project: "python -m pytest" in a Node project gated five attempts).
+    if (!stopped && e.code === "ENOENT") return { name: check.name, passed: true, skipped: true, notFound: true, output: `Could not run: ${output}`, durationMs: Date.now() - started };
     return { name: check.name, passed: false, output, durationMs: Date.now() - started };
   }
 }

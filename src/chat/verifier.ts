@@ -6,7 +6,7 @@ import { WorkspaceSandbox } from "../tools/sandbox";
 import { ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
-import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
+import { CheckConfig, CheckResult, checkStatus, runAllChecks } from "../checks/runner";
 import { isCheckAutoApproved } from "../tools/policy";
 import { COMMAND_RISK } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
@@ -257,15 +257,15 @@ export class Verifier {
       const results = await runAllChecks(checks, () => scratch.sync(pendingBase(run.changes)), signal, (check) => this.approveVerifyCheck(conversationId, runId, check, trusted), this.host.terminal?.(workspaceRoot));
       for (const r of results) {
         const command = checks.find((k) => k.name === r.name)?.command;
-        if (r.skipped || !command) continue;
+        if ((r.skipped && !r.notFound) || !command) continue;
         const data = commandEventData(command, r);
         await this.s.append(conversationId, {
           author: "coordinator",
           runId,
           kind: "command",
           tag: `check ${r.name}`,
-          tone: r.passed ? "success" : "warning",
-          text: `Check "${r.name}" on all drafts together: ${r.passed ? "passed" : r.timedOut ? "timed out" : "failed"}. The full output is in the Agentic Code terminal.`,
+          tone: r.passed && !r.skipped ? "success" : "warning",
+          text: `Check "${r.name}" on all drafts together: ${checkStatus(r)}. The full output is in the Agentic Code terminal.`,
           command: { line: command, output: String(data.output ?? "") },
         });
       }
