@@ -282,7 +282,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     // A server that ignores "stream" answers with plain JSON, which is read as before.
     if ((res.headers.get("content-type") ?? "").includes("text/event-stream") && res.body) {
       try {
-        return await readStream(res.body, res.status, timeout.touch, request.onProgress);
+        return await readStream(res.body, res.status, timeout.touch, request.onProgress, request.thinkingBudget);
       } catch (err) {
         if (err instanceof ProviderError) throw err;
         throw this.networkError(err, request.signal, timeout);
@@ -477,6 +477,7 @@ async function readStream(
   status: number,
   onData: () => void = () => undefined,
   onProgress?: (p: ChatProgress) => void,
+  thinkingBudget?: number,
 ): Promise<ChatResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -504,6 +505,13 @@ async function readStream(
       parseEvents(lines, out, status);
       out.progress();
       if (done) return out.finish(status);
+      // Run 14: 17 of 827 calls thought for 340-360 s (30-38k characters) and gave nothing, while 99% of the
+      // calls that answered thought less than 13k. Past the budget the reply is stopped (closing the stream
+      // stops the server too) and returned cut off, so the caller asks again without thinking.
+      if (thinkingBudget && !liveContent(out.content) && out.reasoning.length + out.content.length > thinkingBudget) {
+        await reader.cancel().catch(() => undefined);
+        return { content: out.content, ...(out.reasoning ? { reasoning: out.reasoning } : {}), truncated: true, thinkingStopped: true };
+      }
     }
   } catch (err) {
     // Stop the download, so a failed reply does not keep the connection and the server busy.

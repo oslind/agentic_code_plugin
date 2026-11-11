@@ -192,6 +192,43 @@ describe("OpenAICompatibleProvider", () => {
     expect(again.content).toBe('{"a":1}');
   });
 
+  it("stops a reply that thinks past its budget before answering, and closes the stream (run 14)", async () => {
+    let cancelled = false;
+    let sent = 0;
+    const fn = (async () => {
+      const enc = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        pull(c) {
+          sent++;
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "", reasoning: "x".repeat(100) } }] })}\n\n`));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    const res = await new OpenAICompatibleProvider(base, fn).chat({ messages: [], thinkingBudget: 1000 });
+    expect(res).toMatchObject({ content: "", truncated: true, thinkingStopped: true });
+    expect(res.reasoning!.length).toBeGreaterThan(1000);
+    expect(cancelled).toBe(true);
+    expect(sent).toBeLessThan(20);
+  });
+
+  it("never stops a reply that has started its answer, whatever else streams after", async () => {
+    const fn = (async () =>
+      sse([
+        { choices: [{ delta: { reasoning: "x".repeat(300) } }] },
+        { choices: [{ delta: { content: '{"a":' } }] },
+        { choices: [{ delta: { content: "", reasoning: "y".repeat(500) } }] },
+        { choices: [{ delta: { content: "1}" }, finish_reason: "stop" }] },
+        "[DONE]",
+      ])) as unknown as typeof fetch;
+    const res = await new OpenAICompatibleProvider(base, fn).chat({ messages: [], thinkingBudget: 400 });
+    expect(res.content).toBe('{"a":1}');
+    expect(res.thinkingStopped).toBeUndefined();
+  });
+
   it("counts an open <think> block in the reply as thinking, and text after it as writing", () => {
     expect(liveContent("<think>still going")).toBe(false);
     expect(liveContent("<think>done</think>")).toBe(false);

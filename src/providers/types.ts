@@ -20,6 +20,11 @@ export interface ChatRequest {
    * rejects them is asked again without them.
    */
   noThinking?: boolean;
+  /**
+   * Most characters of thinking before any answer: past it the reply is stopped and returned cut off
+   * (truncated, thinkingStopped), so the caller can ask again without thinking. Streamed replies only.
+   */
+  thinkingBudget?: number;
   signal?: AbortSignal;
   /**
    * Called while the reply is on its way, so the user can see the model is
@@ -56,6 +61,8 @@ export interface ChatResponse {
    * text then ends mid-answer and must never be shown as a finished one.
    */
   truncated?: boolean;
+  /** True when the extension stopped the reply because it thought past ChatRequest.thinkingBudget. */
+  thinkingStopped?: boolean;
 }
 
 export interface ModelProvider {

@@ -109,6 +109,13 @@ export const VERDICT_MAX_TOKENS = 3072;
 /** Token cap for plans: a plan's JSON is longer than a verdict (run 6E: a plan call thought for 354 s and gave nothing; 6F: 266 s at a 6144 cap). */
 export const PLAN_MAX_TOKENS = 4096;
 
+/**
+ * Most characters a structured call may think before it answers; past it the call is asked again without
+ * thinking. Run 14 (827 calls): answered calls thought 1.5k characters at the median and 12.7k at p99 (max
+ * 21.5k); the 14 runaways that gave nothing thought 17-38k (161-360 s each, over 4,000 s in all).
+ */
+export const THINKING_BUDGET_CHARS = 16_000;
+
 export class StructuredOutputError extends Error {
   constructor(
     message: string,
@@ -137,7 +144,14 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
   let thinkingCutOff = false;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     options.onAttempt?.(attempt, attempt > 0 ? lastError : undefined);
-    const reply = await provider.chat({ messages, jsonSchema: { name: schemaName, schema: jsonSchema }, signal, maxTokens: options.maxTokens, noThinking: thinkingCutOff || undefined });
+    const reply = await provider.chat({
+      messages,
+      jsonSchema: { name: schemaName, schema: jsonSchema },
+      signal,
+      maxTokens: options.maxTokens,
+      noThinking: thinkingCutOff || undefined,
+      thinkingBudget: thinkingCutOff ? undefined : THINKING_BUDGET_CHARS,
+    });
     lastReply = reply.content;
     const thinking = extractThinking(reply.content, reply.reasoning);
     if (thinking) options.onThinking?.(thinking);

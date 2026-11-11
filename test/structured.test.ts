@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { reviewSubAgentResult } from "../src/coordinator/review";
-import { callStructured, extractJson, StructuredOutputError, VERDICT_MAX_TOKENS } from "../src/llm/structured";
+import { callStructured, extractJson, StructuredOutputError, VERDICT_MAX_TOKENS, THINKING_BUDGET_CHARS } from "../src/llm/structured";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] } {
@@ -71,6 +71,8 @@ describe("callStructured", () => {
     const p: ModelProvider = { model: "t", contextWindow: 8192, async chat(req) { requests.push(req); return replies.shift()!; } };
     await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x" });
     expect(requests.map((r) => r.noThinking)).toEqual([undefined, true]);
+    // The first call may think up to the budget; the retry without thinking has none (run 14).
+    expect(requests.map((r) => r.thinkingBudget)).toEqual([THINKING_BUDGET_CHARS, undefined]);
   });
 
   it("feeds the validation error back and retries", async () => {
