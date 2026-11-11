@@ -1,6 +1,6 @@
 /** Run 13, project-skill-trusted: a JSDoc put inside a function body was accepted as "added with JSDoc". */
 import { describe, expect, it } from "vitest";
-import { docInsideBody, duplicateDeclarations, duplicateFunctions, unaskedFunctionChanges } from "../src/changes/moduleStyle";
+import { docInsideBody, droppedCalls, duplicateDeclarations, duplicateFunctions, unaskedFunctionChanges } from "../src/changes/moduleStyle";
 
 describe("docInsideBody", () => {
   it("finds a new doc comment right after a function's opening brace", () => {
@@ -43,5 +43,20 @@ describe("duplicateFunctions (run 14, project-skill-trusted)", () => {
   });
   it("finds const arrow functions too", () => {
     expect([...duplicateDeclarations("const f = (x) => x;\nconst f = x => x;\n")]).toEqual([["f", [1, 2]]]);
+  });
+});
+
+describe("droppedCalls (run 14, new-module-used)", () => {
+  const original = "const { toCelsius } = require('./convert');\nconsole.log(`Target: ${toCelsius(70).toFixed(1)} C`);\n";
+  it("names a call the draft took out when the request does not mention it", () => {
+    const proposed = "const { formatTemp } = require('./format');\nconsole.log(`Target: ${formatTemp(70)} C`);\n";
+    expect(droppedCalls([{ path: "src/index.js", original, proposed }], "Add src/format.js with formatTemp and use it to print the target.")).toEqual([
+      expect.stringMatching(/^src\/index\.js no longer calls toCelsius\(\) \(it did once before\)/),
+    ]);
+  });
+  it("is quiet when the call is kept or the request names it", () => {
+    const wrapped = "const { toCelsius } = require('./convert');\nconst { formatTemp } = require('./format');\nconsole.log(`Target: ${formatTemp(toCelsius(70))}`);\n";
+    expect(droppedCalls([{ path: "src/index.js", original, proposed: wrapped }], "use formatTemp to print the target")).toEqual([]);
+    expect(droppedCalls([{ path: "src/index.js", original, proposed: "console.log(1);\n" }], "remove the toCelsius call")).toEqual([]);
   });
 });

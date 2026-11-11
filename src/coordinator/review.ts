@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { lineDiff } from "../changes/lineDiff";
 import { estimateTokens, truncateToTokens } from "../context/budget";
-import { docInsideBody, duplicateFunctions, unaskedFunctionChanges, DRAFT_PROBLEMS_HEADING, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleProblems, unexportedProblems, untestedFunctions } from "../changes/moduleStyle";
+import { docInsideBody, droppedCalls, duplicateFunctions, unaskedFunctionChanges, DRAFT_PROBLEMS_HEADING, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleProblems, unexportedProblems, untestedFunctions } from "../changes/moduleStyle";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
@@ -135,6 +135,7 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
   const hints = [
     ...changes.flatMap((c) => [...halfIndexHints(c.path, c.proposed), ...exportStyleHints(c.path, c.original, c.proposed)]),
     ...unaskedFunctionChanges(changes, said),
+    ...droppedCalls(changes, said),
     ...(untested.length ? [`No test file mentions ${untested.join(", ")}, so a passing test command says nothing about ${untested.length === 1 ? "it" : "them"}. Only a command that called ${untested.length === 1 ? "it" : "them"} (for example node -e) shows ${untested.length === 1 ? "it" : "them"} working; never say the tests checked ${untested.length === 1 ? "it" : "them"}.`] : []),
   ];
   const withHints = hints.length ? `${text}\n\nChecked by rule, look at these before you accept:\n${hints.map((h) => `- ${h}`).join("\n")}` : text;

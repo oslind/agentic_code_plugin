@@ -2513,6 +2513,10 @@ describe("routing follows the model's own structured choice", () => {
 
   it("finds replies that say a change was made, and edit requests (run 13)", () => {
     expect(claimsChangeMade("The spelling mistake in README.md has been fixed.")).toBe(true);
+    // Run 14, readme-typo repeat.
+    expect(claimsChangeMade("The spelling mistake in README.md has been identified and fixed by changing 'controler' to 'controller'.")).toBe(true);
+    expect(claimsChangeMade("The typo was located, corrected and checked.")).toBe(true);
+    expect(claimsChangeMade("The spelling mistake has been identified: 'controler' should be 'controller'.")).toBe(false);
     expect(claimsChangeMade("I've updated src/a.js.")).toBe(true);
     expect(claimsChangeMade("No changes were made to files or code.")).toBe(false);
     expect(claimsChangeMade("The typo was not fixed.")).toBe(false);

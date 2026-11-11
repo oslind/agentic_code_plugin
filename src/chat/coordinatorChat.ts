@@ -336,8 +336,11 @@ export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterR
  * left alone.
  */
 const CHANGE_DONE = "fixed|added|updated|changed|corrected|created|renamed|removed|modified|implemented|replaced|inserted|applied|edited|written";
+// Run 14, readme-typo repeat: "has been identified and fixed" slipped past "has been fixed", so another verb
+// joined with "and" or a comma ("located, corrected") may come first.
+const FIRST = "(?:[a-z]+(?:,|\\s+and)\\s+)?";
 const CLAIM = new RegExp(
-  `\\b(?:has|have|had)\\s+been\\s+(?:${CHANGE_DONE})\\b|\\b(?:was|were|is\\s+now|are\\s+now)\\s+(?:successfully\\s+)?(?:${CHANGE_DONE})\\b|\\b(?:I|I've|I\\s+have|we|we've|we\\s+have|the\\s+(?:sub-?)?agents?|a\\s+(?:sub-?)?agent)\\s+(?:successfully\\s+|also\\s+|now\\s+)?(?:${CHANGE_DONE})\\b`,
+  `\\b(?:has|have|had)\\s+been\\s+(?:successfully\\s+)?${FIRST}(?:${CHANGE_DONE})\\b|\\b(?:was|were|is\\s+now|are\\s+now)\\s+(?:successfully\\s+)?${FIRST}(?:${CHANGE_DONE})\\b|\\b(?:I|I've|I\\s+have|we|we've|we\\s+have|the\\s+(?:sub-?)?agents?|a\\s+(?:sub-?)?agent)\\s+(?:successfully\\s+|also\\s+|now\\s+)?(?:${CHANGE_DONE})\\b`,
   "i",
 );
 

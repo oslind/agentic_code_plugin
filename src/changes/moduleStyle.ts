@@ -401,3 +401,39 @@ export function unaskedFunctionChanges(changes: { path: string; original: string
   }
   return out;
 }
+
+const NOT_CALLS = new Set(["if", "for", "while", "switch", "catch", "function", "return", "typeof", "require", "console", "log", "super"]);
+
+/** How often each function is called in a JavaScript text, comments left out roughly. */
+function callCounts(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  for (const m of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const name = m[1]!;
+    if (NOT_CALLS.has(name)) continue;
+    out.set(name, (out.get(name) ?? 0) + 1);
+  }
+  return out;
+}
+
+/**
+ * Calls a draft took out of a file that still exists, when the request names neither the function nor a removal.
+ * Run 14, new-module-used: "use it to print the target" turned `toCelsius(70).toFixed(1)` into `formatTemp(70)`,
+ * so the conversion was gone and the output read "70.0 °C"; review and verification accepted it.
+ */
+export function droppedCalls(changes: { path: string; original: string | null; proposed: string }[], said: string | undefined): string[] {
+  if (!said) return [];
+  const out: string[] = [];
+  for (const c of changes) {
+    if (c.original === null || isTestPath(c.path) || !/\.(c|m)?[jt]sx?$/i.test(c.path)) continue;
+    const before = callCounts(c.original);
+    const after = callCounts(c.proposed);
+    for (const [name, n] of before) {
+      if ((after.get(name) ?? 0) > 0) continue;
+      if (new RegExp(`(^|[^\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(said)) continue;
+      out.push(`${c.path} no longer calls ${name}() (it did ${n === 1 ? "once" : `${n} times`} before), and neither the user nor the task asks to remove it. Check that the drafts still do everything the old lines did: a new call usually wraps the old one (newFn(${name}(x))) instead of replacing it.`);
+    }
+  }
+  return out;
+}
+

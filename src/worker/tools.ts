@@ -1,4 +1,4 @@
-import { docInsideBody, duplicateDeclarations, duplicateFunctions, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
+import { docInsideBody, droppedCalls, duplicateDeclarations, duplicateFunctions, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
@@ -256,7 +256,7 @@ export function loadWarning(path: string, before: string | null, after: string, 
   const unexported = [...unexportedProblems([{ path, original: before, proposed: after }], said), ...docInsideBody([{ path, original: before, proposed: after }]), ...duplicateFunctions([{ path, original: before, proposed: after }])];
   const problems = moduleStyleProblems([{ path, original: before, proposed: after }], style);
   const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
-  const exportsHint = exportStyleHints(path, before, after);
+  const exportsHint = [...exportStyleHints(path, before, after), ...droppedCalls([{ path, original: before, proposed: after }], said)];
   const hint = `${hints.length ? `\nCheck: ${hints.join(" ")} Try the function on an odd-length input with run_command (node -e) before you finish.` : ""}${exportsHint.length ? `\nCheck: ${exportsHint.join(" ")}` : ""}`;
   const leftovers = renameLeftovers([{ path, text: after }], said);
   const exportNote = [...unexported, ...leftovers].length ? `\nWarning: ${[...unexported, ...leftovers].join(" ")}` : "";
