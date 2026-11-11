@@ -240,6 +240,22 @@ Big questions (find-throwing 5/20/50/100, agentic, 2 attempts each, 131.8 min): 
 
 None of these fixes has run live yet.
 
+## Run 14: all 43 on 916abd2 (41 passed), big questions, and 2 repeats of 12
+
+Scenarios: 41 of 43 passed in 363.9 min (35 the night before). The 12 riskiest over three tries (main, repeat 1, repeat 2): 29 of 36. Always passed: the 4 research scenarios, two-changes-in-a-row, what-did-you-change. 2 of 3: project-skill-trusted, parallel-changes, question-then-answer, readme-typo, python-project. 1 of 3: new-module-used.
+
+- **rename-everywhere (timeout):** a one-file rename task was reviewed against the whole request. Its files no longer using the old name now accepts it by rule (86b3f3f).
+- **project-skill-trusted (timeout):** a duplicate toKelvin made every replace_in_file fail. Duplicate declarations are named on write, in reviews and in that error (86b3f3f).
+- **Runaway thinking:** 17 of 827 calls thought 340-360 s and gave nothing (4,000+ s). Structured calls stop past 16k characters of thinking and ask again without thinking (32aba48).
+- **Big questions:** every file opened, no wrong module named, no guessed answer; 100 modules found 36 and 34 of 44 because the combining call dropped reported matches. Many-file "which" answers are now sorted file by file and missing matches added by rule (e7f86b5).
+- **readme-typo, repeat 1:** research answered "has been identified and fixed". The claim wording is wider (90f3cf0), and an edit request that ends in a research answer now always says nothing was changed and is not verified (23b3a83).
+- **new-module-used:** formatTemp(70) replaced toCelsius(70); dropped calls are now named on write and in reviews (90f3cf0). Repeat 2 also flipped the export six times; still open.
+- **question-then-answer, repeat 2:** a fix-up changed 4 degrees back to 3 to satisfy an old test. A draft that puts back what an accepted change of the run replaced is sent back by rule (3c31462).
+- **python-project, repeat 2:** a "Run tests to verify" task was sent back for "no code changes" (now accepted by rule), and fix-up planning failed four times on "at most 1 task" (extra tasks are merged now) (3c31462).
+- **parallel-changes, repeat 2:** timeout at 97 s per call.
+
+None of these fixes has run live yet.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
