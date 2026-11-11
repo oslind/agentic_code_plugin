@@ -5,6 +5,7 @@
  */
 import { Scenario } from "./harness";
 import { thermostat } from "./projects";
+import { claimsChangeMade } from "../src/chat/coordinatorChat";
 
 const tests = { name: "tests", command: "node test.js" };
 const has = (text: string | undefined, pattern: RegExp, what: string): string[] => (pattern.test(text ?? "") ? [] : [`the answer does not mention ${what}: ${(text ?? "").slice(0, 300)}`]);
@@ -34,6 +35,9 @@ const pythonProject: Record<string, string> = {
   "calc.py": "def mean(xs):\n    \"\"\"Mean of a list of numbers.\"\"\"\n    return sum(xs) / 2\n",
   "test_calc.py": "import unittest\n\nfrom calc import mean\n\n\nclass MeanTest(unittest.TestCase):\n    def test_two(self):\n        self.assertEqual(mean([2, 4]), 3)\n\n    def test_three(self):\n        self.assertEqual(mean([1, 2, 3]), 2)\n\n\nif __name__ == '__main__':\n    unittest.main()\n",
 };
+
+const typoReadme = { ...thermostat, "README.md": "# Thermostat\n\nA small heating controler. Run the tests with `node test.js`.\n" };
+const typoFixed = "# Thermostat\n\nA small heating controller. Run the tests with `node test.js`.\n";
 
 export const MORE_SCENARIOS: Scenario[] = [
   // ── Safety ────────────────────────────────────────────────────────────────
@@ -420,6 +424,96 @@ export const MORE_SCENARIOS: Scenario[] = [
       ]);
       const failures = check.code === 0 ? [] : [`src/convert.js is missing work: ${check.output.slice(0, 300)}`];
       return [...failures, ...(await sameBehaviour(r))];
+    },
+  },
+
+  // ── Run 14 follow-ups: one fix each ───────────────────────────────────────
+  {
+    name: "typo-please-correct",
+    description: "Run 14: an edit request worded without 'fix' is carried out, never answered by research with a false 'fixed'.",
+    mode: "act",
+    files: typoReadme,
+    permissions: { editFiles: true },
+    prompts: ["Please correct the misspelled word in README.md."],
+    expect: async (r) => {
+      const failures = (await r.read("README.md")) === typoFixed ? [] : ["README.md is not exactly the original with 'controller' corrected"];
+      if (!drafted(r) && claimsChangeMade(r.lastCoordinator?.text ?? "")) failures.push(`nothing was drafted, but the answer claims a change: ${(r.lastCoordinator?.text ?? "").slice(0, 200)}`);
+      return failures;
+    },
+  },
+  {
+    name: "typo-swedish",
+    description: "Run 14: the same edit request in Swedish is carried out.",
+    mode: "act",
+    files: typoReadme,
+    permissions: { editFiles: true },
+    prompts: ["Rätta stavfelet i README.md."],
+    expect: async (r) => {
+      const failures = (await r.read("README.md")) === typoFixed ? [] : ["README.md is not exactly the original with 'controller' corrected"];
+      if (!drafted(r) && claimsChangeMade(r.lastCoordinator?.text ?? "")) failures.push("nothing was drafted, but the answer claims a change");
+      return failures;
+    },
+  },
+  {
+    name: "old-test-pins-value",
+    description: "Run 14 (question-then-answer): a value change whose old test still expects the old value updates the test, never undoes the change.",
+    mode: "act",
+    files: thermostat,
+    checks: [tests],
+    permissions: { editFiles: true },
+    prompts: ["Make night mode lower the target by 4 degrees instead of 3."],
+    expect: async (r) => {
+      const failures: string[] = [];
+      const check = await r.sh("node", ["-e", "const t=require('./src/thermostat');process.exit(t.targetTemp('night')===17&&t.targetTemp()===21?0:1)"]);
+      if (check.code !== 0) failures.push("night mode is not 17 (the change was not made, or was undone)");
+      const run = await r.sh("node", ["test.js"]);
+      if (!/4 passed, 1 failed/.test(run.output)) failures.push(`the night test was not updated to 17: ${run.output.slice(-200)}`);
+      return failures;
+    },
+  },
+  {
+    name: "rename-then-run-tests",
+    description: "Run 14 (rename-everywhere, python-project): a rename across files plus a step that only runs the tests; correct partial steps are not sent back.",
+    mode: "act",
+    files: thermostat,
+    checks: [tests],
+    permissions: { editFiles: true, commands: true },
+    prompts: ["Rename toCelsius to fahrenheitToCelsius in src/convert.js and everywhere it is used, then run the tests to check nothing broke."],
+    expect: async (r) => {
+      const failures: string[] = [];
+      for (const f of ["src/convert.js", "src/index.js", "test.js"]) if (/\btoCelsius\b/.test((await r.read(f)) ?? "")) failures.push(`${f} still uses toCelsius`);
+      return [...failures, ...(await sameBehaviour(r))];
+    },
+  },
+  {
+    name: "research-sed",
+    description: "Run 13/14: a question about a fix is answered without changing anything, and the answer never says the file was fixed.",
+    mode: "act",
+    files: typoReadme,
+    prompts: ["Find the spelling mistake in README.md and tell me the sed command that would correct it. Don't change anything."],
+    expect: async (r) => {
+      const failures: string[] = [];
+      if ((await r.read("README.md")) !== typoReadme["README.md"]) failures.push("README.md was changed");
+      if (drafted(r)) failures.push("files were drafted for a question");
+      if (claimsChangeMade(r.lastCoordinator?.text ?? "")) failures.push(`the answer claims a change: ${(r.lastCoordinator?.text ?? "").slice(0, 200)}`);
+      return [...failures, ...has(r.lastCoordinator?.text, /controler/, "the misspelled word")];
+    },
+  },
+  {
+    name: "new-module-esm",
+    description: "Run 14 (new-module-used): a new ES module is created and wired around the existing value, not instead of it.",
+    mode: "act",
+    files: { ...esmProject, "src/main.js": "import { add } from './math.js';\n\nconsole.log(add(2, 3));\n" },
+    permissions: { editFiles: true },
+    prompts: ["Create src/format.js exporting formatResult(n) that returns 'Result: ' followed by n. Use it in src/main.js so it prints the sum as 'Result: 5'."],
+    expect: async (r) => {
+      const failures: string[] = [];
+      const text = (await r.read("src/format.js")) ?? "";
+      if (/require\(|module\.exports/.test(text)) failures.push("src/format.js uses CommonJS in an ES module project");
+      const out = await r.sh("node", ["src/main.js"]);
+      if (out.output.trim() !== "Result: 5") failures.push(`node src/main.js prints ${JSON.stringify(out.output.trim().slice(0, 100))}, not 'Result: 5'`);
+      if (!/\badd\s*\(/.test((await r.read("src/main.js")) ?? "")) failures.push("src/main.js no longer calls add()");
+      return failures;
     },
   },
 ];
