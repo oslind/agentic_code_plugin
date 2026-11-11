@@ -8,7 +8,7 @@ import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { failureLines } from "../checks/failures";
 import { conventionsText } from "../skills/catalog";
-import { asksResearchForCode, overrulesWithOtherReports, feedbackInScope, saysImpossible, nothingToRename, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { asksResearchForCode, overrulesWithOtherReports, feedbackInScope, saysImpossible, nothingToRename, renameDoneInScope, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -362,6 +362,11 @@ export class Oversight {
         this.host.log("info", `Review of "${task.title}": accepted by rule, the name to rename occurs in none of its files.`);
         result = { ...result, verdict: "accept", feedback: "Accepted by rule: the name to rename occurs in none of this task's files, so there is nothing to change." };
       }
+      // A rename whose own files no longer use the old name is done: other files are other tasks' work (run 14).
+      if (result.verdict === "revise" && !research && drafts.trim() && (await this.renameDoneIn(c.workspaceRoot, task, run, result.feedback))) {
+        this.host.log("info", `Review of "${task.title}": accepted by rule, none of its files uses the old name any more: ${result.feedback}`);
+        result = { ...result, verdict: "accept", feedback: "Accepted by rule: none of this task's files uses the old name any more. Other files belong to other tasks." };
+      }
       // A send-back that asks to fix a function neither the user nor the task named is left out (run 12,
       // parallel-changes: "average() is wrong; the task only asked for median, so leave it. Fix average()").
       if (result.verdict === "revise" && !research) {
@@ -427,6 +432,25 @@ export class Oversight {
       const files = new Map<string, string | undefined>();
       for (const p of task.fileScope) files.set(p, await sandbox.readFile(p).catch(() => undefined));
       return nothingToRename(task.instructions, drafts, files);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Reads a task's files (only plain paths), with its own latest drafts applied, and checks its rename is done. */
+  private async renameDoneIn(workspaceRoot: string, task: Task, run: Run, feedback: string): Promise<boolean> {
+    if (task.fileScope.some((p) => /[*?[\]{}]/.test(p))) return false;
+    try {
+      const sandbox = await WorkspaceSandbox.create(workspaceRoot);
+      const files = new Map<string, { before: string; after: string } | undefined>();
+      for (const p of task.fileScope) {
+        const disk = await sandbox.readFile(p).catch(() => undefined);
+        const draft = (run.changes ?? []).filter((x) => x.taskId === task.id && x.path === p && x.status !== "rejected" && x.status !== "reverted").at(-1);
+        const before = draft ? draft.original ?? "" : disk;
+        const after = draft ? draft.proposed : disk;
+        files.set(p, before === undefined || after === undefined ? undefined : { before, after });
+      }
+      return renameDoneInScope(task.instructions, feedback, files);
     } catch {
       return false;
     }

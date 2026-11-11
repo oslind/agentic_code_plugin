@@ -332,6 +332,35 @@ export function docInsideBody(changes: { path: string; original: string | null; 
   return out;
 }
 
+/** Names of top-level JavaScript functions declared more than once in the text, with the line of each declaration. */
+export function duplicateDeclarations(text: string): Map<string, number[]> {
+  const seen = new Map<string, number[]>();
+  const re = /^(?:export\s+)?(?:async\s+)?function\s*\*?\s*([\w$]+)\s*\(|^(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[\w$]+\s*=>)/;
+  text.split("\n").forEach((line, i) => {
+    const m = re.exec(line);
+    const name = m?.[1] ?? m?.[2];
+    if (name) seen.set(name, [...(seen.get(name) ?? []), i + 1]);
+  });
+  return new Map([...seen].filter(([, lines]) => lines.length > 1));
+}
+
+/**
+ * Functions a draft declares twice where the original did not. Run 14, project-skill-trusted: a sub-agent added a
+ * second toKelvin, every replace_in_file on it then failed with "occurs 2 times", and the run hit its time limit.
+ */
+export function duplicateFunctions(changes: { path: string; original: string | null; proposed: string }[]): string[] {
+  const out: string[] = [];
+  for (const c of changes) {
+    if (!/\.(c|m)?[jt]sx?$/i.test(c.path)) continue;
+    const before = duplicateDeclarations(c.original ?? "");
+    for (const [name, lines] of duplicateDeclarations(c.proposed)) {
+      if ((before.get(name)?.length ?? 0) >= lines.length) continue;
+      out.push(`${c.path} now declares ${name} ${lines.length} times (lines ${lines.join(", ")}); keep one and delete the others.`);
+    }
+  }
+  return out;
+}
+
 /** Top-level functions of a JavaScript text by name, with their whole text (brace counted, strings ignored roughly). */
 function functionBodies(text: string): Map<string, string> {
   const out = new Map<string, string>();

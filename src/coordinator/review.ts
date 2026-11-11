@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { lineDiff } from "../changes/lineDiff";
 import { estimateTokens, truncateToTokens } from "../context/budget";
-import { docInsideBody, unaskedFunctionChanges, DRAFT_PROBLEMS_HEADING, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleProblems, unexportedProblems, untestedFunctions } from "../changes/moduleStyle";
+import { docInsideBody, duplicateFunctions, unaskedFunctionChanges, DRAFT_PROBLEMS_HEADING, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleProblems, unexportedProblems, untestedFunctions } from "../changes/moduleStyle";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { assignmentBlock } from "./assignment";
@@ -130,7 +130,7 @@ export function draftsForReview(changes: Pick<PendingChange, "path" | "original"
   // Facts found by rule go last and are never cut, so a review or verification cannot miss them.
   // Drafts of the files a rename is about are checked here; verification adds files no draft touched (extra).
   const leftovers = renameLeftovers(changes.map((c) => ({ path: c.path, text: c.proposed })), said);
-  const problems = [...moduleStyleProblems(changes, style), ...unexportedProblems(changes, said), ...docInsideBody(changes), ...leftovers, ...extra.filter((e) => !leftovers.includes(e))];
+  const problems = [...moduleStyleProblems(changes, style), ...unexportedProblems(changes, said), ...docInsideBody(changes), ...duplicateFunctions(changes), ...leftovers, ...extra.filter((e) => !leftovers.includes(e))];
   const untested = tests?.trim() ? untestedFunctions(changes, tests) : [];
   const hints = [
     ...changes.flatMap((c) => [...halfIndexHints(c.path, c.proposed), ...exportStyleHints(c.path, c.original, c.proposed)]),
@@ -299,6 +299,23 @@ export function nothingToRename(instructions: string, drafts: string, scopeFiles
   const name = renamedName(instructions);
   if (!name || drafts.trim() || scopeFiles.size === 0) return false;
   return [...scopeFiles.values()].every((text) => text !== undefined && !text.includes(name));
+}
+
+/**
+ * True when a rename task's own files are done: the old name was used in at least one of them and is now used
+ * in none (drafts included), and the review's send-back is about that rename. Run 14, rename-everywhere: the
+ * review of a one-file task judged it against the whole request ("only shows the function renamed in
+ * src/convert.js"), a fix-up with nothing left to do followed, and the run hit its time limit. Other files
+ * belong to other tasks. `files` maps each of the task's files to its text before and with the drafts
+ * (undefined when it could not be read, which never counts as done).
+ */
+export function renameDoneInScope(instructions: string, feedback: string, files: Map<string, { before: string; after: string } | undefined>): boolean {
+  const pair = renamePair(instructions);
+  if (!pair || pair.from === pair.to || pair.from.includes(".") || files.size === 0) return false;
+  if (!/\brenam/i.test(feedback) && !feedback.includes(pair.from) && !feedback.includes(pair.to)) return false;
+  const texts = [...files.values()];
+  if (texts.some((t) => t === undefined)) return false;
+  return texts.some((t) => linesUsing(t!.before, pair.from).length > 0) && texts.every((t) => linesUsing(t!.after, pair.from).length === 0);
 }
 
 /** Builds the review prompt. Trusted parts are plain; everything a model wrote is fenced. */

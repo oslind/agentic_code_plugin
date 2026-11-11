@@ -1,6 +1,6 @@
 /** Run 13, project-skill-trusted: a JSDoc put inside a function body was accepted as "added with JSDoc". */
 import { describe, expect, it } from "vitest";
-import { docInsideBody, unaskedFunctionChanges } from "../src/changes/moduleStyle";
+import { docInsideBody, duplicateDeclarations, duplicateFunctions, unaskedFunctionChanges } from "../src/changes/moduleStyle";
 
 describe("docInsideBody", () => {
   it("finds a new doc comment right after a function's opening brace", () => {
@@ -30,5 +30,18 @@ describe("unaskedFunctionChanges", () => {
   it("leaves functions the request names, and new ones", () => {
     expect(unaskedFunctionChanges([{ path: "src/stats.js", original, proposed }], "Fix average() and add median.")).toEqual([]);
     expect(unaskedFunctionChanges([{ path: "src/stats.js", original: null, proposed }], "Add median.")).toEqual([]);
+  });
+});
+
+describe("duplicateFunctions (run 14, project-skill-trusted)", () => {
+  it("names a function a draft declares a second time, and leaves existing duplicates alone", () => {
+    const original = "function toCelsius(f) { return f; }\nmodule.exports = { toCelsius };\n";
+    const proposed = "function toCelsius(f) { return f; }\nfunction toKelvin(c) { return c + 273.15; }\n\nfunction toKelvin(c) {\n  return c + 273.15;\n}\nmodule.exports = { toCelsius, toKelvin };\n";
+    expect(duplicateFunctions([{ path: "src/convert.js", original, proposed }])).toEqual(["src/convert.js now declares toKelvin 2 times (lines 2, 4); keep one and delete the others."]);
+    expect(duplicateFunctions([{ path: "src/convert.js", original: proposed, proposed }])).toEqual([]);
+    expect(duplicateFunctions([{ path: "README.md", original: null, proposed }])).toEqual([]);
+  });
+  it("finds const arrow functions too", () => {
+    expect([...duplicateDeclarations("const f = (x) => x;\nconst f = x => x;\n")]).toEqual([["f", [1, 2]]]);
   });
 });

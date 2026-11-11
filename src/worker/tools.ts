@@ -1,4 +1,4 @@
-import { docInsideBody, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
+import { docInsideBody, duplicateDeclarations, duplicateFunctions, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { ProjectFiles } from "../tools/sandbox";
@@ -199,7 +199,10 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
                     // Run 10B, parallel-changes: the median task timed out re-reading a 20-line file to get a replace right.
                     text.split("\n").length <= 60 ? ` ${call.path} is short: you can also read it once and write it whole with write_file, keeping every line you do not need to change exactly as it is.` : ""
                   }`
-                : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once, or add "all": true to replace every occurrence (for a rename).`,
+                : `The search text occurs ${count} times in ${call.path}. Include more surrounding lines so it matches once, or add "all": true to replace every occurrence (for a rename).${
+                    // Run 14: the duplicate was the sub-agent's own second copy of a function, and it never noticed.
+                    [...duplicateDeclarations(text)].map(([name, lines]) => ` The file declares ${name} ${lines.length} times (lines ${lines.join(", ")}): if that is a copy you made, delete the extra one first.`).join("")
+                  }`,
           };
         }
         const edited = every ? text.split(search).join(replace) : text.replace(search, () => replace);
@@ -250,7 +253,7 @@ async function writeWarning(ctx: ToolContext, path: string, before: string | nul
  * function after the closing brace of a replace_in_file edit; nothing told the sub-agent until review.
  */
 export function loadWarning(path: string, before: string | null, after: string, style?: ModuleStyle, said?: string): string {
-  const unexported = [...unexportedProblems([{ path, original: before, proposed: after }], said), ...docInsideBody([{ path, original: before, proposed: after }])];
+  const unexported = [...unexportedProblems([{ path, original: before, proposed: after }], said), ...docInsideBody([{ path, original: before, proposed: after }]), ...duplicateFunctions([{ path, original: before, proposed: after }])];
   const problems = moduleStyleProblems([{ path, original: before, proposed: after }], style);
   const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
   const exportsHint = exportStyleHints(path, before, after);

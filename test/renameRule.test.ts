@@ -1,6 +1,6 @@
 /** Run 10, rename-everywhere: a rename task whose files never had the old name is accepted by rule. */
 import { describe, expect, it } from "vitest";
-import { nothingToRename, renamedName } from "../src/coordinator/review";
+import { nothingToRename, renamedName, renameDoneInScope } from "../src/coordinator/review";
 
 describe("renamedName", () => {
   it("reads the old name from rename and replace wording", () => {
@@ -28,5 +28,23 @@ describe("nothingToRename", () => {
     expect(nothingToRename(task, "", new Map([["a.js", undefined]]))).toBe(false);
     expect(nothingToRename(task, "", new Map())).toBe(false);
     expect(nothingToRename("Add toKelvin to a.js", "", new Map([["a.js", "const x = 1;\n"]]))).toBe(false);
+  });
+});
+
+describe("renameDoneInScope (run 14, rename-everywhere)", () => {
+  const task = "Rename toCelsius to fahrenheitToCelsius in src/convert.js.";
+  const done = new Map([["src/convert.js", { before: "function toCelsius(f) {}\nmodule.exports = { toCelsius };\n", after: "function fahrenheitToCelsius(f) {}\nmodule.exports = { fahrenheitToCelsius };\n" }]]);
+  it("accepts a send-back about the rename when the task's own files no longer use the old name", () => {
+    expect(renameDoneInScope(task, "The drafts only show the function renamed in src/convert.js; rename every use in the project.", done)).toBe(true);
+  });
+  it("keeps a send-back about something else, or when the old name is still used", () => {
+    expect(renameDoneInScope(task, "The new function returns the wrong value for 212.", done)).toBe(false);
+    const left = new Map([["src/convert.js", { before: "toCelsius(1);\n", after: "fahrenheitToCelsius(1);\ntoCelsius(2);\n" }]]);
+    expect(renameDoneInScope(task, "Rename the remaining call.", left)).toBe(false);
+  });
+  it("never counts unreadable files or files that never had the name", () => {
+    expect(renameDoneInScope(task, "rename it", new Map([["src/convert.js", undefined]]))).toBe(false);
+    expect(renameDoneInScope(task, "rename it", new Map([["src/convert.js", { before: "x\n", after: "x\n" }]]))).toBe(false);
+    expect(renameDoneInScope("Add toKelvin to a.js", "rename it", done)).toBe(false);
   });
 });
