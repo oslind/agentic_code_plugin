@@ -665,7 +665,10 @@ export class RunLoop {
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
     // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
     // Neither is a cut-off answer: it is unfinished whatever a check says, and the user is told so below.
-    const falseChange = asksForEdit(question) && claimsChangeMade(result.text);
+    // An edit request that ends in a research answer was not carried out, however the answer is worded
+    // (run 14 repeat, readme-typo: "has been identified and fixed" slipped past the claim wording).
+    const editAsked = asksForEdit(question);
+    const falseChange = editAsked && claimsChangeMade(result.text);
     let check: AnswerCheck | undefined;
     if (review && !result.fallback && !result.cutOff) {
       this.s.busy = "Coordinator is checking that the answer covers your question…";
@@ -673,7 +676,7 @@ export class RunLoop {
       check = await review(result.text);
       signal.throwIfAborted();
       // An answer about files nobody opened is not verified, whatever the check says.
-      if (check && falseChange) check = { ...check, answered: false, missing: [...check.missing, "the request asks for a change, and research changed nothing"] };
+      if (check && editAsked) check = { ...check, answered: false, missing: [...check.missing, "the request asks for a change, and research changed nothing"] };
       if (check && (coverage?.unread.length || coverage?.listCut || coverage?.skipped?.length || tooMany)) {
         const gaps = [
           coverage?.unread.length ? `${coverage.unread.length} of the ${coverage.files.length} files were not read: ${fileList(coverage.unread, 10)}` : "",
@@ -725,7 +728,12 @@ export class RunLoop {
     const coverageGap = coverage ? coverageNote(coverage) : tooMany ? tooManyNote(tooMany, askedCut) : undefined;
     // Research only reads, so an answer to an edit request that says something was changed is false (run 13,
     // readme-typo: "has been fixed", nothing drafted). Said first by rule; the check below cannot pass it either.
-    const gap = [falseChange ? "Nothing in your project was changed: research only reads files, so where the answer below says something was fixed, added or changed, that did not happen. Ask again to have the change made." : "", coverageGap ?? ""].filter(Boolean).join("\n\n") || undefined;
+    const gap = [
+      falseChange
+        ? "Nothing in your project was changed: research only reads files, so where the answer below says something was fixed, added or changed, that did not happen. Ask again to have the change made."
+        : editAsked
+          ? "Nothing in your project was changed: this request was answered by research, which only reads files. Ask again to have the change made."
+          : "", coverageGap ?? ""].filter(Boolean).join("\n\n") || undefined;
     await this.s.append(c.id, {
       author: "coordinator",
       kind: "answer",
