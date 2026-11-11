@@ -1,6 +1,6 @@
 /** Run 10, rename-everywhere: a rename task whose files never had the old name is accepted by rule. */
 import { describe, expect, it } from "vitest";
-import { nothingToRename, renamedName, renameDoneInScope } from "../src/coordinator/review";
+import { nothingToRename, onlyRunsOrChecks, renamedName, renameDoneInScope, revertsAccepted } from "../src/coordinator/review";
 
 describe("renamedName", () => {
   it("reads the old name from rename and replace wording", () => {
@@ -46,5 +46,22 @@ describe("renameDoneInScope (run 14, rename-everywhere)", () => {
     expect(renameDoneInScope(task, "rename it", new Map([["src/convert.js", undefined]]))).toBe(false);
     expect(renameDoneInScope(task, "rename it", new Map([["src/convert.js", { before: "x\n", after: "x\n" }]]))).toBe(false);
     expect(renameDoneInScope("Add toKelvin to a.js", "rename it", done)).toBe(false);
+  });
+});
+
+describe("run 14 repeat 2 review rules", () => {
+  it("knows a task that only runs or checks", () => {
+    expect(onlyRunsOrChecks("Run tests to verify mean function fix")).toBe(true);
+    expect(onlyRunsOrChecks("Verify that python3 -m unittest passes.")).toBe(true);
+    expect(onlyRunsOrChecks("Run the tests and fix any failure.")).toBe(false);
+    expect(onlyRunsOrChecks("Fix mean() in src/calc.py.")).toBe(false);
+  });
+  it("finds a draft that puts back what an accepted change of the run replaced", () => {
+    const accepted = { original: "const NIGHT_DROP = 3;\nexport { NIGHT_DROP };\n", proposed: "const NIGHT_DROP = 4;\nexport { NIGHT_DROP };\n" };
+    const revert = { original: accepted.proposed, proposed: accepted.original };
+    expect(revertsAccepted("Make the failing test pass.", accepted, revert)).toBe("const NIGHT_DROP = 3;");
+    expect(revertsAccepted("Revert the night drop to 3.", accepted, revert)).toBeUndefined();
+    const other = { original: accepted.proposed, proposed: "const NIGHT_DROP = 4;\nconst DAY = 1;\nexport { NIGHT_DROP };\n" };
+    expect(revertsAccepted("Add DAY.", accepted, other)).toBeUndefined();
   });
 });

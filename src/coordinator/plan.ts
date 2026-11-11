@@ -95,6 +95,36 @@ export function dropUnknownDependencies(value: unknown): unknown {
   };
 }
 
+/**
+ * A plan with more tasks than allowed, with the extra tasks merged into the last allowed one. Run 14 repeat 2,
+ * python-project: a fix-up round allows one task, qwen planned two four times in a row, and the fix-up never ran.
+ * Merging keeps every instruction and file; tasks that are not well-formed objects are left for validation.
+ */
+export function mergeExtraTasks(value: unknown, limit: number): unknown {
+  const plan = value as { tasks?: unknown };
+  if (!plan || typeof plan !== "object" || !Array.isArray(plan.tasks) || plan.tasks.length <= limit || limit < 1) return value;
+  type Raw = { id?: unknown; title?: unknown; instructions?: unknown; dependsOn?: unknown; fileScope?: unknown; changes?: unknown; skills?: unknown };
+  const tasks = plan.tasks as Raw[];
+  if (!tasks.every((t) => t && typeof t === "object" && typeof t.instructions === "string" && Array.isArray(t.fileScope))) return value;
+  const kept = tasks.slice(0, limit - 1);
+  const merged = tasks.slice(limit - 1);
+  const mergedIds = new Set(merged.map((t) => t.id).filter((id) => typeof id === "string"));
+  const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  const first = merged[0]!;
+  const one: Raw = {
+    ...first,
+    instructions: merged.map((t, i) => `${i + 1}. ${String(t.instructions).trim()}`).join(" ").slice(0, 1200),
+    fileScope: [...new Set(merged.flatMap((t) => strings(t.fileScope)))].slice(0, 10),
+    dependsOn: [...new Set(merged.flatMap((t) => strings(t.dependsOn)))].filter((d) => !mergedIds.has(d)),
+    ...(merged.some((t) => t.changes !== undefined) ? { changes: merged.some((t) => t.changes === true) } : {}),
+    ...(merged.some((t) => Array.isArray(t.skills)) ? { skills: [...new Set(merged.flatMap((t) => strings(t.skills)))].slice(0, 6) } : {}),
+  };
+  const keptIds = new Set(kept.map((t) => t.id));
+  // A kept task that waited for a merged one now waits for the merged task, unless that would point at itself.
+  const remap = (t: Raw): Raw => ({ ...t, dependsOn: [...new Set(strings(t.dependsOn).map((d) => (mergedIds.has(d) ? (first.id as string) : d)))].filter((d) => d !== t.id && (keptIds.has(d) || d === first.id)) });
+  return { ...plan, tasks: [...kept.map(remap), one] };
+}
+
 export function findCycle(tasks: Pick<PlannedTask, "id" | "dependsOn">[]): string[] | undefined {
   const deps = new Map(tasks.map((t) => [t.id, t.dependsOn]));
   const state = new Map<string, "visiting" | "done">();

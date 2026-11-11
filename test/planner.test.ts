@@ -32,13 +32,17 @@ describe("planRequest", () => {
 });
 
 describe("task limit", () => {
-  it("asks the model to merge tasks when it goes over the configured limit", async () => {
-    const tasks = (n: number) => JSON.stringify({ tasks: Array.from({ length: n }, (_, i) => task(`t${i}`, [], `src/f${i}.ts`)) });
-    const p = scripted([tasks(5), tasks(3)]);
+  it("merges the extra tasks into the last allowed one instead of rejecting the plan (run 14, python-project)", async () => {
+    const tasks = (n: number) => JSON.stringify({ tasks: Array.from({ length: n }, (_, i) => task(`t${i}`, i ? [`t${i - 1}`] : [], `src/f${i}.ts`)) });
+    const p = scripted([tasks(5)]);
     const result = await planRequest(p, { request: "do it", maxTasks: 3 });
     expect(p.requests[0]!.messages[0]!.content).toMatch(/Up to 3 tasks/);
-    expect(p.requests[1]!.messages.at(-1)!.content).toMatch(/Too many tasks: at most 3/);
-    expect(result.plan.tasks).toHaveLength(3);
+    expect(p.requests).toHaveLength(1);
+    expect(result.plan.tasks.map((t) => t.id)).toEqual(["t0", "t1", "t2"]);
+    const last = result.plan.tasks[2]!;
+    expect(last.fileScope).toEqual(["src/f2.ts", "src/f3.ts", "src/f4.ts"]);
+    expect(last.instructions).toMatch(/^1\. [\s\S]* 2\. [\s\S]* 3\. /);
+    expect(last.dependsOn).toEqual(["t1"]);
   });
 });
 

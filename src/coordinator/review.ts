@@ -319,6 +319,34 @@ export function renameDoneInScope(instructions: string, feedback: string, files:
   return texts.some((t) => linesUsing(t!.before, pair.from).length > 0) && texts.every((t) => linesUsing(t!.after, pair.from).length === 0);
 }
 
+/**
+ * A draft that puts back what an accepted change of the same run took out: run 14 repeat 2, question-then-answer.
+ * The user asked for 4 degrees, that change was accepted, an old test still expected 3, and a fix-up changed the
+ * code back to 3 to make the test pass. Returns a line it put back, or undefined. A task that is asked to undo,
+ * revert or restore is left alone.
+ */
+export function revertsAccepted(
+  instructions: string,
+  accepted: { original: string | null; proposed: string },
+  draft: { original: string | null; proposed: string },
+): string | undefined {
+  if (/\b(undo|revert|restore|roll ?back|put back)\b/i.test(instructions) || accepted.original === null || draft.original === null) return undefined;
+  const lines = (t: string) => new Set(t.split("\n").map((l) => l.trim()).filter((l) => l.length > 2));
+  const [accBefore, accAfter, before, after] = [lines(accepted.original), lines(accepted.proposed), lines(draft.original), lines(draft.proposed)];
+  const added = [...accAfter].filter((l) => !accBefore.has(l));
+  const removed = [...accBefore].filter((l) => !accAfter.has(l));
+  if (!added.some((l) => before.has(l) && !after.has(l))) return undefined;
+  return removed.find((l) => after.has(l) && !before.has(l));
+}
+
+/** A task that only runs or checks something ("Run tests to verify the mean fix"), not one that also edits ("... and fix any failure"). */
+export function onlyRunsOrChecks(instructions: string): boolean {
+  return (
+    /^\s*(?:re-?)?(?:run|verify|check|test|confirm|validate|execute)\b/i.test(instructions) &&
+    !/\b(?:and|then|to|also)\s+(?:fix|change|edit|update|add|write|create|replace|remove|rename|modify|correct|implement)\b/i.test(instructions)
+  );
+}
+
 /** Builds the review prompt. Trusted parts are plain; everything a model wrote is fenced. */
 export function buildReviewMessages(ctx: ReviewContext, contextWindow: number): ChatMessage[] {
   let budget = Math.max(1024, contextWindow - REPLY_RESERVE) - estimateTokens(SYSTEM);

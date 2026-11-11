@@ -8,7 +8,7 @@ import { CoordinatorReply } from "../worker/worker";
 import { answerSubAgent } from "../coordinator/consult";
 import { failureLines } from "../checks/failures";
 import { conventionsText } from "../skills/catalog";
-import { asksResearchForCode, overrulesWithOtherReports, feedbackInScope, saysImpossible, nothingToRename, renameDoneInScope, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
+import { asksResearchForCode, overrulesWithOtherReports, feedbackInScope, saysImpossible, nothingToRename, renameDoneInScope, revertsAccepted, onlyRunsOrChecks, withoutMootUndo, MAX_REVIEW_ROUNDS, ReviewOutcome, ReviewSkip, reviewSubAgentResult, ReviewVerdict } from "../coordinator/review";
 import { AgentMonitor, Concern, CONCERN_LABEL, superviseAgent } from "../coordinator/monitor";
 import { ChatHost, RunControl } from "./host";
 import { ChatSession } from "./session";
@@ -388,6 +388,27 @@ export class Oversight {
         if (written.length) {
           this.host.log("info", `Review of "${task.title}": accepted by rule, its files were already changed and accepted earlier in this run (${written.join(", ")}).`);
           result = { ...result, verdict: "accept", feedback: `Accepted by rule: ${[...new Set(written)].join(", ")} already has an accepted change from earlier in this run, so there was nothing left to draft.` };
+        }
+      }
+      // Run 14 repeat 2, python-project: a "Run tests to verify the fix" task had nothing to draft, and its
+      // review sent it back for "no code changes". A task that only runs or checks is done without drafts.
+      if (result.verdict === "revise" && !research && !drafts.trim() && NO_CHANGES.test(result.feedback) && onlyRunsOrChecks(task.instructions)) {
+        this.host.log("info", `Review of "${task.title}": accepted by rule, it only runs or checks, so it has nothing to draft.`);
+        result = { ...result, verdict: "accept", feedback: "Accepted by rule: this task only runs or checks something, so it has no drafts." };
+      }
+      // A draft that undoes a change the user asked for earlier in this run is never accepted (run 14 repeat 2).
+      const accepted = (run.changes ?? []).filter((x) => x.status === "accepted" && x.taskId !== task.id);
+      for (const d of (run.changes ?? []).filter((x) => x.taskId === task.id && x.status === "pending")) {
+        const acc = accepted.filter((x) => x.path === d.path).at(-1);
+        const back = acc && revertsAccepted(task.instructions, acc, d);
+        if (back) {
+          this.host.log("info", `Review of "${task.title}": sent back by rule, its draft of ${d.path} puts back "${back}", which an accepted change of this run replaced.`);
+          result = {
+            ...result,
+            verdict: "revise",
+            feedback: `Checked by rule: your draft of ${d.path} puts back \`${back.slice(0, 120)}\`, which the change the user asked for replaced earlier in this run, so it undoes the user's request. Keep the requested change. If a test still expects the old behaviour, update that test instead.`,
+          };
+          break;
         }
       }
       // A send-back for work in files the sub-agent may not change cannot be done: that part is left out.

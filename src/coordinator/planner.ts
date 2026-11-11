@@ -5,7 +5,7 @@ import { untrustedSection } from "../context/untrusted";
 import { callStructured, PLAN_MAX_TOKENS } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
 import { SkillCatalog, skillIndex, skillText, SKILL_RULE, MAX_TASK_SKILLS } from "../skills/catalog";
-import { DEFAULT_MAX_TASKS, dropUnknownDependencies, MAX_TASKS, Plan, planSchema, Repair, repairPlan, snapScopes } from "./plan";
+import { DEFAULT_MAX_TASKS, dropUnknownDependencies, mergeExtraTasks, MAX_TASKS, Plan, planSchema, Repair, repairPlan, snapScopes } from "./plan";
 import { pathsOfTree } from "../context/budget";
 
 // Kept short on purpose: small models follow a few concrete rules and one
@@ -204,7 +204,7 @@ export async function planRequest(
       path: ["tasks"],
     }),
     schemaName: "plan",
-    repair: dropUnknownDependencies,
+    repair: (v) => mergeExtraTasks(dropUnknownDependencies(v), taskLimit(input)),
     maxRetries: 3,
     signal: options.signal,
     onAttempt: options.onAttempt,
