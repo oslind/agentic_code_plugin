@@ -161,6 +161,9 @@ export function batchQuestion(question: string, batch: string[]): string {
   return [
     `Answer the user's question for each of these ${batch.length} file(s), and only these: "${question.replace(/\s+/g, " ").trim().slice(0, 600)}"`,
     `Open every one of them, all at once with read_files (a search alone can miss things). Report one line per file: the path, then your finding for that file and the line it rests on. Say "not opened" for any file you could not read.`,
+    // Run 14: modules that throw through a helper in another file were reported as "likely throws" or
+    // "depends on util", and those hedged lines were left out of the answer.
+    `When a finding depends on a function imported from another file, open that file once and say what the function does, instead of "likely" or "depends on".`,
     `Files: ${batch.join(", ")}`,
   ].join("\n");
 }

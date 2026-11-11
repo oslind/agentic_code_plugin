@@ -26,6 +26,7 @@ import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
+import { fileFindings, picksFiles, SORT_MIN_FILES, sortFact, Sorted, sortFiles, withSortedFiles } from "./perFile";
 import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, askedScope, filesRead, LIST_LIMIT, readExtents, tooManyNote, codeFiles } from "./coverage";
 
 /**
@@ -642,11 +643,25 @@ export class RunLoop {
     const opened = await this.filesReadIn(runIds);
     const reported = reports.map((r) => r.text).join("\n");
     const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f, asked ?? []))), askedCut, askedSkipped);
-    const result = await synthesizeFindings(
+    // A question that picks files out of many: each file's report lines are sorted first, in small batches,
+    // and no file sorted as a match can be left out of the answer (run 14, find-throwing-100).
+    let sorted: Map<string, Sorted> | undefined;
+    if (asked && asked.length >= SORT_MIN_FILES && picksFiles(question)) {
+      const findings = fileFindings(asked, reports.map((r) => r.text));
+      if (findings.size) {
+        this.s.busy = `Coordinator is sorting ${findings.size} files by their reports…`;
+        this.s.changed();
+        sorted = await sortFiles(this.s.coordinatorProvider(c.workspaceRoot), question, findings, { signal, onError: (m) => this.host.log("warn", m) });
+        this.host.log("info", `Sorted ${sorted.size} files by their reports: ${[...sorted.values()].filter((v) => v === "yes").length} match.`);
+      }
+    }
+    const coverageText = coverage ? coverageFact(coverage) : tooMany ? `Checked by rule: ${tooManyNote(tooMany, askedCut)} Your first sentence says that not every file was read.` : undefined;
+    const synthesized = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
-      { question, reports, draft: draft?.reply, coverage: coverage ? coverageFact(coverage) : tooMany ? `Checked by rule: ${tooManyNote(tooMany, askedCut)} Your first sentence says that not every file was read.` : undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
+      { question, reports, draft: draft?.reply, coverage: [coverageText, sorted && sortFact(sorted)].filter(Boolean).join("\n\n") || undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
+    const result = sorted && asked && !synthesized.fallback && !synthesized.cutOff ? { ...synthesized, text: withSortedFiles(synthesized.text, sorted, asked) } : synthesized;
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
     // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
     // Neither is a cut-off answer: it is unfinished whatever a check says, and the user is told so below.

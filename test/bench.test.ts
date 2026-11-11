@@ -99,6 +99,9 @@ describe("benchmark tasks", () => {
     expect(modulesSaidToThrow(listed)).toEqual(new Set([0, 1]));
     expect(modulesSaidToThrow("Throwing:\n- mod_001\n- mod_002\n\nNot throwing:\n- mod_003\n- mod_004")).toEqual(new Set([0, 1]));
     expect(modulesSaidToThrow("Throwing:\n- mod_001\n\nStill unknown:\n- mod_003\n- mod_004")).toEqual(new Set([0]));
+    // Run 14, find-throwing-5: explanation lines for the ones that do not throw were counted as named.
+    expect(modulesSaidToThrow("mod_001.js\nmod_002.js\nmod_003.js logs a warning, mod_004.js clamps, mod_005.js returns 0.")).toEqual(new Set([0, 1]));
+    expect(modulesSaidToThrow("mod_001.js throws.\n\nChecked by rule: Unclear from the reports (they hedge or do not say): mod_003.js.")).toEqual(new Set([0]));
     expect(modulesSaidToThrow("mod_001 throws because the quantity is not checked before it is used. mod_002 does not throw.")).toEqual(new Set([0]));
     expect(modulesSaidToThrow("mod_001.js - throws a RangeError - mod_003.js - does not throw")).toEqual(new Set([0]));
     // Check 2026-11-09: a module the answer could not read, or found no lineTotal in, is not said to throw.
