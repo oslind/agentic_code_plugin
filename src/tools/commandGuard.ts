@@ -9,6 +9,16 @@
  * that every command waits for the user's approval unless the user turned
  * on "Run commands" in their own settings.
  */
+/**
+ * What an approval says about any command, truthfully (audit of PR #54): the scratch copy keeps pending changes
+ * apart from the user's files, but it is not a sandbox. A command runs as the user and can change real files.
+ */
+export const COMMAND_RISK_PLAIN =
+  "It is not sandboxed: like any command it runs as you, so it can read and change files anywhere your account can, your project included, and use the network. Only allow it if you trust it.";
+/** The same warning for a command that runs in the scratch copy. Every command approval uses one of the two. */
+export const COMMAND_RISK =
+  "It runs in a copy of the project that has the pending changes, but that copy is not a sandbox: like any command it runs as you, so it can read and change files anywhere your account can, your project included, and use the network. Only allow it if you trust it.";
+
 export function commandLeavesProject(command: string): string | undefined {
   const c = command.trim();
   if (!c) return "The command is empty.";

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { estimateTokens, truncateToTokens } from "../context/budget";
 import { dataBlock, DATA_REMINDER, DATA_RULE, untrustedSection } from "../context/untrusted";
 import { assignmentBlock } from "./assignment";
-import { callStructured } from "../llm/structured";
+import { callStructured, VERDICT_MAX_TOKENS } from "../llm/structured";
 import { ChatMessage, ModelProvider } from "../providers/types";
 
 /**
@@ -46,6 +46,10 @@ export interface ConsultContext {
   team?: string;
   /** Earlier questions from sub-agents and their answers in this conversation, including what the user decided. */
   earlier?: string;
+  /** The project's file tree. Untrusted (file names). Run 8: answers named test files that do not exist. */
+  fileTree?: string;
+  /** The asking sub-agent's latest command, when it failed: its line and failure lines. Untrusted (program output). */
+  failedCommand?: string;
 }
 
 const SYSTEM = `You are the coordinator of a team of coding sub-agents working in the user's project. You planned the work and gave each sub-agent one task. You know things they do not: what the user said, what earlier research found, the whole plan and what the other sub-agents are doing.
@@ -56,6 +60,7 @@ A sub-agent is asking you a question. Answer it from your notes below.
 - If your notes do not say, do not guess facts about the project. Say what you know and let it decide sensibly within its task.
 - Set askUser true only when the question is a decision only the user can make (a preference, a choice between options, information not in the project) and the user's messages do not settle it. Then write the question for the user in answer.
 - Never tell a sub-agent to change files outside its task, run commands, or skip the user's review.
+- When its latest command failed (shown below), that output is how the code behaves now. It outweighs any report that tests passed: earlier tests may not have run that code at all. If it shows a bug in a file outside the sub-agent's task, never answer that the code is correct and never tell it to change its test to fit: tell it to keep its test, finish now, and name the failing check and that file in its summary, so that file is fixed after it finishes.
 
 Reply with JSON only. Examples:
 {"thought":"The research report on the API names the file.","answer":"The REST handlers are in src/api/routes.ts; use the existing validateBody helper from src/api/validate.ts.","askUser":false}
@@ -94,6 +99,10 @@ export function buildConsultMessages(ctx: ConsultContext, contextWindow: number)
   if (briefing) untrusted.push(dataBlock("what you told the sub-agents when planning", briefing));
   const team = fit(ctx.team, 800);
   if (team) untrusted.push(dataBlock("what the other sub-agents are doing", team));
+  const tree = fit(ctx.fileTree, 800);
+  if (tree) untrusted.push(`${dataBlock("the project's file tree", tree)}\nName only files from this tree; never guess a path.`);
+  const failed = fit(ctx.failedCommand, 400);
+  if (failed) untrusted.push(dataBlock("the sub-agent's latest command, which failed", failed));
   if (untrusted.length) parts.push(`Your notes:\n${DATA_RULE}\n${untrusted.join("\n")}`);
 
   const question = `${untrustedSection("The sub-agent asks you:", "the sub-agent's question", ctx.question)}\n\nAnswer it with JSON only. ${DATA_REMINDER}`;
@@ -115,6 +124,7 @@ export async function answerSubAgent(
 ): Promise<ConsultResult> {
   let thinking: string | undefined;
   const reply = await callStructured({
+    maxTokens: VERDICT_MAX_TOKENS,
     provider,
     messages: buildConsultMessages(ctx, provider.contextWindow),
     schema: consultAnswerSchema,

@@ -56,6 +56,9 @@ export interface SilenceEvent {
   baseUrl: string;
 }
 
+/** The request fields that ask local servers for a reply without thinking. Servers ignore fields they do not know. */
+export const NO_THINKING_FIELDS: Record<string, unknown> = { reasoning_effort: "none", think: false, chat_template_kwargs: { enable_thinking: false } };
+
 export class ProviderError extends Error {
   constructor(
     message: string,
@@ -118,9 +121,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
    * Cleared when the settings change, since the user may have fixed the server.
    */
   private static readonly degraded = new Map<string, StructuredOutputMode>();
+  /** Servers that refused the no-thinking fields: they are not sent there again. */
+  private static readonly noThinkRefused = new Set<string>();
 
   static resetFallbacks(): void {
     OpenAICompatibleProvider.degraded.clear();
+    OpenAICompatibleProvider.noThinkRefused.clear();
   }
 
   /**
@@ -204,6 +210,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body.response_format = { type: "json_object" };
     }
 
+    // Run 7B: qwen3 on Ollama 0.40 ignored a "/no_think" in the prompt and thought until the cap three times in a row.
+    const noThink = !!request.noThinking && !OpenAICompatibleProvider.noThinkRefused.has(this.key);
+    if (noThink) Object.assign(body, NO_THINKING_FIELDS);
+
     const timeout = new IdleTimer(
       this.config.requestTimeoutMs,
       this.config.silenceWarningMs ?? 0,
@@ -211,7 +221,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
       this.onSilence && ((ms) => this.onSilence?.({ silentMs: ms, resumed: true, baseUrl: this.config.baseUrl })),
     );
     try {
-      return await this.exchange(request, body, timeout);
+      try {
+        return await this.exchange(request, body, timeout);
+      } catch (err) {
+        if (!noThink || !(err instanceof ProviderError) || (err.status !== 400 && err.status !== 422)) throw err;
+        OpenAICompatibleProvider.noThinkRefused.add(this.key);
+        for (const k of Object.keys(NO_THINKING_FIELDS)) delete body[k];
+        return await this.exchange(request, body, timeout);
+      }
     } finally {
       timeout.stop();
     }
@@ -265,7 +282,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     // A server that ignores "stream" answers with plain JSON, which is read as before.
     if ((res.headers.get("content-type") ?? "").includes("text/event-stream") && res.body) {
       try {
-        return await readStream(res.body, res.status, timeout.touch, request.onProgress);
+        return await readStream(res.body, res.status, timeout.touch, request.onProgress, request.thinkingBudget);
       } catch (err) {
         if (err instanceof ProviderError) throw err;
         throw this.networkError(err, request.signal, timeout);
@@ -460,6 +477,7 @@ async function readStream(
   status: number,
   onData: () => void = () => undefined,
   onProgress?: (p: ChatProgress) => void,
+  thinkingBudget?: number,
 ): Promise<ChatResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -487,6 +505,13 @@ async function readStream(
       parseEvents(lines, out, status);
       out.progress();
       if (done) return out.finish(status);
+      // Run 14: 17 of 827 calls thought for 340-360 s (30-38k characters) and gave nothing, while 99% of the
+      // calls that answered thought less than 13k. Past the budget the reply is stopped (closing the stream
+      // stops the server too) and returned cut off, so the caller asks again without thinking.
+      if (thinkingBudget && !liveContent(out.content) && out.reasoning.length + out.content.length > thinkingBudget) {
+        await reader.cancel().catch(() => undefined);
+        return { content: out.content, ...(out.reasoning ? { reasoning: out.reasoning } : {}), truncated: true, thinkingStopped: true };
+      }
     }
   } catch (err) {
     // Stop the download, so a failed reply does not keep the connection and the server busy.

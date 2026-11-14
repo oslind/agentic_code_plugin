@@ -172,7 +172,9 @@ function megabytes(bytes: number): string {
 /**
  * A copy of the project in the extension's own storage, with pending changes
  * written into it, so checks can run against them without touching the
- * user's files. Large folders such as node_modules are linked, not copied.
+ * user's files. Everything is copied, dependency folders too, unless the user
+ * links some (agentic.scratch.linkDirs): a linked folder is the real one, so
+ * a command that installs or changes packages changes it in the project.
  *
  * Files that may hold secrets (.env files, keys, certificates, credentials)
  * are left out, so a check that runs here cannot read them from the copy.
@@ -208,10 +210,10 @@ export class ScratchCopy {
     this.bytes += bytes;
     held.set(this, this.bytes);
     if (this.files > limits.maxFiles) {
-      throw new ScratchError(`The project has more than ${limits.maxFiles} files to copy for running commands. Add folders that commands do not need to agentic.scratch.exclude, or raise agentic.scratch.maxFiles (user settings).`);
+      throw new ScratchError(`The project has more than ${limits.maxFiles} files to copy for running commands. Add folders that commands do not need to agentic.scratch.exclude, raise agentic.scratch.maxFiles, or link dependency folders with agentic.scratch.linkDirs (user settings; a linked folder is shared with your project, so commands can change it).`);
     }
     if (this.bytes > limits.maxBytes) {
-      throw new ScratchError(`The project holds more than ${megabytes(limits.maxBytes)} to copy for running commands. Add large folders that commands do not need to agentic.scratch.exclude, or raise agentic.scratch.maxMegabytes (user settings).`);
+      throw new ScratchError(`The project holds more than ${megabytes(limits.maxBytes)} to copy for running commands. Add large folders that commands do not need to agentic.scratch.exclude, raise agentic.scratch.maxMegabytes, or link dependency folders with agentic.scratch.linkDirs (user settings; a linked folder is shared with your project, so commands can change it).`);
     }
     let total = 0;
     for (const n of held.values()) total += n;
@@ -250,25 +252,54 @@ export class ScratchCopy {
     const top = new Set([...this.skip, ...safeLinkDirs(this.linkDirs)]);
     const excluded = limits.exclude.length ? picomatch(limits.exclude.flatMap((p) => [p, `${p.replace(/\/+$/, "")}/**`]), { dot: true }) : () => false;
     // Copied entry by entry, so the folders skipped above are never even entered.
-    for (const entry of await fs.readdir(this.projectRoot)) {
-      if (top.has(entry)) continue;
-      await fs.cp(path.join(this.projectRoot, entry), path.join(dir, entry), {
-        recursive: true,
-        verbatimSymlinks: true,
-        filter: async (source) => {
-          if (excluded(this.rel(source))) return false;
-          if (!(await this.keep(source))) return false;
-          const stat = await fs.lstat(source).catch(() => undefined);
-          if (stat?.isFile()) this.count(stat.size, true);
-          return true;
-        },
-      });
-    }
+    const rootReal = await fs.realpath(this.projectRoot);
+    // Matched on the path as the copy shows it and on where it really is: audit of PR #54, a link to an excluded
+    // or skipped folder ("data-link -> private-data") copied its files under the link's name.
+    const skip = (rel: string) => top.has(rel.split("/")[0]!) || excluded(rel);
+    await this.copyTree(this.projectRoot, dir, "", "", rootReal, skip, new Set([rootReal]));
     for (const d of safeLinkDirs(this.linkDirs)) {
       const source = path.join(this.projectRoot, d);
       const stat = await fs.lstat(source).catch(() => undefined);
       // Only a real folder, never a link to somewhere else.
       if (stat?.isDirectory()) await this.linkTree(source, path.join(dir, d));
+    }
+  }
+
+  /**
+   * Copies a folder into the copy, file by file. A link inside the project is
+   * copied as what it points to, never as a link: audit of PR #54, a link kept
+   * as a link (an absolute one above all) let a command in the copy write
+   * through it into the real project. A link to a folder that holds the folder
+   * itself is skipped, so a loop of links ends. `rel` is the path inside the
+   * project as the copy shows it, which secret names and excludes are matched on.
+   */
+  private async copyTree(src: string, dest: string, rel: string, realRel: string, rootReal: string, skip: (rel: string) => boolean, ancestors: Set<string>): Promise<void> {
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const e of entries) {
+      const from = path.join(src, e.name);
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (skip(childRel) || isSecretPath(childRel)) continue;
+      if (!(await this.keep(from))) continue;
+      let source = from;
+      let childReal = realRel ? `${realRel}/${e.name}` : e.name;
+      let stat = await fs.lstat(from).catch(() => undefined);
+      if (stat?.isSymbolicLink()) {
+        source = await fs.realpath(from);
+        childReal = path.relative(rootReal, source).split(path.sep).join("/");
+        stat = await fs.stat(source).catch(() => undefined);
+      }
+      // The real place is checked too, for the entry and (through realRel) everything below it.
+      if (childReal !== childRel && (skip(childReal) || isSecretPath(childReal))) continue;
+      const to = path.join(dest, e.name);
+      if (stat?.isDirectory()) {
+        const real = await fs.realpath(source);
+        if (ancestors.has(real)) continue;
+        await fs.mkdir(to, { recursive: true });
+        await this.copyTree(source, to, childRel, childReal, rootReal, skip, new Set([...ancestors, real]));
+      } else if (stat?.isFile()) {
+        this.count(stat.size, true);
+        await fs.copyFile(source, to);
+      }
     }
   }
 
@@ -343,7 +374,7 @@ export class ScratchCopy {
 
   /**
    * Whether an entry goes into the copy. Secret files are left out by name.
-   * Links are kept as links, so they are also followed: one that leads
+   * Links are copied as what they point to (copyTree), so they are followed: one that leads
    * outside the project or to a secret file is left out, and so is one to a
    * folder that holds secret files.
    */
@@ -382,7 +413,7 @@ export const LINKABLE_DIRS = ["node_modules", "bower_components", ".venv", "venv
 
 /** The configured folders that may be linked: only names from LINKABLE_DIRS. */
 export function safeLinkDirs(value: unknown): string[] {
-  if (!Array.isArray(value)) return ["node_modules"];
+  if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((d): d is string => typeof d === "string" && LINKABLE_DIRS.includes(d)))];
 }
 

@@ -58,7 +58,7 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
           };
         }
         case "verifying":
-          return agent({ text: "Running the checks on a scratch copy that has my changes. Your files are not touched.", tag: "verify" });
+          return agent({ text: "Running the checks on a scratch copy that has my changes.", tag: "verify" });
         case "done":
           return agent({ text: "Task complete.", tag: "done", tone: "success" });
         default:

@@ -9,7 +9,7 @@ Commands (checks, and commands sub-agents run with `run_command`) run in a scrat
 - **Where.** Copies live in VS Code's storage for the extension (`<globalStorage>/scratch/<project>-<hash>/<run>/<task>`), never under the project. In 0.6.1 and earlier they were under `<project>/.agentic/scratch`, and a repository with a tracked link such as `.agentic -> /tmp` could move the copy, and the commands, somewhere else. Nothing in the project decides the location now.
 - **Checks on the way.** Every folder level below the extension's folder is checked with `lstat` before anything is created, copied or deleted: a link or anything that is not a plain folder is refused, and the folder may not be inside the project or hold it. Task ids that are not plain names are replaced by a hash, so they cannot add levels.
 - **When.** A verification copy is made only after you approve its first check. A sub-agent's copy is made when its first command or check runs.
-- **What is left out.** Files that may hold secrets (see below), `.git`, `.agentic`, and anything matching `agentic.scratch.exclude`. Dependency folders named in `agentic.scratch.linkDirs` (default `node_modules`) are linked, not copied.
+- **What is left out.** Files that may hold secrets (see below), `.git`, `.agentic`, and anything matching `agentic.scratch.exclude`. Dependency folders named in `agentic.scratch.linkDirs` (empty by default) are linked, not copied; a linked folder is the real one, so a command can change it in the project. Any other link inside the project is copied as the file or folder it points to, never kept as a link, so a command in the copy cannot write through it; excludes and skipped folders are matched on both the link's path and where it really leads.
 - **Budget.** One copy may hold at most `agentic.scratch.maxFiles` files (default 50,000) and `agentic.scratch.maxMegabytes` (default 1024). All copies that exist at the same time may hold at most `agentic.scratch.maxTotalMegabytes` (default 4096). A project over the budget gets a clear error naming the setting, and the partial copy is removed. All four settings, and `agentic.scratch.exclude`, count in user settings only.
 - **Left-over copies.** A copy is removed when its task ends. Copies left behind by a window that closed mid-run are removed after a day, when the extension starts.
 
@@ -60,17 +60,29 @@ For real isolation, set `agentic.commands.isolation` in your user settings to a 
 
 The wrapper itself is started without a shell, so nothing in it is expanded by the extension. Approval, the outside-the-project text check and the environment clean-up still apply to the command. The terminal shows which wrapper ran it.
 
-Docker or Podman, with no network and only the copy and the project's `node_modules` (read-only) mounted:
+Docker, with no network and only the copy mounted (dependency folders are copied into it, so they need no mount of their own):
 
 ```json
 "agentic.commands.isolation": [
   "docker", "run", "--rm", "--network=none",
-  "-v", "${folder}:${folder}",
-  "-v", "${project}/node_modules:${project}/node_modules:ro",
-  "-w", "${folder}",
+  "-v", "${folder}:/workspace",
+  "-w", "/workspace",
   "node:22", "sh", "-c", "${command}"
 ]
 ```
+
+Podman, the same without a root daemon (rootless Podman runs the container as your own user). It has to be installed where the extension runs: inside WSL (`sudo apt install podman`) when VS Code is connected to WSL, or Podman for Windows when it is not. The copy is mounted at a fixed Linux path, `/workspace`, so the same setting works with a Windows folder (`C:\...`) as the mount source:
+
+```json
+"agentic.commands.isolation": [
+  "podman", "run", "--rm", "--network=none",
+  "-v", "${folder}:/workspace",
+  "-w", "/workspace",
+  "node:22", "sh", "-c", "${command}"
+]
+```
+
+Use an image that has the project's tools (`node:22` for npm projects, a Python image for Python ones). Commands see `/workspace`, not your folder's real path, so a command that needs the real path will not find it. With these examples, leave `agentic.scratch.linkDirs` empty (the default), so dependency folders are copied into `/workspace` with everything else. A linked folder in the copy is a link to its absolute path on your machine (`${project}/node_modules`), which does not exist inside the container. If you do link one on Linux or WSL, mount it read-only at that same absolute path, for example `"-v", "${project}/node_modules:${project}/node_modules:ro"`; with Podman for Windows the host path is a Windows path the Linux container cannot use, so do not link folders there.
 
 bubblewrap on Linux, with the system read-only, only the copy writable and no network:
 
@@ -80,7 +92,6 @@ bubblewrap on Linux, with the system read-only, only the copy writable and no ne
   "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin",
   "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
   "--bind", "${folder}", "${folder}",
-  "--ro-bind", "${project}/node_modules", "${project}/node_modules",
   "--unshare-all", "--die-with-parent", "--chdir", "${folder}",
   "sh", "-c", "${command}"
 ]

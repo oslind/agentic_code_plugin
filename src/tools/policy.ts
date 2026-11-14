@@ -279,6 +279,17 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       }
       return { verdict: "allow" };
     }
+    case "read_files": {
+      // Check 2026-11-09: blank entries (" ") made whole calls fail; they are skipped instead.
+      const paths = call.paths.filter((x) => x.trim());
+      if (!paths.length) return { verdict: "deny", reason: "read_files needs at least one file path" };
+      for (const raw of paths) {
+        const p = normalizeWorkspacePath(raw);
+        if (!p) return { verdict: "deny", reason: `'${raw}' is outside the workspace` };
+        if (isSecretPath(p)) return { verdict: "deny", reason: `'${p}' may contain secrets and cannot be read; leave it out` };
+      }
+      return { verdict: "allow" };
+    }
     case "read_file": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
@@ -288,7 +299,8 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       return { verdict: "allow", path: p };
     }
     case "write_file":
-    case "replace_in_file": {
+    case "replace_in_file":
+    case "insert_lines": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
       if (isProtectedPath(p)) return { verdict: "deny", reason: `'${p}' is protected` };
@@ -335,7 +347,7 @@ export function isChangeAutoAccepted(path: string, auto: AutoApprove): boolean {
 /** Whether the user's auto-approve switches already allow a call the policy flagged. */
 export function isAutoApproved(call: ToolCall, auto: AutoApprove): boolean {
   if (call.tool === "request_check" || call.tool === "run_command") return auto.commands;
-  if (call.tool === "write_file" || call.tool === "replace_in_file") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
+  if (call.tool === "write_file" || call.tool === "replace_in_file" || call.tool === "insert_lines") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
   return false;
 }
 

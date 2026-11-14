@@ -1,9 +1,12 @@
+import { matchesAny } from "../tools/paths";
+import { renamePair } from "./review";
 import { ContextSection, estimateTokens, fitToBudget } from "../context/budget";
 import { untrustedSection } from "../context/untrusted";
-import { callStructured } from "../llm/structured";
+import { callStructured, PLAN_MAX_TOKENS } from "../llm/structured";
 import { ModelProvider } from "../providers/types";
 import { SkillCatalog, skillIndex, skillText, SKILL_RULE, MAX_TASK_SKILLS } from "../skills/catalog";
-import { DEFAULT_MAX_TASKS, MAX_TASKS, Plan, planSchema, Repair, repairPlan } from "./plan";
+import { DEFAULT_MAX_TASKS, dropUnknownDependencies, mergeExtraTasks, MAX_TASKS, Plan, planSchema, Repair, repairPlan, snapScopes } from "./plan";
+import { pathsOfTree } from "../context/budget";
 
 // Kept short on purpose: small models follow a few concrete rules and one
 // example better than a long policy document.
@@ -19,6 +22,8 @@ Rules:
 - Do not add tasks for running tests or reviewing; that happens automatically.
 - Set "changes": true only when a task creates or edits files. Tasks that read, explore, explain or summarise set "changes": false.
 - Start each instruction with what to do: "Add …", "Create …", "Read …", "Explain …".
+- When the user asks to make sure or check that something holds ("make sure toCelsius(212) returns 100"), the task first checks it (read the code and try it once with a command), and changes code only if it does not hold. Never assume the code is wrong.
+- Keep the user's own words for what to build. Never add a design choice the user did not make (a default export, a new parameter, an error message, a file name): leave it out, and the worker follows the file's existing style. "Export it" means export it the way the file already exports its other functions.
 ${skillExample !== undefined ? `- "skills" lists up to ${MAX_TASK_SKILLS} names from "Skills" that fit the task: a language or build skill for its files, and a task skill (tests, a fix, a refactor, docs). Use [] when none fits. Only use names from the list.\n` : ""}
 Reply with JSON only, in this shape:
 {"tasks":[{"id":"add-user-model","title":"Add User model","instructions":"Create src/models/user.ts exporting a User interface with id, email and createdAt.","dependsOn":[],"fileScope":["src/models/user.ts"],"changes":true${skillExample !== undefined ? `,"skills":[${skillExample}]` : ""}},{"id":"add-user-api","title":"Add user API route","instructions":"Add GET /users/:id in src/routes/users.ts that returns a User from src/models/user.ts.","dependsOn":["add-user-model"],"fileScope":["src/routes/users.ts"],"changes":true${skillExample !== undefined ? `,"skills":[]` : ""}}]}`;
@@ -36,6 +41,17 @@ export interface PlanInput {
    * it is fenced as data and never treated as instructions.
    */
   planned?: string;
+  /**
+   * The user's own message the request comes from. Trusted. The coordinator's rewrite can garble it: run 4
+   * turned "273.15" into "27.3.15", and the plan then said 27.315.
+   */
+  userWords?: string;
+  /** The user's earlier messages in this conversation, oldest first, for what the latest one refers to. Trusted. */
+  earlierUserWords?: string[];
+  /** For a rename: the old name and every project file that mentions it, searched by rule (filesMentioning). */
+  references?: { name: string; files: string[]; incomplete?: string };
+  /** Top-level outlines of the files the request names (outlinesOfNamedFiles). Read from the project, so fenced. */
+  outlines?: string;
   /** Compact file listing of the workspace. Truncated to fit if needed. */
   fileTree?: string;
   /** Extra context such as README or package.json excerpts, lowest priority. */
@@ -52,6 +68,10 @@ export interface PlanResult {
   plan: Plan;
   repairs: Repair[];
   droppedContext: string[];
+  /** Files that use a renamed name which the plan left out, given to an added task by coverReferences(). */
+  addedReferences?: string[];
+  /** fileScope paths the planner garbled, put right by snapScopes(). */
+  snappedScopes?: { taskId: string; from: string; to: string }[];
 }
 
 /** The heading of the project's file listing in a prompt. */
@@ -60,11 +80,73 @@ export const FILES_HEADING = "Workspace files (names only, from the project):";
 /** Tokens held back for the model's reply and for retry turns. */
 const REPLY_RESERVE = 4096;
 
+/** Numbers in a model's request that the user's words do not have (273.15 rewritten as 27.15). */
+export function numbersNotSaid(request: string, said: string): string[] {
+  const nums = (t: string) => t.match(/\d+(?:[.,]\d+)*/g) ?? [];
+  const known = new Set(nums(said));
+  return [...new Set(nums(request).filter((n) => !known.has(n)))];
+}
+
+/**
+ * Code names in a model's request that the user's words do not have: a word
+ * called like a function, or written in camelCase or snake_case. Run 10,
+ * already-done: the coordinator wrote "Celsius(212)" for the user's
+ * "toCelsius(212)", and the sub-agent renamed the function.
+ */
+export function namesNotSaid(request: string, said: string): string[] {
+  const code = /\b([A-Za-z_$][\w$]*)(?=\()|\b([a-z]+[A-Z][\w$]*|[a-z]+_[a-z_\d]+)\b/g;
+  const known = new Set(said.match(/[A-Za-z_$][\w$]*/g) ?? []);
+  const names = [...request.matchAll(code)].map((m) => (m[1] ?? m[2])!);
+  return [...new Set(names.filter((n) => !known.has(n)))];
+}
+
 export function buildPlannerMessages(input: PlanInput, contextWindow: number) {
   const budget = Math.max(1024, contextWindow - REPLY_RESERVE);
   const sections: ContextSection[] = [
     { name: "request", text: `Request:\n${input.request}`, priority: 100, required: true },
   ];
+  if (input.userWords?.trim() && input.userWords.trim() !== input.request.trim()) {
+    // Run 10, two-changes-in-a-row: the coordinator's request added "Add a way to toggle this mode", and the
+    // plan built a toggle nobody asked for. Its numbers drift too (273.15 became 27.15, 27.3.15, 27.315).
+    const userSaid = [input.userWords, ...(input.earlierUserWords ?? [])].join("\n");
+    const drift = numbersNotSaid(input.request, userSaid);
+    const names = namesNotSaid(input.request, userSaid);
+    const earlier = (input.earlierUserWords ?? []).map((m) => m.trim()).filter(Boolean).slice(-3);
+    sections.push({
+      name: "user",
+      text: [
+        `The user's latest message, in their own words. It decides what to build: plan only what it asks for. The request above is a model's rewrite of it. Take file names and facts from the request, but where it adds work, a number or a name that the user's words do not have, leave that out and follow the user's words:\n${input.userWords.trim().slice(0, 3000)}`,
+        earlier.length ? `The user's earlier messages (only to understand the latest one; work they asked for earlier is already handled):\n${earlier.map((m) => `- ${m.slice(0, 600)}`).join("\n")}` : "",
+        drift.length ? `Checked by rule: the request has ${drift.join(", ")}, which the user never wrote. Use the user's own numbers.` : "",
+        names.length ? `Checked by rule: the request names ${names.join(", ")}, which the user never wrote. Use the names the user wrote, or the ones in the project's files.` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      priority: 95,
+    });
+  }
+  if (input.references) {
+    const { name, files, incomplete } = input.references;
+    sections.push({
+      name: "references",
+      text: (files.join("\n") || "(none)") + (incomplete ? `\n[Checked by rule: this search did not cover the whole project: ${incomplete}. Files it missed may use ${name} too.]` : ""),
+      priority: 90,
+      wrap: (list) =>
+        untrustedSection(
+          `Every project file that mentions ${name}, searched by rule over the whole project (tests and root files included). A rename must change each of them, so give each one to a task:`,
+          "project files that mention the name",
+          list,
+        ),
+    });
+  }
+  if (input.outlines?.trim()) {
+    sections.push({
+      name: "outlines",
+      text: input.outlines,
+      priority: 70,
+      wrap: (o) => untrustedSection("The top-level code in the files the request names (plan against this: never plan for a class, method or function that is not here unless the user asks to create it):", "outlines of project files", o),
+    });
+  }
   if (input.planned?.trim()) {
     sections.push({
       name: "planned",
@@ -114,6 +196,7 @@ export async function planRequest(
 ): Promise<PlanResult> {
   const { messages, dropped } = buildPlannerMessages(input, provider.contextWindow);
   const plan = await callStructured({
+    maxTokens: PLAN_MAX_TOKENS,
     provider,
     messages,
     schema: planSchema.refine((p) => p.tasks.length <= taskLimit(input), {
@@ -121,13 +204,38 @@ export async function planRequest(
       path: ["tasks"],
     }),
     schemaName: "plan",
+    repair: (v) => mergeExtraTasks(dropUnknownDependencies(v), taskLimit(input)),
     maxRetries: 3,
     signal: options.signal,
     onAttempt: options.onAttempt,
     onThinking: options.onThinking,
   });
-  const repaired = repairPlan(plan);
-  return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped };
+  const snapped = snapScopes(plan, pathsOfTree(input.fileTree), [input.request, input.userWords ?? ""].join("\n"), input.userWords?.trim() || input.request);
+  const covered = coverReferences(snapped.plan, input.references, [input.userWords ?? "", input.request].join("\n"), taskLimit(input));
+  const repaired = repairPlan(covered.plan);
+  return { ...repaired, plan: withKnownSkills(repaired.plan, input.skills), droppedContext: dropped, snappedScopes: snapped.snapped, addedReferences: covered.added };
+}
+
+/**
+ * A rename plan covers every file the rule-based search found. Run 12, rename-everywhere: the search listed
+ * test.js, but a review had talked a researcher out of it, and the plan left it out, so the tests broke. A file
+ * no task may change gets a task of its own, after the others, for the same rename.
+ */
+export function coverReferences(plan: Plan, references: PlanInput["references"], said: string, limit: number): { plan: Plan; added: string[] } {
+  const pair = renamePair(said);
+  if (!references || !pair || pair.from !== references.name) return { plan, added: [] };
+  const added = references.files.filter((f) => !plan.tasks.some((t) => matchesAny(f, t.fileScope)));
+  if (!added.length) return { plan, added };
+  const instructions = `Rename ${pair.from} to ${pair.to} in ${added.join(", ")}: change every use of ${pair.from} in these files (imports, calls, exports, tests and docs) to ${pair.to}, and nothing else. These files were found by searching the whole project for ${pair.from}.`;
+  if (plan.tasks.length >= limit) {
+    // No room for another task: the last task takes the files too.
+    const last = plan.tasks[plan.tasks.length - 1]!;
+    return { plan: { tasks: [...plan.tasks.slice(0, -1), { ...last, fileScope: [...last.fileScope, ...added], instructions: `${last.instructions}\n\nAlso: ${instructions}`.slice(0, 1200) }] }, added };
+  }
+  let id = "rename-remaining-files";
+  while (plan.tasks.some((t) => t.id === id)) id = `${id}-x`.slice(0, 40);
+  const task = { id, title: `Rename ${pair.from} in the remaining files`.slice(0, 80), instructions: instructions.slice(0, 1200), dependsOn: plan.tasks.map((t) => t.id), fileScope: added };
+  return { plan: { tasks: [...plan.tasks, task] }, added };
 }
 
 /** Skills a task can be given: those for coding or research sub-agents. */

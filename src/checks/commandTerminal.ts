@@ -64,7 +64,7 @@ export function shownFolder(projectRoot: string, cwd: string): string {
 export function commandHeader(projectRoot: string, cwd: string, command: string): string {
   // The command and the folder come from the project: shown as text, never acted on by the terminal.
   const folder = escapeTerminalLine(shownFolder(projectRoot, cwd));
-  const note = scratchCopyOf(cwd) ? "\x1b[2m  (a copy of the project with the pending changes; your files are not touched)\x1b[0m\r\n" : "";
+  const note = scratchCopyOf(cwd) ? "\x1b[2m  (a copy of the project with the pending changes; not a sandbox, the command runs as you)\x1b[0m\r\n" : "";
   return `\x1b[1;36m${folder}\x1b[0m\r\n${note}\x1b[1m$ ${escapeTerminalLine(command)}\x1b[0m\r\n`;
 }
 

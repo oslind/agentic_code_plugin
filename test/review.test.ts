@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReviewMessages, draftsForReview, guardReview, reviewFeedback, reviewSubAgentResult } from "../src/coordinator/review";
+import { buildReviewMessages, changesFromOriginal, draftsForReview, feedbackInScope, guardReview, reviewFeedback, reviewSubAgentResult } from "../src/coordinator/review";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] } {
@@ -48,6 +48,17 @@ describe("coordinator review of a result", () => {
     expect(guardReview({ verdict: "revise", feedback: "Add the email validation in src/model.ts." })).toMatchObject({ verdict: "revise" });
     const provider = scripted([JSON.stringify({ thought: "Missing API part.", verdict: "revise", feedback: "Also export the Email type from src/model.ts." })]);
     expect(await reviewSubAgentResult(provider, ctx)).toMatchObject({ verdict: "revise", feedback: "Also export the Email type from src/model.ts." });
+  });
+
+  it("shows a small edited file whole after its diff, so a reviewer sees what the change must fit", () => {
+    // Run 4: an ES import was accepted in a file whose other lines use module.exports, which the diff hid.
+    const original = "const DEFAULT_TARGET = 21;\nfunction t() { return DEFAULT_TARGET; }\nmodule.exports = { t };\n";
+    const proposed = original.replace("const DEFAULT_TARGET = 21;", "import { DEFAULT_TARGET } from './config.js';");
+    const shown = draftsForReview([{ path: "src/thermostat.js", original, proposed }]);
+    expect(shown).toMatch(/\+ import \{ DEFAULT_TARGET \}[\s\S]*The whole file with the change:[\s\S]*module\.exports = \{ t \}/);
+    // A big file keeps only its diff.
+    const big = "line\n".repeat(3000);
+    expect(draftsForReview([{ path: "big.js", original: big, proposed: `${big}one more\n` }])).not.toMatch(/The whole file/);
   });
 
   it("cuts long drafts and fences the feedback for the sub-agent", () => {
@@ -103,5 +114,63 @@ describe("a malicious task instruction in the plan", () => {
     expect(prompt).toMatch(/<untrusted_data source="the sub-agent's drafts">[^]*TODO/);
     // A revise without concrete feedback is adjusted, which the chat treats as "not reviewed", never as a pass.
     expect(guardReview({ verdict: "revise", feedback: "" }).adjusted).toBeTruthy();
+  });
+});
+
+describe("review feedback for files outside the task", () => {
+  it("leaves out sentences that only ask for work in other files, and keeps the rest", () => {
+    const fb = "The test for the median function in test.js is missing. Also, the average function in src/stats.js was modified. Undo the average fix and add the test for the median function.";
+    expect(feedbackInScope(fb, ["src/stats.js"])).toEqual({
+      kept: "Also, the average function in src/stats.js was modified. Undo the average fix and add the test for the median function.",
+      dropped: ["The test for the median function in test.js is missing."],
+    });
+    expect(feedbackInScope("Add a test in test.js.", ["src/stats.js"])).toEqual({ kept: "", dropped: ["Add a test in test.js."] });
+    expect(feedbackInScope("Fix stats.js and test.js.", ["src/stats.js"]).dropped).toEqual([]);
+    expect(feedbackInScope("Fix src/api/users.ts.", ["src/api/**"]).dropped).toEqual([]);
+    expect(feedbackInScope("Add a test in test.js.", []).dropped).toEqual([]);
+  });
+});
+
+describe("a send-back shows the drafts against the original files", () => {
+  it("adds the diff so an unasked change can be restored line for line", () => {
+    const original = "function average(r) {\n  return sum(r) / 2;\n}\nmodule.exports = { average };\n";
+    const proposed = "function median(r) {\n  return r[0];\n}\nmodule.exports = { median };\n";
+    const text = reviewFeedback("Undo the average change.", [{ path: "src/stats.js", original, proposed }]);
+    expect(text).toMatch(/put the - lines back exactly as they were/);
+    expect(text).toMatch(/## src\/stats\.js[\s\S]*-\s+return sum\(r\) \/ 2;/);
+    expect(reviewFeedback("Fix it.")).not.toMatch(/compared with the files before/);
+    expect(changesFromOriginal([{ path: "new.js", original: null, proposed: "x" }])).toBe("");
+  });
+});
+
+describe("review with project conventions", () => {
+  it("shows the reviewer the conventions the sub-agent was given", () => {
+    const user = buildReviewMessages({ ...ctx, conventions: "<untrusted_data source=\"AGENTS.md\">JSDoc right above every function</untrusted_data>" }, 8192)[1]!.content;
+    expect(user).toMatch(/project's own conventions[\s\S]*JSDoc right above every function/);
+    expect(buildReviewMessages(ctx, 8192)[1]!.content).not.toMatch(/project's own conventions/);
+  });
+});
+
+describe("undo requests the drafts cannot act on", () => {
+  it("says so under drafts that only add lines, and drops the undo sentences", async () => {
+    const { draftsForReview, keepsOriginalLines, withoutMootUndo, KEEPS_ORIGINAL_FACT } = await import("../src/coordinator/review");
+    const original = "function average(r) {\n  return sum / 2;\n}\n\nmodule.exports = { average };\n";
+    const added = { path: "src/stats.js", original, proposed: original.replace("module.exports = { average };", "function median(r) {\n  return r[0];\n}\n\nmodule.exports = { average, median };") };
+    expect(keepsOriginalLines([added])).toBe(false);
+    const onlyAdds = { path: "src/stats.js", original, proposed: original + "\nfunction median(r) {\n  return r[0];\n}\n" };
+    expect(keepsOriginalLines([onlyAdds])).toBe(true);
+    const drafts = draftsForReview([onlyAdds]);
+    expect(drafts).toContain(KEEPS_ORIGINAL_FACT);
+    const r = withoutMootUndo("Undo the average function change. Also median returns the wrong value for [3, 1, 2]: sort first.", drafts);
+    expect(r.dropped).toHaveLength(1);
+    expect(r.kept).toMatch(/^Also median/);
+    expect(withoutMootUndo("Undo the change to average.", draftsForReview([added])).dropped).toEqual([]);
+  });
+});
+
+describe("commands the user declined, in a review", () => {
+  it("are named, so an honest 'it was declined' report is not sent back", () => {
+    const user = buildReviewMessages({ ...ctx, declined: ["node test.js"] }, 8192)[1]!.content;
+    expect(user).toMatch(/The user declined these commands in this run, so they never ran: `node test\.js`/);
   });
 });

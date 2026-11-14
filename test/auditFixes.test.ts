@@ -1,4 +1,5 @@
 import { existsSync, realpathSync } from "fs";
+import { checkToolCall } from "../src/tools/policy";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import * as path from "path";
@@ -220,6 +221,57 @@ describe("bounded reads (audit finding 3)", () => {
     expect(res.ok).toBe(true);
     expect(res.output).toMatch(/first \d+ lines/);
     expect(res.output).toMatch(/only its first \d+ lines can be read/);
+  });
+
+  it("replace_in_file reads written-out \\n as line breaks when only that matches, and says why it missed otherwise", async () => {
+    // e2e run 5, no-json-mode: without structured output the search came with "\\n" and never matched for 30 minutes.
+    await writeFile(path.join(repo, "convert.js"), "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\n\nmodule.exports = { toCelsius };\n");
+    const sandbox = await WorkspaceSandbox.create(repo);
+    const edit = (search: string, replace: string) => executeTool(toolCallSchema.parse({ tool: "replace_in_file", path: "convert.js", search, replace }), { sandbox, checks: [] });
+    const res = await edit("}\\n\\nmodule.exports = { toCelsius };", "}\\n\\nfunction toF(c) {\\n  return c;\\n}\\n\\nmodule.exports = { toCelsius, toF };");
+    expect(res.ok).toBe(true);
+    expect(res.output).toMatch(/read as line breaks/);
+    expect(await sandbox.readFile("convert.js")).toContain("}\n\nfunction toF(c) {\n  return c;\n}\n\nmodule.exports = { toCelsius, toF };\n");
+    const miss = await edit("nothing\\nhere", "x");
+    expect(miss.ok).toBe(false);
+    // Run 10: the hint only comes when real line breaks would have matched.
+    expect(miss.output).not.toMatch(/two characters \\n/);
+    expect(miss.output).toMatch(/convert\.js is short: you can also read it once and write it whole with write_file/);
+    const twice = await edit("{\\n", "x");
+    expect(twice.ok).toBe(false);
+    expect(twice.output).toMatch(/two characters \\n where the file has line breaks/);
+  });
+
+  it("replace_in_file with all: true replaces every occurrence, and suggests it when the text occurs more than once", async () => {
+    // e2e run 10, rename-everywhere: renames were a fight with exact matching, one occurrence at a time.
+    await writeFile(path.join(repo, "convert.js"), "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\n\nmodule.exports = { toCelsius };\n");
+    const sandbox = await WorkspaceSandbox.create(repo);
+    const edit = (all?: boolean) => executeTool(toolCallSchema.parse({ tool: "replace_in_file", path: "convert.js", search: "toCelsius", replace: "fahrenheitToCelsius", ...(all === undefined ? {} : { all }) }), { sandbox, checks: [] });
+    const once = await edit();
+    expect(once.ok).toBe(false);
+    expect(once.output).toMatch(/occurs 2 times/);
+    expect(once.output).toMatch(/"all": true/);
+    const res = await edit(true);
+    expect(res.ok).toBe(true);
+    expect(res.output).toMatch(/2 replacement/);
+    const text = await sandbox.readFile("convert.js");
+    expect(text).toContain("function fahrenheitToCelsius(f)");
+    expect(text).toContain("module.exports = { fahrenheitToCelsius };");
+  });
+
+  it("insert_lines adds lines before a line number, with nothing to match", async () => {
+    // e2e run 11, use-strict-everywhere: adding a first line was a fight with replace_in_file in every file.
+    await writeFile(path.join(repo, "a.js"), "const x = require('./b');\nmodule.exports = { x };\n");
+    const sandbox = await WorkspaceSandbox.create(repo);
+    const insert = (line: number, text: string) => executeTool(toolCallSchema.parse({ tool: "insert_lines", path: "a.js", line, text }), { sandbox, checks: [] });
+    const res = await insert(1, "'use strict';\n");
+    expect(res.ok).toBe(true);
+    expect(res.wrote).toBe("a.js");
+    expect(await sandbox.readFile("a.js")).toBe("'use strict';\nconst x = require('./b');\nmodule.exports = { x };\n");
+    expect((await insert(3, "// exports")).ok).toBe(true);
+    expect(await sandbox.readFile("a.js")).toBe("'use strict';\nconst x = require('./b');\n// exports\nmodule.exports = { x };\n");
+    expect((await insert(99, "x")).ok).toBe(false);
+    expect(checkToolCall(toolCallSchema.parse({ tool: "insert_lines", path: "other.js", line: 1, text: "x" }), { fileScope: ["a.js"], allowedChecks: [] }).verdict).toBe("deny");
   });
 
   it("search skips files over its limit without loading them", async () => {

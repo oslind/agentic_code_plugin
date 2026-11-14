@@ -8,7 +8,7 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runScenario } from "../e2e/harness";
+import { FAILURE_WORDS, runScenario } from "../e2e/harness";
 import { liveConfigFromEnv, RecordingProvider, ReplayProvider } from "../e2e/providers";
 import { SCENARIOS } from "../e2e/scenarios";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
@@ -132,5 +132,13 @@ describe("end-to-end harness", () => {
   it("is off unless a model is named, with Ollama's address as the default", () => {
     expect(liveConfigFromEnv({})).toBeUndefined();
     expect(liveConfigFromEnv({ AGENTIC_E2E_MODEL: "qwen3:8b" })).toMatchObject({ baseUrl: "http://localhost:11434/v1", model: "qwen3:8b", contextWindow: 16384 });
+  });
+});
+
+describe("FAILURE_WORDS", () => {
+  it("finds a failure named in English or Swedish", () => {
+    expect(FAILURE_WORDS.test('Följande kommandon misslyckades: $ npm test: Testen "average of three" misslyckades')).toBe(true);
+    expect(FAILURE_WORDS.test("npm test failed on average of three.")).toBe(true);
+    expect(FAILURE_WORDS.test("Klart. Allt fungerar.")).toBe(false);
   });
 });

@@ -33,6 +33,16 @@ export function extractJson(raw: string): unknown {
   if (start === -1) {
     throw new SyntaxError("No JSON found in reply");
   }
+  // The first complete value, so text or stray closing braces after it do not matter: run 6 without
+  // structured output got a valid plan followed by one "}" too many, four times in a row.
+  const first = firstValueEnd(text, start);
+  if (first !== undefined) {
+    try {
+      return JSON.parse(text.slice(start, first + 1));
+    } catch {
+      // Not valid after all; try the widest span below.
+    }
+  }
   const open = text[start];
   const close = open === "{" ? "}" : "]";
   const end = text.lastIndexOf(close);
@@ -40,6 +50,27 @@ export function extractJson(raw: string): unknown {
     throw new SyntaxError("Unterminated JSON in reply");
   }
   return JSON.parse(text.slice(start, end + 1));
+}
+
+/** Index of the bracket that closes the JSON value opening at `start`, skipping strings; undefined if it never closes. */
+function firstValueEnd(text: string, start: number): number | undefined {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return undefined;
 }
 
 /** The model's thinking: what the server returned separately, or the text of <think> blocks in the reply. */
@@ -62,7 +93,28 @@ export interface StructuredCallOptions<T> {
   onAttempt?: (attempt: number, error?: string) => void;
   /** Called with the model's thinking for each reply that has any. */
   onThinking?: (thinking: string) => void;
+  /** Longest reply, in tokens, for this call (the provider's own caps still apply). */
+  maxTokens?: number;
+  /** Repairs the parsed JSON before it is validated, for slips that have one safe fix (a retry costs a model call). */
+  repair?: (value: unknown) => unknown;
 }
+
+/**
+ * Token cap for the coordinator's short verdicts (review, supervision, verification, consults). Their JSON
+ * is a few hundred tokens; in e2e runs 5 and 6, qwen3:8b sometimes thought until the 8192-token cap
+ * (about 6 minutes) and gave nothing. With this cap such a call ends sooner and is retried without thinking.
+ */
+export const VERDICT_MAX_TOKENS = 3072;
+
+/** Token cap for plans: a plan's JSON is longer than a verdict (run 6E: a plan call thought for 354 s and gave nothing; 6F: 266 s at a 6144 cap). */
+export const PLAN_MAX_TOKENS = 4096;
+
+/**
+ * Most characters a structured call may think before it answers; past it the call is asked again without
+ * thinking. Run 14 (827 calls): answered calls thought 1.5k characters at the median and 12.7k at p99 (max
+ * 21.5k); the 14 runaways that gave nothing thought 17-38k (161-360 s each, over 4,000 s in all).
+ */
+export const THINKING_BUDGET_CHARS = 16_000;
 
 export class StructuredOutputError extends Error {
   constructor(
@@ -88,9 +140,18 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
   let lastReply = "";
   let lastError = "";
 
+  // After a reply that thought until the length limit, the retries ask the server not to think.
+  let thinkingCutOff = false;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     options.onAttempt?.(attempt, attempt > 0 ? lastError : undefined);
-    const reply = await provider.chat({ messages, jsonSchema: { name: schemaName, schema: jsonSchema }, signal });
+    const reply = await provider.chat({
+      messages,
+      jsonSchema: { name: schemaName, schema: jsonSchema },
+      signal,
+      maxTokens: options.maxTokens,
+      noThinking: thinkingCutOff || undefined,
+      thinkingBudget: thinkingCutOff ? undefined : THINKING_BUDGET_CHARS,
+    });
     lastReply = reply.content;
     const thinking = extractThinking(reply.content, reply.reasoning);
     if (thinking) options.onThinking?.(thinking);
@@ -98,8 +159,12 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
     try {
       // A reply stopped at the length limit is never used, even if what arrived happens to parse:
       // a string in it (the reply to the user) may end mid-sentence.
-      if (reply.truncated) throw new SyntaxError(CUT_OFF);
-      const parsed = schema.safeParse(extractJson(reply.content));
+      if (reply.truncated) {
+        thinkingCutOff = true;
+        throw new SyntaxError(CUT_OFF);
+      }
+      const raw = extractJson(reply.content);
+      const parsed = schema.safeParse(options.repair ? options.repair(raw) : raw);
       if (parsed.success) {
         return parsed.data;
       }
@@ -113,7 +178,9 @@ export async function callStructured<T>(options: StructuredCallOptions<T>): Prom
       { role: "assistant", content: reply.truncated ? `${reply.content.slice(0, 1000)} …(cut off)` : reply.content },
       {
         role: "user",
-        content: `Your reply was not valid. Problem:\n${lastError}\n\nReply again with only the corrected JSON object. No prose, no code fences.`,
+        // After a cut-off, "/no_think" asks Qwen3 models to answer without thinking (other models read it as plain text).
+        // In the e2e runs, qwen3:8b sometimes thought until the 8192-token cap (about 6 minutes on Oskar's GPU) and gave nothing.
+        content: `Your reply was not valid. Problem:\n${lastError}\n\nReply again with only the corrected JSON object. No prose, no code fences.${reply.truncated ? " /no_think" : ""}`,
       },
     );
   }

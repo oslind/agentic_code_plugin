@@ -4,7 +4,7 @@ import { CheckConfig } from "../checks/runner";
 import { ToolCall } from "../tools/protocol";
 import { isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted } from "../tools/policy";
 import { acceptChange } from "../changes/review";
-import { commandLeavesProject } from "../tools/commandGuard";
+import { COMMAND_RISK, COMMAND_RISK_PLAIN, commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { isUnreviewed } from "../coordinator/review";
 import { AgentMonitor } from "../coordinator/monitor";
@@ -48,9 +48,12 @@ export class Approvals {
       agentName: task.title,
       rememberable: true,
       rememberLabel: "Allow for the rest of this run",
-      text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+      text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. ${COMMAND_RISK} Turn on "Run commands" to stop being asked.`,
     });
-    if (decision?.kind !== "allow") return false;
+    if (decision?.kind !== "allow") {
+      this.s.deniedFor(runId).add(call.command);
+      return false;
+    }
     if (decision.remember) this.s.allowedFor(runId).add(call.command);
     return true;
   }
@@ -105,7 +108,7 @@ export class Approvals {
           rememberLabel: isCommand ? "Allow, and keep it for this folder" : undefined,
           preview,
           text: isCommand
-            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} Nothing runs until you allow it. It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it.`
+            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} Nothing runs until you allow it. ${COMMAND_RISK_PLAIN}`
             : `${reason}. Nothing is written until you allow it.`,
         });
         if (decision?.kind !== "allow") return false;
@@ -154,9 +157,12 @@ export class Approvals {
           agentName: task.title,
           rememberable: true,
           rememberLabel: "Allow for the rest of this run",
-          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. ${COMMAND_RISK_PLAIN} Turn on "Run commands" to stop being asked.`,
         });
-        if (decision?.kind !== "allow") return false;
+        if (decision?.kind !== "allow") {
+          this.s.deniedFor(runId).add(check.command);
+          return false;
+        }
         if (decision.remember) this.s.allowedFor(runId).add(check.command);
         return true;
       },

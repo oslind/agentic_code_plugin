@@ -3,12 +3,12 @@ import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
-import { Run } from "../state/types";
+import { Run, Task } from "../state/types";
 import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
-import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings } from "./synthesis";
+import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings, withDeniedNotice, withoutModelWarnings } from "./synthesis";
 import { compactConversation, compactionNote, planCompaction } from "./compaction";
-import { coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
+import { asksForEdit, claimsChangeMade, continueChange, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { AnswerCheck, Verification, verifyRoundLimit } from "../coordinator/verify";
@@ -19,11 +19,15 @@ import { ChatHost } from "./host";
 import { ChatSession } from "./session";
 import { DoneBar } from "./viewState";
 import { clip, clipLine, describePlan, isUnstarted, plural, title } from "./helpers";
-import { learnedSoFar, runScope, userRequestOf } from "./scope";
+import { learnedSoFar, runScope, userMessagesOf, userRequestOf } from "./scope";
+import { filesMentioning, outlinesOfNamedFiles } from "../context/outline";
+import { renamedName, ReviewVerdict } from "../coordinator/review";
 import { Oversight } from "./oversight";
 import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
+import { fileFindings, picksFiles, SORT_MIN_FILES, sortFact, Sorted, sortFiles, withSortedFiles } from "./perFile";
+import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, askedScope, filesRead, LIST_LIMIT, readExtents, tooManyNote, codeFiles } from "./coverage";
 
 /**
  * The coordinator's run loop for one prompt: its turn (answer, research,
@@ -144,7 +148,41 @@ export class RunLoop {
     // Every research round of this message, and the coordinator's last reply when it chose to answer.
     // Unless a plan follows, the prompt always ends with one answer that combines all the reports.
     const researchRuns: string[] = [];
+    /** Research questions that do not ask again for a command the user declined in this message's runs. */
+    const withoutDenied = (questions: string[]): string[] => {
+      const denied = researchRuns.flatMap((id) => [...this.s.deniedFor(id)]);
+      const kept = questions.filter((q) => !denied.some((d) => q.includes(d)));
+      if (kept.length < questions.length) this.host.log("info", `Left out ${questions.length - kept.length} research question(s) that asked again for a command you declined.`);
+      return kept;
+    };
     let planned = false;
+    // The files the user's question asks about one by one, when it is about many (found by rule, once).
+    let asked: string[] | undefined | null = null;
+    // True when the project had more files than were listed: the answer says so (audit of PR #54).
+    let askedCut = false;
+    // A question about every file of a project too big to read one by one: how many files (audit of PR #54).
+    let tooMany: number | undefined;
+    // Links the listing could not follow in the asked scope: the answer names them and is not verified (audit of PR #54).
+    let askedSkipped: string[] = [];
+    const askedFiles = async (): Promise<string[] | undefined> => {
+      if (asked === null) {
+        asked = await WorkspaceSandbox.create(c.workspaceRoot)
+          .then(async (files) => {
+            const skippedLinks: string[] = [];
+            return { list: await files.listFiles("**", LIST_LIMIT + 1, (rel) => skippedLinks.push(rel)), skippedLinks };
+          })
+          .then(({ list: files, skippedLinks }) => {
+            askedCut = files.length > LIST_LIMIT;
+            const scope = askedScope(userRequest ?? text, files.slice(0, LIST_LIMIT), undefined, skippedLinks);
+            if ("tooMany" in scope) tooMany = scope.tooMany;
+            if ("skipped" in scope && scope.skipped) askedSkipped = scope.skipped;
+            return "files" in scope ? scope.files : undefined;
+          })
+          .catch(() => undefined);
+        if (asked) this.host.log("info", `The question is about ${asked.length} files${askedCut ? ` (the project has more than ${LIST_LIMIT} files; only those listed are included)` : ""}; research is split over them by rule.`);
+      }
+      return asked;
+    };
     let draft: { reply: string; thought?: string; thinking?: string } | undefined;
     let limitReached = false;
     try {
@@ -176,7 +214,12 @@ export class RunLoop {
         "info",
         `Coordinator (${this.s.mode} mode) chose "${turn.modelAction ?? turn.action}"${turn.modelAction && turn.modelAction !== turn.action ? `, changed to "${turn.action}"` : ""}. Goal: ${turn.goal ?? "not given"}, complete: ${turn.complete ?? "not given"}.`,
       );
-      await this.s.append(c.id, { author: "coordinator", text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
+      // A full answer from the conversation alone ("What did you change?") is an answer like one from research:
+      // shown as one, never folded away. A question back to the user is not (run 10, what-did-you-change).
+      // Run 13, what-did-you-change: qwen left out "goal" ({"action":"none","complete":true}), so the answer was
+      // folded away like a remark. A complete reply with no goal given is an answer too; a change goal is not.
+      const direct = turn.action === "none" && (turn.goal === "answer" || turn.goal === undefined) && turn.complete === true && !/\?\s*$/.test(turn.reply.trim());
+      await this.s.append(c.id, { author: "coordinator", ...(direct ? { kind: "answer" as const } : {}), text: turn.reply, thought: turn.thought || undefined, thinking: clip(turn.thinking) });
       if (turn.overridden) await this.s.append(c.id, { author: "system", text: turn.overridden, tone: "warning" });
 
       // Research can take several rounds: a broad first look, then narrower researchers
@@ -185,8 +228,29 @@ export class RunLoop {
       let round = 0;
       const doResearch = async (t: CoordinatorResult): Promise<void> => {
         round++;
+        // A question about many files: each researcher gets a batch of the files nobody opened yet, by rule.
+        // Benchmark pass 1: asked about 100 modules, the coordinator sent one researcher, which opened 3.
+        const files = await askedFiles();
+        const unread = files && coverageOf(files, await this.checkedIn(researchRuns, files)).unread;
+        if (unread?.length) {
+          const batches = batchesOf(unread, this.host.delegationLimits().maxResearchers);
+          const covered = batches.reduce((n, b) => n + b.length, 0);
+          await this.s.append(c.id, {
+            author: "coordinator",
+            text: `Your question is about ${files!.length} files${unread.length < files!.length ? `, and ${unread.length} of them have not been opened yet` : ""}. Splitting them over ${batches.length} researcher(s), up to ${batches[0]!.length} files each, so every file is read${covered < unread.length ? ` (${unread.length - covered} more wait for the next round)` : ""}.`,
+          });
+          t = { ...t, questions: batches.map((b) => batchQuestion(userRequest ?? text, b)) };
+        } else if (tooMany && round === 1) {
+          await this.s.append(c.id, { author: "coordinator", text: `Your question is about ${codeFiles(tooMany, askedCut)} of the project, too many to read one by one. The researchers will search instead, and the answer will say that not every file was read. Name a folder to have every file in it read.` });
+          if (!t.questions?.length) t = { ...t, questions: [userRequest ?? text] };
+        }
         researchRuns.push(await this.research(c, t, abort.signal, round > 1 ? learnedSoFar(c.entries) : undefined));
         c = await this.conversations.load(c.id);
+        // Files still unopened get another round before the coordinator answers, while rounds are left.
+        if (files && round < maxRounds && coverageOf(files, await this.checkedIn(researchRuns, files)).unread.length) {
+          await doResearch({ ...t, questions: [] });
+          return;
+        }
         this.s.busy = "Coordinator is reading the reports…";
         this.s.runningRunId = undefined;
         this.s.changed();
@@ -216,13 +280,16 @@ export class RunLoop {
           "info",
           `Coordinator after research round ${round} of ${maxRounds} chose "${answer.modelAction ?? answer.action}"${answer.modelAction && answer.modelAction !== answer.action ? `, changed to "${answer.action}"` : ""}.`,
         );
+        // The user asked for a change and research was the first step: answering now would leave it undone.
+        // qwen3:8b researched a bug fix, then answered "I've fixed it" with nothing changed.
+        answer = continueChange(answer, turn.goal, text);
         if (answer.action === "plan" || answer.action === "research") {
           await this.s.append(c.id, { author: "coordinator", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
         }
         // The user asked for a change: the research was the first step, the plan is the next.
         if (answer.action === "plan") await makePlan(answer, true);
-        // The reports were too general: send narrower researchers.
-        else if (answer.action === "research") await doResearch(answer);
+        // The reports were too general: send narrower researchers. Never to ask again for a command the user declined (run 9).
+        else if (answer.action === "research" && withoutDenied(answer.questions ?? []).length) await doResearch({ ...answer, questions: withoutDenied(answer.questions ?? []) });
         else {
           // The coordinator's reply is only a draft: the answer combining every report is written below.
           draft = { reply: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) };
@@ -244,14 +311,28 @@ export class RunLoop {
         const learned = learnedSoFar(c.entries);
         const result = await planRequest(
           provider,
-          { request: t.request, fileTree, learned, maxTasks: this.host.delegationLimits().maxTasks, skills: await this.skillsFor(c.workspaceRoot) },
+          {
+            request: t.request,
+            userWords: userRequest,
+            earlierUserWords: userMessagesOf(c.entries).filter((m) => m.trim() !== userRequest?.trim()).slice(-3),
+            references: await this.renameReferences(c.workspaceRoot, userRequest ?? t.request),
+            outlines: await WorkspaceSandbox.create(c.workspaceRoot)
+              .then((files) => outlinesOfNamedFiles(files, fileTree, [t.request, userRequest ?? ""]))
+              .catch(() => undefined),
+            fileTree,
+            learned,
+            maxTasks: this.host.delegationLimits().maxTasks,
+            skills: await this.skillsFor(c.workspaceRoot),
+          },
           {
             signal: abort.signal,
             onAttempt: (n, err) => n > 0 && this.host.log("warn", `Plan retry ${n}: ${err}`),
             onThinking: (x) => (planThinking = x),
           },
         );
-        if (isReadOnlyPlan(result.plan.tasks)) {
+        // A request the coordinator called a change stays a plan, whatever the planner marked: run 4 sent
+        // "Write docs/usage.md" as a read-only task (changes: false), which then claimed it created the file.
+        if (isReadOnlyPlan(result.plan.tasks) && t.goal !== "change") {
           if (afterResearch && round >= maxRounds) {
             // Every research round for this message is used; reading again would only loop.
             await this.s.append(c.id, { author: "system", tone: "warning", text: "The plan only read files, which the research already did, so nothing was started. Say what should change, for example which file to edit." });
@@ -290,6 +371,8 @@ export class RunLoop {
               : `Proposed plan: ${n} task(s), each for one sub-agent. Press "Run it" (or say "go") to start, or tell me what to change.`,
         });
         if (result.droppedContext.length) this.host.log("warn", `Left out of the plan prompt: ${result.droppedContext.join(", ")}`);
+        for (const x of result.snappedScopes ?? []) this.host.log("warn", `Plan task ${x.taskId}: the file "${x.from}" is not in the project; using "${x.to}".`);
+        if (result.addedReferences?.length) this.host.log("warn", `The plan left out files that use the renamed name; added: ${result.addedReferences.join(", ")}.`);
         if (this.s.mode === "act") startRun = run.id;
       };
 
@@ -299,6 +382,9 @@ export class RunLoop {
         startRun = pending.id;
       } else if (turn.action === "research") {
         await doResearch(turn);
+      } else if (turn.action === "none" && turn.goal !== "change" && ((await askedFiles()) || tooMany)) {
+        // A question about many files is never answered from memory: the files are read first.
+        await doResearch({ ...turn, action: "research", questions: [] });
       }
       if (researchRuns.length && !planned) {
         // Before the answer goes out, the coordinator checks that it answers the question, and sends
@@ -308,11 +394,11 @@ export class RunLoop {
         let moreRounds = verifyRoundLimit(limits.verifyRounds);
         for (;;) {
           const review = limits.verify ? (answer: string) => this.verifier.checkResearchAnswer(c.workspaceRoot, text, answer, abort.signal) : undefined;
-          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds);
+          const answered = await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, review, moreRounds > 0 && round < maxRounds, (await askedFiles()) ?? undefined, askedCut, tooMany, askedSkipped);
           // A cut-off answer is not a finished one, and the bar says so.
           if (answered.cutOff) ended = { status: "partial", text: "Finished, but the answer was cut off before it was complete." };
-          const open = answered.open;
-          if (!open) break;
+          const open = answered.open && withoutDenied(answered.open);
+          if (!open?.length) break;
           moreRounds--;
           await this.s.append(c.id, {
             author: "coordinator",
@@ -332,7 +418,7 @@ export class RunLoop {
       await this.s.append(c.id, { author: "system", kind: "error", text: message, tone: abort.signal.aborted ? "warning" : "error" });
       // Research that finished before the failure still answers the question.
       if (!abort.signal.aborted && researchRuns.length && !planned) {
-        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
+        await this.answerFromReports(c, text, researchRuns, draft, limitReached, abort.signal, undefined, false, asked ?? undefined, askedCut, tooMany, askedSkipped).catch((e) => this.host.log("warn", `Could not answer from the reports: ${(e as Error).message}`));
       }
     } finally {
       this.s.abort = undefined;
@@ -351,6 +437,17 @@ export class RunLoop {
    * Starts a proposed plan. Running only happens in Act mode; pressing Run in
    * Plan mode is the user switching to Act mode for this conversation.
    */
+  /** For a rename request: the old name and every project file that mentions it, so the plan misses none. */
+  private async renameReferences(workspaceRoot: string, request: string): Promise<{ name: string; files: string[]; incomplete?: string } | undefined> {
+    const name = renamedName(request);
+    if (!name) return undefined;
+    const found = await WorkspaceSandbox.create(workspaceRoot)
+      .then((sandbox) => filesMentioning(sandbox, name))
+      .catch((err: Error) => ({ files: [] as string[], incomplete: err.message }));
+    if (found.incomplete) this.host.log("warn", `The search for files that use ${name} was incomplete: ${found.incomplete}.`);
+    return { name, files: found.files, incomplete: found.incomplete };
+  }
+
   /** The skills for a folder. A folder whose skills cannot be read just gets none. */
   async skillsFor(workspaceRoot: string): Promise<SkillCatalog | undefined> {
     try {
@@ -443,7 +540,9 @@ export class RunLoop {
             approve: async (_reason, call) => call.tool === "run_command" && (await this.approvals.approveAgentCommand(c.id, run.id, task!, call)),
             inbox: () => this.s.drainInbox(run.id, task!.id),
             askCoordinator: (q) => this.oversight.consultCoordinator(c.id, run.id, task!, q, signal),
-            reviewResult: (summary, skip) => this.oversight.reviewResult(c.id, run.id, task!, summary, "", signal, skip),
+            reviewResult: batchFilesOf(task.instructions)
+              ? (summary) => this.reviewBatch(run.id, task!, batchFilesOf(task!.instructions)!, summary)
+              : (summary, skip) => this.oversight.reviewResult(c.id, run.id, task!, summary, "", signal, skip),
             log: (type, message, data) => void this.tasks.log({ runId: run.id, taskId: task!.id, type, message, data }),
           });
           const result = await worker.run();
@@ -472,6 +571,43 @@ export class RunLoop {
     return run.id;
   }
 
+  /** Send-backs per batch researcher, for reviewBatch. */
+  private batchReviews = new Map<string, number>();
+
+  /** A batch researcher's result, reviewed by rule (coverage.ts batchReview): at most two send-backs, then it is flagged. */
+  private async reviewBatch(runId: string, task: Task, batch: string[], summary: string): Promise<ReviewVerdict> {
+    const key = `${runId}:${task.id}`;
+    const rounds = this.batchReviews.get(key) ?? 0;
+    const extents = readExtents((await this.tasks.readLog(runId).catch(() => [])).filter((e) => e.taskId === task.id));
+    const read = new Set([...extents].filter(([, x]) => x.complete).map(([p]) => p));
+    const r = batchReview(batch, read, summary, extents);
+    const final = !r.accept && rounds >= 2;
+    if (!r.accept && !final) this.batchReviews.set(key, rounds + 1);
+    const message = r.accept ? "accept" : final ? "not_accepted" : "revise";
+    await this.tasks.log({ runId, taskId: task.id, type: "coordinator_review", message, data: { feedback: r.feedback ?? "Every file was opened and reported (checked by rule).", research: true, byRule: true, final: final ? "limit_reached" : undefined } });
+    return r.accept ? { accept: true, outcome: "accepted" } : final ? { accept: true, outcome: "not_accepted" } : { accept: false, feedback: r.feedback, outcome: "sent_back" };
+  }
+
+  /**
+   * The asked files a researcher read to the end and a report of these runs names: what the next round need not
+   * send again. Run 13, find-throwing-100: 14 files were opened but in no report, in both attempts; they counted
+   * as done, so no round went back to them and the answer said "Checked 85 of the 100 files".
+   */
+  private async checkedIn(runIds: string[], files: string[]): Promise<Set<string>> {
+    const opened = await this.filesReadIn(runIds);
+    const reported: string[] = [];
+    for (const id of runIds) for (const t of (await this.tasks.load(id).catch(() => undefined))?.tasks ?? []) if (t.summary) reported.push(t.summary);
+    const text = reported.join("\n");
+    return new Set([...opened].filter((f) => mentionsFile(text, f, files)));
+  }
+
+  /** Files researchers read to their end in these runs. */
+  private async filesReadIn(runIds: string[]): Promise<Set<string>> {
+    const read = new Set<string>();
+    for (const id of runIds) for (const f of filesRead(await this.tasks.readLog(id).catch(() => []))) read.add(f);
+    return read;
+  }
+
   /**
    * The guaranteed last step of research that ends in an answer: one model
    * call that combines every report from every round into a reply to the
@@ -487,6 +623,10 @@ export class RunLoop {
     signal: AbortSignal,
     review?: (answer: string) => Promise<AnswerCheck | undefined>,
     canResearchMore = false,
+    asked?: string[],
+    askedCut = false,
+    tooMany?: number,
+    askedSkipped: string[] = [],
   ): Promise<{ open?: string[]; cutOff?: CutOff }> {
     this.s.busy = "Coordinator is combining the reports into an answer…";
     this.s.changed();
@@ -497,20 +637,66 @@ export class RunLoop {
         reports.push({ title: t.title, status: t.status.replace("_", " "), text: t.summary ?? (t.error ? `No report: ${t.error}` : "") });
       }
     }
-    const result = await synthesizeFindings(
+    // How much of a many-file question was read, counted from the logs: the answer must say so (benchmark pass 1).
+    // A file counts as checked only when a researcher opened it and a report says something about it: a file read
+    // but never reported on is as unknown to the answer as one never opened (check 2026-11-09: mod_042 was in no report).
+    const opened = await this.filesReadIn(runIds);
+    const reported = reports.map((r) => r.text).join("\n");
+    const coverage = asked && coverageOf(asked, new Set([...opened].filter((f) => mentionsFile(reported, f, asked ?? []))), askedCut, askedSkipped);
+    // A question that picks files out of many: each file's report lines are sorted first, in small batches,
+    // and no file sorted as a match can be left out of the answer (run 14, find-throwing-100).
+    let sorted: Map<string, Sorted> | undefined;
+    if (asked && asked.length >= SORT_MIN_FILES && picksFiles(question)) {
+      const findings = fileFindings(asked, reports.map((r) => r.text));
+      if (findings.size) {
+        this.s.busy = `Coordinator is sorting ${findings.size} files by their reports…`;
+        this.s.changed();
+        sorted = await sortFiles(this.s.coordinatorProvider(c.workspaceRoot), question, findings, { signal, onError: (m) => this.host.log("warn", m) });
+        this.host.log("info", `Sorted ${sorted.size} files by their reports: ${[...sorted.values()].filter((v) => v === "yes").length} match.`);
+      }
+    }
+    const coverageText = coverage ? coverageFact(coverage) : tooMany ? `Checked by rule: ${tooManyNote(tooMany, askedCut)} Your first sentence says that not every file was read.` : undefined;
+    const synthesized = await synthesizeFindings(
       this.s.coordinatorProvider(c.workspaceRoot),
-      { question, reports, draft: draft?.reply, limitReached },
+      { question, reports, draft: draft?.reply, coverage: [coverageText, sorted && sortFact(sorted)].filter(Boolean).join("\n\n") || undefined, limitReached, failedCommands: runIds.length ? failedCommandsOf(runScope(c.entries, runIds[0]!)) : [], deniedCommands: [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))] },
       { signal, onError: (m) => this.host.log("warn", m) },
     );
+    const result = sorted && asked && !synthesized.fallback && !synthesized.cutOff ? { ...synthesized, text: withSortedFiles(synthesized.text, sorted, asked) } : synthesized;
     this.host.log("info", `Combined ${reports.length} research report(s) into the answer${result.fallback ? " without the model (it gave no usable summary)" : ""}.`);
     // The raw reports (fallback) are not checked: there is no answer to check, only the reports.
     // Neither is a cut-off answer: it is unfinished whatever a check says, and the user is told so below.
+    // An edit request that ends in a research answer was not carried out, however the answer is worded
+    // (run 14 repeat, readme-typo: "has been identified and fixed" slipped past the claim wording).
+    const editAsked = asksForEdit(question);
+    const falseChange = editAsked && claimsChangeMade(result.text);
     let check: AnswerCheck | undefined;
     if (review && !result.fallback && !result.cutOff) {
       this.s.busy = "Coordinator is checking that the answer covers your question…";
       this.s.changed();
       check = await review(result.text);
       signal.throwIfAborted();
+      // An answer about files nobody opened is not verified, whatever the check says.
+      if (check && editAsked) check = { ...check, answered: false, missing: [...check.missing, "the request asks for a change, and research changed nothing"] };
+      if (check && (coverage?.unread.length || coverage?.listCut || coverage?.skipped?.length || tooMany)) {
+        const gaps = [
+          coverage?.unread.length ? `${coverage.unread.length} of the ${coverage.files.length} files were not read: ${fileList(coverage.unread, 10)}` : "",
+          coverage?.listCut ? `the project has more than ${LIST_LIMIT} files, and files beyond those were not considered` : "",
+          coverage?.skipped?.length ? `linked files or folders could not be followed: ${fileList(coverage.skipped, 10)}` : "",
+          tooMany ? `the question is about ${codeFiles(tooMany, askedCut)} of the project, and they were not all read` : "",
+        ].filter(Boolean);
+        check = { ...check, answered: false, missing: [...check.missing, ...gaps] };
+        canResearchMore = false;
+      }
+      // Run 10: the check asked for the output of a command the user declined, so the honest answer was held back
+      // for another round that could not run it. What only a declined command could answer is not open.
+      const declined = [...new Set(runIds.flatMap((id) => [...this.s.deniedFor(id)]))];
+      if (check && !check.answered && declined.length) {
+        const open = check.missing.filter((m) => !declined.some((d) => m.includes(d)));
+        if (open.length < check.missing.length) {
+          this.host.log("info", `The answer check asked for the output of a command you declined (${declined.join(", ")}); that part is not counted as open.`);
+          check = open.length ? { ...check, missing: open } : { ...check, answered: true, missing: [] };
+        }
+      }
       if (check && !check.answered && check.missing.length && canResearchMore) return { open: check.missing };
     }
     if (check) {
@@ -538,12 +724,22 @@ export class RunLoop {
       this.host.log("warn", `The research answer is unfinished (${result.cutOff === "length" ? "stopped at the reply length limit" : "ends with a lead-in and nothing after it"}).`);
       await this.s.append(c.id, { author: "system", tone: "warning", text: describeCutOff(result.cutOff, "The answer below") });
     }
+    // Said first by rule, so the gap shows whatever the model wrote.
+    const coverageGap = coverage ? coverageNote(coverage) : tooMany ? tooManyNote(tooMany, askedCut) : undefined;
+    // Research only reads, so an answer to an edit request that says something was changed is false (run 13,
+    // readme-typo: "has been fixed", nothing drafted). Said first by rule; the check below cannot pass it either.
+    const gap = [
+      falseChange
+        ? "Nothing in your project was changed: research only reads files, so where the answer below says something was fixed, added or changed, that did not happen. Ask again to have the change made."
+        : editAsked
+          ? "Nothing in your project was changed: this request was answered by research, which only reads files. Ask again to have the change made."
+          : "", coverageGap ?? ""].filter(Boolean).join("\n\n") || undefined;
     await this.s.append(c.id, {
       author: "coordinator",
       kind: "answer",
       tag: "from research",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
-      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text,
+      text: `${gap ? `${gap}\n\n` : ""}${result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text}`,
       thought: draft?.thought,
       thinking: clip(result.thinking ?? draft?.thinking),
     });
@@ -610,7 +806,7 @@ export class RunLoop {
       tag: "final reply",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
       runId: run.id,
-      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text,
+      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withNoChangeNotice(withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))), changes),
       thinking: clip(result.thinking),
     });
     return result.cutOff;
@@ -766,3 +962,14 @@ export class RunLoop {
   }
 
 }
+
+/**
+ * A final reply that says something was changed, from a run that left no draft at all (none pending, accepted or
+ * decided). Run 15, old-test-pins-value: every attempt failed, nothing was drafted, and the reply said "The night
+ * mode adjustment was changed from 3 to 4 degrees". It now starts with what is true.
+ */
+export function withNoChangeNotice(text: string, changes: { status: string }[]): string {
+  if (changes.some((c) => c.status !== "rejected") || !claimsChangeMade(text)) return text;
+  return `Nothing in your project was changed in this run: no sub-agent left a draft${changes.length ? " you kept" : ""}, so where the reply below says something was changed, that did not happen.\n\n${text}`;
+}
+

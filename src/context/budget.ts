@@ -98,3 +98,18 @@ export function fileTree(files: string[]): string {
   }
   return lines.join("\n");
 }
+
+/** The file paths of a tree written by fileTree(): two spaces per level, folders end in "/". */
+export function pathsOfTree(tree: string | undefined): string[] {
+  const out: string[] = [];
+  const stack: string[] = [];
+  for (const line of (tree ?? "").split("\n")) {
+    const name = line.trimStart();
+    if (!name) continue;
+    const depth = Math.floor((line.length - name.length) / 2);
+    stack.length = depth;
+    if (name.endsWith("/")) stack.push(name.slice(0, -1));
+    else out.push([...stack, name].join("/"));
+  }
+  return out;
+}

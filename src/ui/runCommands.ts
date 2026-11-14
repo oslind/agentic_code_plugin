@@ -14,6 +14,7 @@ import { ChangeViews } from "./changeViews";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
 import { ProjectTerminals } from "./projectTerminal";
+import { COMMAND_RISK_PLAIN } from "../tools/commandGuard";
 import { RunHooks } from "../chat/chatController";
 
 export interface RunControl {
@@ -70,7 +71,7 @@ function commandApprover(trusted: ReadonlySet<string>): (task: Task, check: Chec
     if (isCheckAutoApproved(readPermissions().commands, trusted, check.command) || allowed.has(check.command)) return true;
     const choice = await vscode.window.showWarningMessage(
       `"${task.title}" wants to run \`${check.command}\``,
-      { modal: true, detail: `Check "${check.name}". It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it.` },
+      { modal: true, detail: `Check "${check.name}". ${COMMAND_RISK_PLAIN}` },
       "Allow once",
       "Allow for this run",
     );
