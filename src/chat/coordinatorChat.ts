@@ -349,15 +349,21 @@ const CLAIM = new RegExp(
  * "I've updated". Run 13, readme-typo and two-changes-in-a-row: research answered "The spelling mistake in
  * README.md has been fixed" and "The 'away' mode was added" although nothing was drafted.
  */
+/** The same claim in Swedish ("har rättats", "är nu fixat", "jag har ändrat"). */
+const CLAIM_SV = /(?:^|[^\p{L}])(?:har|är|blev|blivit)\s+(?:nu\s+)?(?:rättat|rättats|fixat|fixats|ändrat|ändrats|lagt\s+till|lagts\s+till|uppdaterat|uppdaterats|tagit\s+bort|tagits\s+bort|skapat|skapats|korrigerat|korrigerats|bytt|bytts|ersatt|ersatts)(?![\p{L}])/iu;
+
 export function claimsChangeMade(text: string): boolean {
   return text
     .split(/(?<=[.!?])\s+|\n+/)
-    .some((s) => CLAIM.test(s) && !/\b(?:not|never|no)\b|n't\b/i.test(s));
+    .some((s) => (CLAIM.test(s) && !/\b(?:not|never|no)\b|n't\b/i.test(s)) || (CLAIM_SV.test(s) && !/(?:^|[^\p{L}])(?:inte|aldrig|inget|ingen|inga)(?![\p{L}])/iu.test(s)));
 }
 
 /** A message that starts by asking for an edit ("Fix ...", "Now also add ..."), not a question about one. */
 export function asksForEdit(text: string): boolean {
-  return !text.includes("?") && /^\s*(?:(?:now|also|please|and|then|ok|okay)[\s,]+)*(?:fix|add|change|update|rename|remove|delete|correct|make|implement|create|write|replace|insert|refactor|move|edit)\b/i.test(text);
+  if (text.includes("?")) return false;
+  if (/^\s*(?:(?:now|also|please|and|then|ok|okay)[\s,]+)*(?:fix|add|change|update|rename|remove|delete|correct|make|implement|create|write|replace|insert|refactor|move|edit)\b/i.test(text)) return true;
+  // Run 15, typo-swedish: "Rätta stavfelet i README.md." was not seen as an edit request.
+  return /^\s*(?:(?:nu|också|även|snälla|och|sen|sedan|ok|okej)[\s,]+)*(?:rätta|fixa|laga|ändra|lägg\s+till|ta\s+bort|radera|byt(?:\s+namn)?|uppdatera|korrigera|skapa|skriv|ersätt|flytta|redigera|gör)(?![\p{L}])/iu.test(text);
 }
 
 export function continueChange(answer: CoordinatorResult, firstGoal: CoordinatorTurn["goal"], userText: string): CoordinatorResult {

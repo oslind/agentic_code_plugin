@@ -806,7 +806,7 @@ export class RunLoop {
       tag: "final reply",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
       runId: run.id,
-      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))),
+      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withNoChangeNotice(withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))), changes),
       thinking: clip(result.thinking),
     });
     return result.cutOff;
@@ -962,3 +962,14 @@ export class RunLoop {
   }
 
 }
+
+/**
+ * A final reply that says something was changed, from a run that left no draft at all (none pending, accepted or
+ * decided). Run 15, old-test-pins-value: every attempt failed, nothing was drafted, and the reply said "The night
+ * mode adjustment was changed from 3 to 4 degrees". It now starts with what is true.
+ */
+export function withNoChangeNotice(text: string, changes: { status: string }[]): string {
+  if (changes.some((c) => c.status !== "rejected") || !claimsChangeMade(text)) return text;
+  return `Nothing in your project was changed in this run: no sub-agent left a draft${changes.length ? " you kept" : ""}, so where the reply below says something was changed, that did not happen.\n\n${text}`;
+}
+

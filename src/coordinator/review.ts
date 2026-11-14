@@ -310,9 +310,12 @@ export function nothingToRename(instructions: string, drafts: string, scopeFiles
  * belong to other tasks. `files` maps each of the task's files to its text before and with the drafts
  * (undefined when it could not be read, which never counts as done).
  */
-export function renameDoneInScope(instructions: string, feedback: string, files: Map<string, { before: string; after: string } | undefined>): boolean {
-  const pair = renamePair(instructions);
-  if (!pair || pair.from === pair.to || pair.from.includes(".") || files.size === 0) return false;
+export function renameDoneInScope(instructions: string, feedback: string, files: Map<string, { before: string; after: string } | undefined>, said?: string): boolean {
+  // Run 15, rename-then-run-tests: the task said "Rename the toCelsius function in src/convert.js to ...", where
+  // the pattern finds "convert.js"; the user's own rename then names the pair.
+  const valid = (p: { from: string; to: string } | undefined) => (p && p.from !== p.to && !p.from.includes(".") ? p : undefined);
+  const pair = valid(renamePair(instructions)) ?? (said ? leftoverRename(said) : undefined);
+  if (!pair || files.size === 0) return false;
   if (!/\brenam/i.test(feedback) && !feedback.includes(pair.from) && !feedback.includes(pair.to)) return false;
   const texts = [...files.values()];
   if (texts.some((t) => t === undefined)) return false;

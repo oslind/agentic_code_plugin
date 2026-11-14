@@ -2537,6 +2537,13 @@ describe("routing follows the model's own structured choice", () => {
     // Run 14, readme-typo repeat.
     expect(claimsChangeMade("The spelling mistake in README.md has been identified and fixed by changing 'controler' to 'controller'.")).toBe(true);
     expect(claimsChangeMade("The typo was located, corrected and checked.")).toBe(true);
+    // Run 15, typo-swedish.
+    expect(claimsChangeMade("Stavfelet i README.md har rättats.")).toBe(true);
+    expect(claimsChangeMade("Stavfelet har inte rättats än.")).toBe(false);
+    expect(asksForEdit("Rätta stavfelet i README.md.")).toBe(true);
+    expect(asksForEdit("Lägg till en funktion i src/a.js.")).toBe(true);
+    expect(asksForEdit("Vad gör src/a.js?")).toBe(false);
+    expect(asksForEdit("Rättvisa är viktigt.")).toBe(false);
     expect(claimsChangeMade("The spelling mistake has been identified: 'controler' should be 'controller'.")).toBe(false);
     expect(claimsChangeMade("I've updated src/a.js.")).toBe(true);
     expect(claimsChangeMade("No changes were made to files or code.")).toBe(false);

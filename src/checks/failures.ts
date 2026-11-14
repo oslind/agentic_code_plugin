@@ -42,3 +42,16 @@ export function splitFailures(withDrafts: string, without: { passed: boolean; ou
   const base = new Set(failureLines(without.output));
   return { added: now.filter((l) => !base.has(l)), before: now.filter((l) => base.has(l)) };
 }
+
+/**
+ * Node's assert output says "17 !== 18": the value the code gave first, the value the test expects second. Run 15,
+ * question-then-answer: the coordinator read it the other way round and told a fix-up to make the test "expect 18
+ * instead of 17". Each such line after "Expected values to be ..." is labelled by rule.
+ */
+export function withAssertNotes(text: string): string {
+  if (!/Expected values to be (?:strictly |loosely )?(?:deep-)?equal/i.test(text)) return text;
+  return text.replace(/^(\s*)(\S.{0,60}?) (!==|!=) (\S.{0,60}?)\s*$/gm, (line, pad: string, actual: string, op: string, expected: string) =>
+    /^[+-]\s/.test(actual) ? line : `${pad}${actual} ${op} ${expected}   [checked by rule: the code gave ${actual}; the test expects ${expected}]`,
+  );
+}
+

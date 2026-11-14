@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { failedBefore, failureLines, splitFailures } from "../src/checks/failures";
+import { failedBefore, failureLines, splitFailures, withAssertNotes } from "../src/checks/failures";
 
 const before = "PASS night is 3 lower\nFAIL average of three (2 ms)\n  30 !== 20\n4 passed, 1 failed\n";
 
@@ -23,5 +23,13 @@ describe("splitFailures", () => {
     const now = "FAIL average of three (5 ms)\nFAIL night is 3 lower: expected 18, got 17\n2 passed, 2 failed";
     expect(splitFailures(now, { passed: false, output: before })).toEqual({ added: ["FAIL night is 3 lower: expected 18, got 17"], before: ["FAIL average of three"] });
     expect(splitFailures(now, { passed: true, output: "" }).before).toEqual([]);
+  });
+});
+
+describe("withAssertNotes (run 15, question-then-answer)", () => {
+  it("labels which side of Node's 'actual !== expected' is which", () => {
+    const out = "FAIL night is 3 lower: Expected values to be strictly equal:\n\n17 !== 18\n\n4 passed, 1 failed";
+    expect(withAssertNotes(out)).toContain("17 !== 18   [checked by rule: the code gave 17; the test expects 18]");
+    expect(withAssertNotes("a !== b in some prose")).toBe("a !== b in some prose");
   });
 });

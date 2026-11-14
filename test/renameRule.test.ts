@@ -65,3 +65,12 @@ describe("run 14 repeat 2 review rules", () => {
     expect(revertsAccepted("Add DAY.", accepted, other)).toBeUndefined();
   });
 });
+
+describe("renameDoneInScope with the user's own rename (run 15, rename-then-run-tests)", () => {
+  it("uses the user's words when the task's wording names a file instead of the function", () => {
+    const files = new Map([["src/convert.js", { before: "function toCelsius(f) {}\n", after: "function fahrenheitToCelsius(f) {}\n" }]]);
+    const task = "Rename the toCelsius function in src/convert.js to fahrenheitToCelsius.";
+    expect(renameDoneInScope(task, "Tests still reference the old name; rename every usage.", files)).toBe(false);
+    expect(renameDoneInScope(task, "Tests still reference the old name; rename every usage.", files, "Rename toCelsius to fahrenheitToCelsius in src/convert.js and everywhere it is used.")).toBe(true);
+  });
+});

@@ -1,4 +1,4 @@
-import { failureLines } from "../checks/failures";
+import { failureLines, withAssertNotes } from "../checks/failures";
 import { z } from "zod";
 import { CheckResult, checkStatus } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
@@ -141,7 +141,7 @@ export function checkName(name: string): string {
 
 /** The end of a check's output, as plain text, for a prompt or a fix-up task. */
 export function checkTail(c: CheckResult, max = 1500): string {
-  const plain = toPlainText(c.output).trim();
+  const plain = withAssertNotes(toPlainText(c.output).trim());
   return plain.length > max ? `[… earlier output cut]\n${plain.slice(-max)}` : plain;
 }
 

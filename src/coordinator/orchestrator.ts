@@ -7,6 +7,7 @@ import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
 import { draftsForReview, ReviewSkip, ReviewVerdict } from "./review";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
+import { failedBefore, splitFailures, withAssertNotes } from "../checks/failures";
 import { detectChecks } from "../checks/detect";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
@@ -291,6 +292,19 @@ export class Orchestrator {
 
       const w: Worker = worker;
       let result = await w.run(checkpoint ? RESUME_NOTE : undefined);
+      // The checks on the project without this sub-agent's writes, run once when a check fails: a failure that was
+      // there before is not this task's to fix (run 15, old-test-pins-value: the old "average of three" failure
+      // failed every attempt). Not when it created a file, which a copy cannot leave out.
+      let baseline: CheckResult[] | undefined;
+      const baselineChecks = async (): Promise<CheckResult[]> => {
+        const before = new Map<string, string>();
+        for (const p of overlay.writes.keys()) {
+          const b = overlay.basisOf(p);
+          if (b === null || b === undefined) return [];
+          before.set(p, b);
+        }
+        return runAllChecks(w.checks, () => scratch.sync(before), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)), this.o.terminal);
+      };
       for (let round = 0; w.checks.length > 0 && overlay.writes.size > 0; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the checks decide. They run on a scratch copy.
@@ -311,6 +325,16 @@ export class Orchestrator {
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed, skipped: c.skipped })) });
         if (failed.length === 0) break;
+        baseline ??= await baselineChecks().catch(() => []);
+        signal.throwIfAborted();
+        const old = failed.filter((c) => {
+          const b = baseline!.find((x) => x.name === c.name);
+          return b && !b.skipped && failedBefore(c.output, b) === "before";
+        });
+        if (old.length === failed.length) {
+          await this.log("checks_preexisting", `Checks failed (${failed.map((c) => c.name).join(", ")}) only the way they failed before this sub-agent's changes; left to verification`, task.id, { checks: failed.map((c) => c.name) });
+          break;
+        }
         // Run 11B, rename-everywhere: the convert.js task renamed the function, and npm test then failed on its own
         // copy because test.js (another task's file) still used the old name. It was retried four times for work it
         // may not do. While another task of the run that changes the failing file is still to finish, the failure can be a
@@ -328,7 +352,9 @@ export class Orchestrator {
         }
         await this.setStatus(task, "running");
         result = await w.run(
-          `Your work is not done. These checks failed:\n\n${failed.map((c) => `## ${c.name}\n${c.output}`).join("\n\n")}\n\nFix the problems, then finish.`,
+          `Your work is not done. These checks failed:\n\n${failed.map((c) => `## ${c.name}\n${withAssertNotes(c.output)}`).join("\n\n")}\n\nFix the problems, then finish.${
+            baseline?.length ? ` Failures that were already there before your changes (${failed.flatMap((c) => splitFailures(c.output, baseline!.find((x) => x.name === c.name) ?? { passed: true, output: "" }).before).slice(0, 4).join(" | ") || "none"}) are not yours to fix.` : ""
+          }`,
         );
       }
 

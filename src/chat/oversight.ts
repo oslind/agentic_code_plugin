@@ -363,7 +363,7 @@ export class Oversight {
         result = { ...result, verdict: "accept", feedback: "Accepted by rule: the name to rename occurs in none of this task's files, so there is nothing to change." };
       }
       // A rename whose own files no longer use the old name is done: other files are other tasks' work (run 14).
-      if (result.verdict === "revise" && !research && drafts.trim() && (await this.renameDoneIn(c.workspaceRoot, task, run, result.feedback))) {
+      if (result.verdict === "revise" && !research && drafts.trim() && (await this.renameDoneIn(c.workspaceRoot, task, run, result.feedback, userMessagesOf(scope).join("\n")))) {
         this.host.log("info", `Review of "${task.title}": accepted by rule, none of its files uses the old name any more: ${result.feedback}`);
         result = { ...result, verdict: "accept", feedback: "Accepted by rule: none of this task's files uses the old name any more. Other files belong to other tasks." };
       }
@@ -459,7 +459,7 @@ export class Oversight {
   }
 
   /** Reads a task's files (only plain paths), with its own latest drafts applied, and checks its rename is done. */
-  private async renameDoneIn(workspaceRoot: string, task: Task, run: Run, feedback: string): Promise<boolean> {
+  private async renameDoneIn(workspaceRoot: string, task: Task, run: Run, feedback: string, said: string): Promise<boolean> {
     if (task.fileScope.some((p) => /[*?[\]{}]/.test(p))) return false;
     try {
       const sandbox = await WorkspaceSandbox.create(workspaceRoot);
@@ -471,7 +471,7 @@ export class Oversight {
         const after = draft ? draft.proposed : disk;
         files.set(p, before === undefined || after === undefined ? undefined : { before, after });
       }
-      return renameDoneInScope(task.instructions, feedback, files);
+      return renameDoneInScope(task.instructions, feedback, files, said);
     } catch {
       return false;
     }

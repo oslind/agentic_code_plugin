@@ -189,6 +189,25 @@ describe("Orchestrator without git", () => {
     expect(onDisk("artifact.log")).toBeUndefined();
   });
 
+  it("does not retry a sub-agent for a check failure that was there before its changes (run 15)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    // Always fails on 'average of three'; also fails on 'night' only while a.txt is not "x".
+    const checks: CheckConfig[] = [{ name: "test", command: node("const t=require('fs').readFileSync('a.txt','utf8');console.log('FAIL average of three');if(t!=='x')console.log('FAIL night');process.exit(1)") }];
+    const runId = await setup([task("a", ["a.txt"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).toContain("a");
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_preexisting" && e.taskId === "a")).toBe(true);
+  });
+
+  it("still retries a sub-agent whose changes add a failure", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const checks: CheckConfig[] = [{ name: "test", command: node("const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL new');process.exit(1)}") }];
+    const runId = await setup([task("a", ["a.txt"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).not.toContain("a");
+  });
+
   it("leaves a failing check to verification while another task that changes the failing file is unfinished", async () => {
     // e2e run 11B, rename-everywhere: the rename in one file failed npm test until another task updated test.js.
     const checks: CheckConfig[] = [{ name: "test", command: node("console.log('FAIL: b.txt still uses the old name'); process.exit(1)") }];
