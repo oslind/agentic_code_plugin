@@ -263,7 +263,7 @@ All 43 original scenarios passed except question-then-answer; no research answer
 - **rename-then-run-tests (timeout):** the plan was right (one task per file, then a test run), but the convert.js task's review was never accepted: it was judged against the other files and the test run. The by-rule rename acceptance missed it because the task's wording ("Rename the toCelsius function in src/convert.js to ...") yields no name pair; it now falls back to the user's own rename.
 - **old-test-pins-value:** the task's scope held only src/thermostat.js, and its check gate failed every attempt on the old "average of three" failure too. The gate now runs the checks once without the sub-agent's changes and lets failures that were there before go to verification. The final reply claimed "changed from 3 to 4" from a run with no drafts; such a reply now starts with "Nothing in your project was changed in this run".
 - **question-then-answer:** a fix-up was told to make the test "expect 18 instead of 17", reading Node's "17 !== 18" backwards. Assert lines are now labelled by rule ("the code gave 17; the test expects 18") wherever check output reaches a model. Turn 1 still researched three times instead of asking (open).
-- **typo-swedish:** "Rätta stavfelet i README.md." was not seen as an edit request. Swedish edit verbs and change claims are now recognised. The answer was also in English (open).
+- **typo-swedish:** "Rätta stavfelet i README.md." was not seen as an edit request. Swedish edit verbs and change claims are now recognised. The answer was in English, which Oskar said is fine.
 
 None of these fixes has run live yet.
 
