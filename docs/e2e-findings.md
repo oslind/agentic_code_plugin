@@ -267,6 +267,15 @@ All 43 original scenarios passed except question-then-answer; no research answer
 
 None of these fixes has run live yet.
 
+## Run 16: all 49 on 8a0ae0b, 43 passed, 449.6 min
+
+question-then-answer and typo-swedish passed, and rename-then-run-tests now plans and accepts all its steps. Fixed after the run (39d0fa2, 5970948, 011954f), not yet run live:
+
+- **old-test-pins-value, rename-then-run-tests, remove-export (one cause):** verification's saved "tests" check failed only on the "average of three" test that had always failed, and "Make the tests check pass" sent fix-ups at that test (one rewrote its inputs and expected value; the review made it undo that) until a timeout or a partial end. A failed saved check now runs once more on the project as it was before the run; a failure that is the same is not missing work, and one with both kinds names only the new lines and says to leave the old ones alone. replace_in_file refuses `all: true` for a search with no name in it ("18" -> "17" had also changed `[18, 20, 22]`).
+- **new-module-used (false done):** src/index.js only got `require("./format")`, formatTemp was never called, and the final reply said it was used. A name newly imported from a module the file did not import before and used nowhere else is now a draft problem for review and verification, and a warning right after the write.
+- **validate-input:** the plugin was right; sameBehaviour wanted exactly "4 passed, 1 failed" and an added passing test gave "5 passed". It now accepts 4 or more passed with the 1 old failure.
+- **parallel-changes (timeout, open):** the median review said the code was correct and sent it back anyway; two thinking cuts at 16k characters took 248 s and 364 s with two workers on the GPU.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
