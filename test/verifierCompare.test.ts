@@ -8,6 +8,7 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ChatSession } from "../src/chat/session";
 import { Verifier } from "../src/chat/verifier";
+import { fixUpNotes, guardVerification } from "../src/coordinator/verify";
 import { TaskStore } from "../src/state/taskStore";
 
 const TEST = [
@@ -63,5 +64,30 @@ describe("comparing a failed command with the project without the drafts", () =>
     expect(r.failedCommands?.map((f) => f.output)).toEqual([expect.stringMatching(/FAIL a\.w is 2/)]);
     // The rerun on all drafts is shown, so the final reply goes by the latest result.
     expect(appended).toEqual([expect.objectContaining({ tag: "rerun", text: expect.stringMatching(/still fails/) })]);
+  });
+});
+
+describe("a saved check that fails on all drafts together (run 16, old-test-pins-value)", () => {
+  const check = [{ name: "tests", command: "node test.js" }];
+  it("is marked as failing before when it fails only the way it did without the drafts", async () => {
+    const { verifier, root, runId } = await setup("module.exports = { v: 1, w: 2 };\n");
+    const [r] = await verifier.runVerifyChecks("c", root, runId, check, new AbortController().signal);
+    expect(r!.passed).toBe(false);
+    expect(r!.failedBefore).toBe("before");
+    const v = guardVerification({ verdict: "done", verified: "ok", missing: [] }, { checks: [r!], tasks: [] });
+    expect(v.verified).toBe(true);
+    expect(v.missing).toEqual([]);
+  });
+
+  it("names only the new failure when the drafts broke something and an old failure is there too", async () => {
+    const { verifier, root, runId } = await setup("module.exports = { v: 2 };\n");
+    const [r] = await verifier.runVerifyChecks("c", root, runId, check, new AbortController().signal);
+    expect(r!.failedBefore).toBe("new");
+    expect(r!.newFailures).toEqual(["FAIL a.v is 1"]);
+    expect(r!.oldFailures).toEqual(["FAIL old bug"]);
+    const v = guardVerification({ verdict: "done", verified: "ok", missing: [] }, { checks: [r!], tasks: [] });
+    expect(v.verified).toBe(false);
+    expect(v.missing[0]).toMatch(/where the drafts broke it: FAIL a\.v is 1\. Leave these alone.*FAIL old bug/);
+    expect(fixUpNotes(v as never, [r!], [])).toMatch(/failed before this request too and are not to be touched: FAIL old bug/);
   });
 });

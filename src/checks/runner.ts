@@ -25,10 +25,10 @@ export function isolatedArgv(wrapper: readonly string[], command: string, folder
 }
 
 /** A check's result in a few words, for the chat and prompts. */
-export function checkStatus(c: Pick<CheckResult, "passed" | "skipped" | "timedOut" | "notFound">): string {
+export function checkStatus(c: Pick<CheckResult, "passed" | "skipped" | "timedOut" | "notFound" | "failedBefore">): string {
   if (c.notFound) return "could not run (command not found)";
   if (c.skipped) return "skipped (not approved)";
-  return c.passed ? "passed" : c.timedOut ? "timed out" : "failed";
+  return c.passed ? "passed" : c.timedOut ? "timed out" : c.failedBefore === "before" ? "failed, the same way as before the changes" : "failed";
 }
 
 /** A check the user configured, such as `npm test`. Workers can only run these by name. */
@@ -51,6 +51,14 @@ export interface CheckResult {
   timedOut?: boolean;
   /** The command's program does not exist here (ENOENT), so it never ran. */
   notFound?: boolean;
+  /**
+   * Set by verification for a failed check that also ran on the project without the run's drafts: "before" when
+   * it failed there the same way (not this request's to fix), "new" when the drafts caused at least part of it.
+   */
+  failedBefore?: "before" | "new";
+  /** For a "new" failure that also has old ones: the failure lines the drafts added, and those that were there before. */
+  newFailures?: string[];
+  oldFailures?: string[];
 }
 
 /** Names of environment variables that usually hold credentials. */

@@ -269,6 +269,46 @@ export class Verifier {
           command: { line: command, output: String(data.output ?? "") },
         });
       }
+      return await this.compareChecksWithProject(root, workspaceRoot, runId, checks, results, signal, (check) => this.approveVerifyCheck(conversationId, runId, check, trusted));
+    } finally {
+      await scratch.remove().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Each failed check runs again on the project as it was before the run (one more run with the same approval), and is
+   * marked by whether it failed that way already. Run 16, old-test-pins-value: the saved "tests" check failed on the
+   * "average of three" test that had always failed, verification asked to make it pass, and a fix-up rewrote that
+   * test's inputs and expected value until the run timed out. The sub-agents' own commands already had this rule.
+   */
+  private async compareChecksWithProject(
+    root: string,
+    workspaceRoot: string,
+    runId: string,
+    checks: CheckConfig[],
+    results: CheckResult[],
+    signal: AbortSignal,
+    approve: (check: CheckConfig) => Promise<boolean>,
+  ): Promise<CheckResult[]> {
+    const failed = results.filter((r) => !r.passed && !r.skipped && !r.timedOut && !r.notFound);
+    if (!failed.length) return results;
+    const run = await this.tasks.load(runId);
+    const scratch = new ScratchCopy(root, [`verify-base-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    try {
+      const again = checks.filter((k) => failed.some((r) => r.name === k.name));
+      const base = await runAllChecks(again, () => scratch.sync(beforeTheRun(run.changes ?? [])), signal, approve, this.host.terminal?.(workspaceRoot));
+      return results.map((r) => {
+        const b = base.find((x) => x.name === r.name);
+        if (!failed.includes(r) || !b || b.skipped || b.timedOut || b.notFound) return r;
+        const verdict = failedBefore(r.output, b);
+        if (verdict === "unknown") return r;
+        if (verdict === "before") return { ...r, failedBefore: "before" as const };
+        const split = splitFailures(r.output, b);
+        return { ...r, failedBefore: "new" as const, ...(split.added.length && split.before.length ? { newFailures: split.added, oldFailures: split.before } : {}) };
+      });
+    } catch (err) {
+      signal.throwIfAborted();
+      this.host.log("warn", `Could not run the failed checks on the project without the drafts: ${(err as Error).message}`);
       return results;
     } finally {
       await scratch.remove().catch(() => undefined);

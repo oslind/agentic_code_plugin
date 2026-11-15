@@ -206,6 +206,11 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
                   }`,
           };
         }
+        // Run 16, old-test-pins-value: "18" -> "17" with all: true also changed the inputs [18,20,22] of another test.
+        // "all" is for renaming names; a bare number or symbol occurs in unrelated places.
+        if (every && count > 1 && !/[A-Za-z_$]/.test(search)) {
+          return { ok: false, output: `"all": true is for renaming a name, and "${search.slice(0, 40)}" is not one: it occurs ${count} times in ${call.path}, also where it means something else. Include the surrounding text of the one place to change so it matches once, without "all".` };
+        }
         const edited = every ? text.split(search).join(replace) : text.replace(search, () => replace);
         await ctx.sandbox.writeFile(call.path, edited);
         return { ok: true, output: draftNote(call.path, every ? `${count} replacement(s)` : "edit") + note + (await writeWarning(ctx, call.path, text, edited)), wrote: call.path };

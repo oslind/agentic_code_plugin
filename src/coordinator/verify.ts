@@ -174,7 +174,7 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
 
   // How each check ended is a fact and stays plain; its name comes from settings a project can propose, so names are fenced.
   if (ctx.checks.length) {
-    const results = ctx.checks.map((c, i) => `- check ${i + 1}: ${c.notFound ? "could not run, its command does not exist here" : c.skipped ? "skipped, the user did not approve it" : c.passed ? "passed" : c.timedOut ? "timed out" : "failed"}`).join("\n");
+    const results = ctx.checks.map((c, i) => `- check ${i + 1}: ${c.notFound ? "could not run, its command does not exist here" : c.skipped ? "skipped, the user did not approve it" : c.passed ? "passed" : c.timedOut ? "timed out" : c.failedBefore === "before" ? "failed, but exactly the way it failed on the project without the drafts: there before this request, so not missing work and nothing to fix" : "failed"}`).join("\n");
     const names = ctx.checks.map((c, i) => `check ${i + 1}: ${checkName(c.name)}`).join("\n");
     parts.push(`Checks on all drafts together:\n${results}\nTheir names, from the project's check settings:\n${dataBlock("the names of the checks", names)}`);
   } else {
@@ -189,7 +189,9 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   });
   evidence.push(dataBlock("all drafts of the run", fit(ctx.drafts, 3000) ?? "(no drafts: no files were changed)"));
   ctx.checks.forEach((c, i) => {
-    if (!c.passed && !c.skipped) evidence.push(dataBlock(`output of failed check ${i + 1}`, fit(checkTail(c), 600) ?? "(no output)"));
+    if (c.passed || c.skipped || c.failedBefore === "before") return;
+    const split = c.newFailures?.length ? `Checked by rule: new with the drafts: ${c.newFailures.slice(0, 4).join(" | ")}. Already failing before the drafts, not this request's to fix: ${(c.oldFailures ?? []).slice(0, 4).join(" | ")}.\n` : "";
+    evidence.push(`${split}${dataBlock(`output of failed check ${i + 1}`, fit(checkTail(c), 600) ?? "(no output)")}`);
   });
   // Run 4: with no checks set up, a run was verified "done" although the sub-agent's own npm test failed on its change.
   // Run 6: a test that had always failed, outside the request, was sent back as missing until the run timed out.
@@ -263,7 +265,8 @@ export function guardVerification(
   d: VerifyDecision,
   ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string; failedCommands?: { line: string; output: string }[] },
 ): Omit<Verification, "thinking"> {
-  const failed = ctx.checks.filter((c) => !c.passed && !c.skipped);
+  // A check that failed only the way it failed before the run is not this request's to fix (run 16, old-test-pins-value).
+  const failed = ctx.checks.filter((c) => !c.passed && !c.skipped && c.failedBefore !== "before");
   // Run 11, rename-everywhere: npm test failed with "toCelsius is not a function" only with the drafts (a test
   // file still used the old name), and verification called it "existing issues". A failure the drafts caused,
   // found by running the command on the project without them, is missing work whatever the model says.
@@ -276,7 +279,11 @@ export function guardVerification(
   missing = missing.filter((m) => !removals.includes(m));
   const forced: string[] = [
     ...draftProblemsOf(ctx.drafts ?? ""),
-    ...failed.map((c) => `Make the "${checkName(c.name)}" check pass on all drafts together.`),
+    ...failed.map((c) =>
+      c.newFailures?.length
+        ? `Make the "${checkName(c.name)}" check pass again where the drafts broke it: ${c.newFailures.slice(0, 3).join(" | ").slice(0, 300)}. Leave these alone, they failed before this request too: ${(c.oldFailures ?? []).slice(0, 3).join(" | ").slice(0, 200)}.`
+        : `Make the "${checkName(c.name)}" check pass on all drafts together.`,
+    ),
     ...caused.map((c) => `Make \`${c.line.slice(0, 120)}\` pass again: it fails with the drafts and not without them${firstFailure(c.output)}.`),
     ...unfinished.map((t) => `Finish "${t.title}", which did not complete${t.unfinished ? `: ${t.unfinished.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
     ...rejected.map((t) => `Finish "${t.title}": its review did not accept its drafts${t.notAccepted ? `: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
@@ -341,7 +348,11 @@ export function fixUpRequest(userRequest: string | undefined, round: number, mis
 /** What the fix-up planner should know. Model-written and project text, so the planner fences it. */
 export function fixUpNotes(v: Verification, checks: CheckResult[], tasks: VerifyTask[]): string {
   const lines = [`Verification found this still missing:`, ...v.missing.map((m) => `- ${m}`)];
-  for (const c of checks.filter((x) => !x.passed && !x.skipped)) lines.push(`Output of the failed check "${checkName(c.name)}":\n${checkTail(c, 1200)}`);
+  // A check that failed only the way it did before the run is not shown: run 16 had a fix-up rewrite that old test.
+  for (const c of checks.filter((x) => !x.passed && !x.skipped && x.failedBefore !== "before")) {
+    const split = c.oldFailures?.length ? `\nChecked by rule: these failed before this request too and are not to be touched: ${c.oldFailures.slice(0, 4).join(" | ")}.` : "";
+    lines.push(`Output of the failed check "${checkName(c.name)}":\n${checkTail(c, 1200)}${split}`);
+  }
   const reports = tasks.map((t) => `- ${t.title} (${t.status}): ${t.summary.replace(/\s+/g, " ").slice(0, 300)}`);
   if (reports.length) lines.push(`What the sub-agents reported:\n${reports.join("\n")}`);
   return lines.join("\n");

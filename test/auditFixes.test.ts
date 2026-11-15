@@ -259,6 +259,15 @@ describe("bounded reads (audit finding 3)", () => {
     expect(text).toContain("module.exports = { fahrenheitToCelsius };");
   });
 
+  it("replace_in_file refuses all: true for a bare number (run 16, old-test-pins-value)", async () => {
+    await writeFile(path.join(repo, "t.js"), "check(night() === 18);\ncheck(average([18, 20, 22]) === 20);\n");
+    const sandbox = await WorkspaceSandbox.create(repo);
+    const res = await executeTool(toolCallSchema.parse({ tool: "replace_in_file", path: "t.js", search: "18", replace: "17", all: true }), { sandbox, checks: [] });
+    expect(res.ok).toBe(false);
+    expect(res.output).toMatch(/is for renaming a name/);
+    expect(await sandbox.readFile("t.js")).toContain("[18, 20, 22]");
+  });
+
   it("insert_lines adds lines before a line number, with nothing to match", async () => {
     // e2e run 11, use-strict-everywhere: adding a first line was a fight with replace_in_file in every file.
     await writeFile(path.join(repo, "a.js"), "const x = require('./b');\nmodule.exports = { x };\n");
