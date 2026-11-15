@@ -276,6 +276,15 @@ question-then-answer and typo-swedish passed, and rename-then-run-tests now plan
 - **validate-input:** the plugin was right; sameBehaviour wanted exactly "4 passed, 1 failed" and an added passing test gave "5 passed". It now accepts 4 or more passed with the 1 old failure.
 - **parallel-changes (timeout, open):** the median review said the code was correct and sent it back anyway; two thinking cuts at 16k characters took 248 s and 364 s with two workers on the GPU.
 
+### Run 16 repeats: the 8 shaky scenarios twice more (4/8 and 5/8)
+
+Over three tries: same-file-parallel and typo-swedish 3/3; parallel-changes, question-then-answer and new-module-esm 2/3; new-module-used 1/3; old-test-pins-value and rename-then-run-tests 0/3. Three final replies claimed work that did not run (new-module-used twice, new-module-esm once), all verified only by reading the drafts. Fixed after the repeats (ed36e08, 4f80bda, 2830401), not yet run live:
+
+- Verification now runs the program the drafts are part of (a drafted script, or an entry file that loads a drafted module), with and without the drafts; a crash the drafts caused is missing work.
+- `const x = require("./m")` called as a function while m exports `{ x }` is a draft problem; so is CommonJS in a new file of a "type": "module" project.
+- A finished task's pending draft is protected from fix-ups that undo it (question-then-answer: -4 went back to -3 twice).
+- A task that may not edit tests is told not to undo the user's change for a test that pins the old value.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
