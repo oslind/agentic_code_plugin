@@ -13,7 +13,9 @@ const drafted = (r: { entries: { kind?: string }[] }) => r.entries.some((e) => e
 /** The thermostat tests: 4 pass and the old average bug fails, so the code's behaviour is unchanged. */
 const sameBehaviour = async (r: { sh(c: string, a: string[]): Promise<{ code: number; output: string }> }): Promise<string[]> => {
   const run = await r.sh("node", ["test.js"]);
-  return /4 passed, 1 failed/.test(run.output) ? [] : [`behaviour changed: node test.js says ${run.output.slice(-200)}`];
+  // Run 16, validate-input: an added, passing test is fine ("5 passed, 1 failed"); the old four still pass and only the old failure fails.
+  const m = /(\d+) passed, 1 failed/.exec(run.output);
+  return m && Number(m[1]) >= 4 ? [] : [`behaviour changed: node test.js says ${run.output.slice(-200)}`];
 };
 
 /** A 40-function module, to check that one edit in the middle of a long file leaves the rest exactly as it was. */
