@@ -28,3 +28,19 @@ describe("names taken from a project module", () => {
     expect(exportsProperty("module.exports = { a, b };\n", "b")).toBe(true);
   });
 });
+
+describe("a whole-module require called as a function (run 16 repeat 1, new-module-used)", () => {
+  const format = "function formatTemp(c) {\n  return `${c.toFixed(1)} °C`;\n}\nmodule.exports = { formatTemp };\n";
+  const read = async (p: string) => (p === "src/format.js" ? format : undefined);
+  it("is a problem when the module exports an object with that name", async () => {
+    const index = "const formatTemp = require('./format');\nconsole.log(formatTemp(21));\n";
+    const out = await importProblems([{ path: "src/index.js", proposed: index }], read);
+    expect(out).toEqual([expect.stringMatching(/takes the whole module \.\/format as formatTemp.*const \{ formatTemp \} = require/)]);
+  });
+  it("is fine when it is destructured, used as an object, or the module exports the function itself", async () => {
+    expect(await importProblems([{ path: "src/index.js", proposed: "const { formatTemp } = require('./format');\nformatTemp(1);\n" }], read)).toEqual([]);
+    expect(await importProblems([{ path: "src/index.js", proposed: "const format = require('./format');\nformat.formatTemp(1);\n" }], read)).toEqual([]);
+    const single = async (p: string) => (p === "src/format.js" ? "module.exports = function formatTemp(c) { return c; };\n" : undefined);
+    expect(await importProblems([{ path: "src/index.js", proposed: "const formatTemp = require('./format');\nformatTemp(1);\n" }], single)).toEqual([]);
+  });
+});

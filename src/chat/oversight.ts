@@ -397,7 +397,10 @@ export class Oversight {
         result = { ...result, verdict: "accept", feedback: "Accepted by rule: this task only runs or checks something, so it has no drafts." };
       }
       // A draft that undoes a change the user asked for earlier in this run is never accepted (run 14 repeat 2).
-      const accepted = (run.changes ?? []).filter((x) => x.status === "accepted" && x.taskId !== task.id);
+      // Run 16 repeat 1, question-then-answer: the user's change was still a pending draft of a finished task, and two
+      // fix-ups put -3 back. A finished task's pending draft counts like an accepted one.
+      const finished = new Set(run.tasks.filter((t) => t.status === "done").map((t) => t.id));
+      const accepted = (run.changes ?? []).filter((x) => x.taskId !== task.id && (x.status === "accepted" || (x.status === "pending" && finished.has(x.taskId))));
       for (const d of (run.changes ?? []).filter((x) => x.taskId === task.id && x.status === "pending")) {
         const acc = accepted.filter((x) => x.path === d.path).at(-1);
         const back = acc && revertsAccepted(task.instructions, acc, d);

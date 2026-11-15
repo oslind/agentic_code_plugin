@@ -157,6 +157,22 @@ export async function importProblems(changes: { path: string; proposed: string }
       ...[...code.matchAll(/\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*require\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/g)].map((m) => ({ names: m[1]!.split(",").map((p) => p.trim().split(":")[0]!.trim()), from: m[2]! })),
       ...[...code.matchAll(/^\s*import\s*\{([^{}]*)\}\s*from\s*["'](\.{1,2}\/[^"']+)["']/gm)].map((m) => ({ names: m[1]!.split(",").map((p) => p.trim().split(/\s+as\s+/)[0]!.trim()), from: m[2]! })),
     ];
+    // Run 16 repeat 1, new-module-used: `const formatTemp = require("./format")` took the whole { formatTemp } object,
+    // and calling it threw. A whole-module require called as a function, from a module that exports an object with
+    // that name in it, is a problem.
+    for (const m of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)\s*;?\s*$/gm)) {
+      const name = m[1]!;
+      if (!new RegExp(`(?<![\\w$.])${name.replace(/\$/g, "\\$")}\\s*\\(`).test(code)) continue;
+      const base = posix.normalize(posix.join(posix.dirname(c.path), m[2]!));
+      for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}/index.js`]) {
+        const text = changes.find((d) => d.path === candidate)?.proposed ?? (await read(candidate).catch(() => undefined));
+        if (text === undefined) continue;
+        if (/\bmodule\.exports\s*=\s*\{/.test(text) && exportsProperty(text, name) === true) {
+          problems.push(`${c.path} takes the whole module ${m[2]} as ${name} and calls ${name}(...), but ${candidate} exports an object ({ ${name}, ... }), so ${name} is that object and calling it throws "${name} is not a function". Write const { ${name} } = require("${m[2]}").`);
+        }
+        break;
+      }
+    }
     for (const t of takes) {
       const base = posix.normalize(posix.join(posix.dirname(c.path), t.from));
       let target: { path: string; text: string } | undefined;
