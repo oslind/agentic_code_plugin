@@ -23,7 +23,8 @@ import { ChatRequest, ChatResponse, ModelProvider } from "../src/providers/types
 import { TaskStore } from "../src/state/taskStore";
 
 /** How long a test waits for background work. Generous, since CI runners can be slow and busy; a passing test returns as soon as the work is done. */
-const WAIT_MS = 10000;
+// Generous: the slower CI runner timed out a follow-up at 10 s (run on 011954f) that finishes in well under a second locally.
+const WAIT_MS = 30000;
 
 /** A reply is its text, or a whole response (for example one the server cut off at its length limit). */
 function scripted(replies: (string | ChatResponse)[], contextWindow = 32768): ModelProvider & { requests: ChatRequest[] } {
