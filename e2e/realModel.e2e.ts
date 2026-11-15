@@ -22,7 +22,7 @@ const scenarios = SCENARIOS.filter((s) => !only.length || only.includes(s.name))
 const minutes = (name: string, fallback: number) => (Number(env[name]) || fallback) * 60000;
 const stallMs = minutes("AGENTIC_E2E_STALL_MIN", 3);
 const silenceMs = minutes("AGENTIC_E2E_SILENCE_MIN", 5);
-const timeoutMs = minutes("AGENTIC_E2E_TIMEOUT_MIN", replay ? 2 : 30);
+const timeoutMs = minutes("AGENTIC_E2E_TIMEOUT_MIN", replay ? 2 : 60);
 
 const E2E_DIR = __dirname;
 const RECORDINGS = path.join(E2E_DIR, "recordings");

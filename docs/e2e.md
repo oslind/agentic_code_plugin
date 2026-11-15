@@ -38,7 +38,7 @@ With Ollama, the model is unloaded at the end (`keep_alive: 0`) so it does not h
 | `AGENTIC_E2E_PARALLEL` | `1` | Sub-agents at once. One GPU serves one request at a time anyway. |
 | `AGENTIC_E2E_STALL_MIN` | `3` | Fail as stalled when no model call runs and the chat has not changed for this many minutes. |
 | `AGENTIC_E2E_SILENCE_MIN` | `5` | Fail when one model request sends nothing back (not even thinking) for this many minutes. The first live run had a request hang for 27 minutes. |
-| `AGENTIC_E2E_TIMEOUT_MIN` | `30` | Fail a scenario that takes longer than this. |
+| `AGENTIC_E2E_TIMEOUT_MIN` | `60` | Fail a scenario that takes longer than this. Raised from 30 after run 16: two sub-agents on one 8 GB GPU can need 30-40 minutes for parallel-changes, which is the hardware, not the plugin. |
 | `AGENTIC_E2E_RECORD` | off | `1`: a passing scenario's model calls become its recording in `e2e/recordings/`. |
 | `AGENTIC_E2E_KEEP_LOADED` | off | `1`: leave the model loaded afterwards. |
 | `AGENTIC_E2E_NO_LOG` | off | `1`: do not add a line to the offload log. |
