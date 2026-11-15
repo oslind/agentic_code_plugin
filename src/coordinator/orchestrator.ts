@@ -1,6 +1,6 @@
 import { SkillCatalog } from "../skills/catalog";
 import { promises as fs } from "fs";
-import { importProblems, moduleStyleOf, moduleStyleProblems, projectTestText } from "../changes/moduleStyle";
+import { importProblems, isTestPath, moduleStyleOf, moduleStyleProblems, projectTestText } from "../changes/moduleStyle";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { CommandSink } from "../checks/commandTerminal";
@@ -353,6 +353,12 @@ export class Orchestrator {
         await this.setStatus(task, "running");
         result = await w.run(
           `Your work is not done. These checks failed:\n\n${failed.map((c) => `## ${c.name}\n${withAssertNotes(c.output)}`).join("\n\n")}\n\nFix the problems, then finish.${
+            // Run 16, old-test-pins-value: the task could only change src/thermostat.js, an old test pinned the value the
+            // user asked to change, and fix rounds undid the user's change to make it pass.
+            !task.fileScope.some((f) => isTestPath(f) || f.includes("*"))
+              ? " You may not change test files. If a failing test still expects the old behaviour that the user asked to change, do not undo the change to make it pass: keep it and finish, and say which test needs updating."
+              : ""
+          }${
             baseline?.length ? ` Failures that were already there before your changes (${failed.flatMap((c) => splitFailures(c.output, baseline!.find((x) => x.name === c.name) ?? { passed: true, output: "" }).before).slice(0, 4).join(" | ") || "none"}) are not yours to fix.` : ""
           }`,
         );
