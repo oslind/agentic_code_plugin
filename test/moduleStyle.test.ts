@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadWarning, nearestMatch } from "../src/worker/tools";
-import { draftProblemsOf, moduleStyleProblems, undefinedExports, unexportedProblems } from "../src/changes/moduleStyle";
+import { draftProblemsOf, moduleStyleProblems, undefinedExports, unexportedProblems, unusedImports } from "../src/changes/moduleStyle";
 import { draftsForReview } from "../src/coordinator/review";
 import { guardVerification } from "../src/coordinator/verify";
 
@@ -31,7 +31,8 @@ describe("module style of drafts", () => {
   it("puts the problem after the diffs, where review and verification read it, and verification is never done with it", () => {
     const drafts = draftsForReview([{ path: "src/thermostat.js", original: cjs, proposed: mixed }]);
     const problems = draftProblemsOf(drafts);
-    expect(problems).toHaveLength(1);
+    // The draft also imports NIGHT_DROP and never uses it (run 16's unused-import rule).
+    expect(problems).toEqual([expect.stringMatching(/uses both/), expect.stringMatching(/imports NIGHT_DROP but never uses it/)]);
     const v = guardVerification({ verdict: "done", verified: "All good.", missing: [] }, { checks: [], tasks: [], drafts });
     expect(v.verified).toBe(false);
     expect(v.missing[0]).toMatch(/src\/thermostat\.js uses both/);
@@ -166,5 +167,26 @@ describe("an unexported function after a write and in the review", () => {
   it("is a rule-checked problem in the drafts a review sees", () => {
     const drafts = draftsForReview([{ path: "src/stats.js", original: before, proposed: after }], undefined, "commonjs", undefined, "Add median(readings) and export it");
     expect(draftProblemsOf(drafts)).toEqual([expect.stringMatching(/does not export it/)]);
+  });
+});
+
+describe("unusedImports", () => {
+  const before = 'const { toCelsius } = require("./convert");\nconsole.log(toCelsius(70).toFixed(1));\n';
+  it("flags a new import that nothing calls (run 16, new-module-used)", () => {
+    const after = 'const { toCelsius } = require("./convert");\nconst { formatTemp } = require("./format");\nconsole.log(toCelsius(70).toFixed(1));\n';
+    const out = unusedImports([{ path: "src/index.js", original: before, proposed: after }]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("formatTemp");
+  });
+  it("accepts a new import that is called", () => {
+    const after = 'const { toCelsius } = require("./convert");\nconst { formatTemp } = require("./format");\nconsole.log(formatTemp(toCelsius(70)));\n';
+    expect(unusedImports([{ path: "src/index.js", original: before, proposed: after }])).toEqual([]);
+  });
+  it("ignores imports that were there before, comments and ES aliases", () => {
+    const after = 'import { a as b } from "./x";\n// b() is used below\nb();\n';
+    expect(unusedImports([{ path: "src/m.mjs", original: null, proposed: after }])).toEqual([]);
+    const unused = 'import { a as b } from "./x";\n// b()\n';
+    expect(unusedImports([{ path: "src/m.mjs", original: null, proposed: unused }])).toHaveLength(1);
+    expect(unusedImports([{ path: "src/index.js", original: before, proposed: before }])).toEqual([]);
   });
 });

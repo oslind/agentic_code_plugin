@@ -437,3 +437,34 @@ export function droppedCalls(changes: { path: string; original: string | null; p
   return out;
 }
 
+
+/** Names a JavaScript text brings in with require or import (destructured or default), each with its module. */
+function importedNames(text: string): { name: string; from: string }[] {
+  const out: { name: string; from: string }[] = [];
+  const list = (s: string, from: string) =>
+    s.split(",").map((p) => p.trim().split(/\s*(?::|\bas\b)\s*/).pop()!.trim()).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n)).forEach((name) => out.push({ name, from }));
+  for (const m of text.matchAll(/(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\s*\(\s*["'`]([^"'`]+)/g)) list(m[1]!, m[2]!);
+  for (const m of text.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*["'`]([^"'`]+)["'`]\s*\)\s*\.\s*[A-Za-z_$]/g)) out.push({ name: m[1]!, from: m[2]! });
+  for (const m of text.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'`]([^"'`]+)/g)) list(m[1]!, m[2]!);
+  for (const m of text.matchAll(/import\s+([A-Za-z_$][\w$]*)\s*from\s*["'`]([^"'`]+)/g)) out.push({ name: m[1]!, from: m[2]! });
+  return out;
+}
+
+/**
+ * Names a draft newly imports but never uses anywhere else in the file. Only imports from a module the file did not import before. Run 16, new-module-used: src/index.js got
+ * `const { formatTemp } = require("./format")` and nothing called it, and the final reply said formatTemp was used.
+ */
+export function unusedImports(changes: { path: string; original: string | null; proposed: string }[]): string[] {
+  const out: string[] = [];
+  for (const c of changes) {
+    if (!/\.(c|m)?[jt]sx?$/i.test(c.path)) continue;
+    // Only modules the file did not import before: a half-done rename of an existing import is renameLeftovers' job.
+    const had = new Set(c.original === null ? [] : importedNames(c.original).map((i) => i.from));
+    const code = c.proposed.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    for (const name of new Set(importedNames(c.proposed).filter((i) => !had.has(i.from)).map((i) => i.name))) {
+      const uses = code.match(new RegExp(`(?<![\\w$.])${name.replace(/\$/g, "\\$")}(?![\\w$])`, "g"))?.length ?? 0;
+      if (uses <= 1) out.push(`${c.path} imports ${name} but never uses it: an import alone does not use it. Call ${name} where the request needs it, or remove the import.`);
+    }
+  }
+  return out;
+}
