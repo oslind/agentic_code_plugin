@@ -7,7 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ChatSession } from "../src/chat/session";
-import { Verifier } from "../src/chat/verifier";
+import { Verifier, withEntryPoints } from "../src/chat/verifier";
 import { fixUpNotes, guardVerification } from "../src/coordinator/verify";
 import { TaskStore } from "../src/state/taskStore";
 
@@ -41,7 +41,7 @@ async function setup(draft: string) {
     host: { openFolder: async () => root, scratchLinkDirs: () => [], permissions: () => ({ editFiles: false, sensitiveFiles: false, commands: false }), terminal: () => undefined, log: (_l: string, m: string) => void logs.push(m) },
     tasks,
     conversations: {},
-    allowedFor: () => new Set(["node test.js"]),
+    allowedFor: () => new Set(["node test.js", "node index.js"]),
     append: async (_c: string, e: { tag?: string; text: string }) => void appended.push(e),
   } as unknown as ChatSession;
   return { verifier: new Verifier(session), root, runId: run.id, appended };
@@ -89,5 +89,32 @@ describe("a saved check that fails on all drafts together (run 16, old-test-pins
     expect(v.verified).toBe(false);
     expect(v.missing[0]).toMatch(/where the drafts broke it: FAIL a\.v is 1\. Leave these alone.*FAIL old bug/);
     expect(fixUpNotes(v as never, [r!], [])).toMatch(/failed before this request too and are not to be touched: FAIL old bug/);
+  });
+});
+
+describe("running the program the drafts are part of (run 16)", () => {
+  it("finds a script that loads a drafted module, and leaves modules and servers out", async () => {
+    const { verifier, root } = await setup("module.exports = { v: 1, w: 2 };\n");
+    await fs.writeFile(path.join(root, "index.js"), "const a = require('./a');\nconsole.log(a.v);\n");
+    await fs.writeFile(path.join(root, "app.js"), "const a = require('./a');\nrequire('http').createServer().listen(3000);\n");
+    const drafted = new Map([["a.js", { path: "a.js", taskId: "t1", original: "module.exports = { v: 1 };\n", proposed: "module.exports = { v: 1, w: 2 };\n", status: "pending" as const }]]);
+    const found = await (verifier as unknown as { entryPoints(r: string, c: unknown[], d: unknown): Promise<string[]> }).entryPoints(root, [...drafted.values()], drafted);
+    expect(found).toEqual(["node index.js"]);
+    expect(withEntryPoints([{ line: "node  index.js", output: "x" }], found)).toEqual([{ line: "node  index.js", output: "x" }]);
+    expect(withEntryPoints([], found)).toEqual([{ line: "node index.js", output: "" }]);
+  });
+
+  it("blames the drafts when the program crashes with them and ran before", async () => {
+    const { verifier, root, runId } = await setup("module.exports = { v: 1 };\n");
+    await fs.writeFile(path.join(root, "index.js"), "const a = require('./a');\nconsole.log(a.v.toFixed(1));\n");
+    const run = await (verifier as unknown as { tasks: TaskStore }).tasks.load(runId);
+    run.changes = [{ path: "a.js", taskId: "t1", original: "module.exports = { v: 1 };\n", proposed: "module.exports = {};\n", status: "pending" }];
+    await (verifier as unknown as { tasks: TaskStore }).tasks.save(run);
+    const r = await verifier.compareWithProject("c", root, runId, withEntryPoints([], ["node index.js"]), [], new AbortController().signal);
+    expect(r.failedCommands?.map((f) => f.line)).toEqual(["node index.js"]);
+    expect(r.failedCommands?.[0]?.output).toMatch(/TypeError/);
+    const v = guardVerification({ verdict: "done", verified: "Read the drafts.", missing: [] }, { checks: [], tasks: [], failedCommands: r.failedCommands });
+    expect(v.verified).toBe(false);
+    expect(v.missing[0]).toMatch(/Make `node index\.js` pass again: it fails with the drafts and not without them: TypeError/);
   });
 });

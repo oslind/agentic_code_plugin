@@ -1,6 +1,7 @@
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
-import { importProblems, moduleStyleOf, projectTestText } from "../changes/moduleStyle";
+import { importProblems, isTestPath, moduleStyleOf, projectTestText } from "../changes/moduleStyle";
+import { escapeRegExp } from "../context/outline";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { ScratchCopy } from "../changes/scratch";
@@ -50,6 +51,11 @@ export function beforeTheRun(changes: Pick<PendingChange, "path" | "original">[]
     if (c.original !== null) out.set(c.path, c.original);
   }
   return out;
+}
+
+/** The sub-agents' failed commands, plus each program the drafts are part of that is not among them (run 16). */
+export function withEntryPoints(failed: FailedCommand[], programs: string[]): FailedCommand[] {
+  return [...failed, ...programs.filter((line) => !failed.some((f) => f.line.replace(/\s+/g, " ").trim() === line)).map((line) => ({ line, output: "" }))];
 }
 
 export class Verifier {
@@ -214,7 +220,7 @@ export class Verifier {
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
       conventions: conventionsText(await this.host.skills?.(workspaceRoot).catch(() => undefined)),
-      ...(await this.compareWithProject(conversationId, workspaceRoot, runId, failedCommandsOf(runScope(c.entries, runId)), checks, signal)),
+      ...(await this.compareWithProject(conversationId, workspaceRoot, runId, withEntryPoints(failedCommandsOf(runScope(c.entries, runId)), await this.entryPoints(workspaceRoot, run.changes ?? [], newest)), checks, signal)),
     };
     let v: Verification;
     try {
@@ -352,6 +358,43 @@ export class Verifier {
     }
   }
 
+  /**
+   * The programs the drafts are part of, to run once on all drafts and once without them. Run 16: three final replies
+   * said "done" while `node src/index.js` crashed or printed nothing new (a whole-module require called as a function,
+   * CommonJS in an ES module project); verification only read the drafts. A program is a drafted script, or a common
+   * entry file that loads a drafted module: a JavaScript file with no exports that does not wait for input or serve.
+   */
+  private async entryPoints(workspaceRoot: string, changes: PendingChange[], drafted: Map<string, PendingChange>): Promise<string[]> {
+    const js = [...drafted.values()].filter((d) => /\.(c|m)?js$/i.test(d.path) && !isTestPath(d.path));
+    if (!js.length) return [];
+    try {
+      const files = new OverlayFiles(await WorkspaceSandbox.create(workspaceRoot), pendingBase(changes));
+      const read = async (p: string) => (await files.readFile(p, 256 * 1024).catch(() => undefined)) ?? undefined;
+      const isScript = (text: string) => !/\bmodule\.exports\b|^\s*exports\.\w+\s*=|^\s*export\s/m.test(text) && !/\.listen\s*\(|setInterval\s*\(|\breadline\b|process\.stdin|\bprompt\s*\(/.test(text);
+      const stems = js.map((d) => d.path.replace(/^.*\//, "").replace(/\.(c|m)?js$/i, ""));
+      const pkg = await read("package.json");
+      let fromPkg: string[] = [];
+      try {
+        const parsed = pkg ? (JSON.parse(pkg) as { main?: unknown; scripts?: Record<string, unknown> }) : {};
+        const start = typeof parsed.scripts?.start === "string" ? /^node\s+([\w./-]+\.(?:c|m)?js)\s*$/.exec(parsed.scripts.start)?.[1] : undefined;
+        fromPkg = [start, typeof parsed.main === "string" ? parsed.main : undefined].filter((x): x is string => !!x).map((x) => x.replace(/^\.\//, ""));
+      } catch {
+        // Not JSON: no entry from package.json.
+      }
+      const out: string[] = [];
+      for (const p of [...js.map((d) => d.path), ...fromPkg, "index.js", "main.js", "app.js", "src/index.js", "src/main.js", "src/app.js"]) {
+        if (out.includes(p) || out.length >= 2 || isTestPath(p)) continue;
+        const text = drafted.get(p)?.proposed ?? (await read(p));
+        if (text === undefined || !isScript(text)) continue;
+        const loadsDraft = drafted.has(p) || stems.some((st) => new RegExp(`(?:require\\s*\\(|from)\\s*["'][./]*(?:[\\w-]+/)*${escapeRegExp(st)}(?:\\.(?:c|m)?js)?["']`).test(text));
+        if (loadsDraft) out.push(p);
+      }
+      return out.map((p) => `node ${p}`);
+    } catch {
+      return [];
+    }
+  }
+
   private async testText(workspaceRoot: string, changes: PendingChange[]): Promise<string | undefined> {
     try {
       return await projectTestText(new OverlayFiles(await WorkspaceSandbox.create(workspaceRoot), pendingBase(changes)));
@@ -368,7 +411,7 @@ export class Verifier {
     checks: CheckConfig[],
     signal: AbortSignal,
   ): Promise<Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures">> {
-    const own = failed.filter((f) => !checks.some((k) => k.command === f.line)).slice(0, 2);
+    const own = failed.filter((f) => !checks.some((k) => k.command === f.line)).slice(0, 3);
     if (!own.length) return {};
     const root = await this.host.openFolder(workspaceRoot);
     if (!root) return { uncomparedFailures: own };
@@ -425,7 +468,10 @@ export class Verifier {
         if (n && !n.skipped && n.passed) return;
         const output = n && !n.skipped ? n.output : f.output;
         const verdict = !b || b.skipped ? "unknown" : failedBefore(output, b);
-        let shown = { ...f, output: withAssertNotes(output.trim()).split("\n").slice(-8).join("\n") };
+        const tail = withAssertNotes(output.trim()).split("\n").slice(-8).join("\n");
+        // A Node crash prints its error above the stack trace, which the last 8 lines leave out (run 16, new-module-used).
+        const thrown = /^\s*(?:Uncaught\s+)?\w*Error\b.*$/m.exec(output)?.[0]?.trim();
+        let shown = { ...f, output: thrown && !tail.includes(thrown) ? `${thrown}\n…\n${tail}` : tail };
         if (verdict === "new" && b && !b.passed) {
           // Both kinds in one output: said by rule which failure is new, so the old one is not blamed on the drafts.
           const split = splitFailures(output, b);

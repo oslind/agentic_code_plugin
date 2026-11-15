@@ -190,3 +190,12 @@ describe("unusedImports", () => {
     expect(unusedImports([{ path: "src/index.js", original: before, proposed: before }])).toEqual([]);
   });
 });
+
+describe("CommonJS in an ES module project (run 16 repeat 2, new-module-esm)", () => {
+  it("is a load problem for a new file, and not for one that was CommonJS already", () => {
+    const cjsFile = "exports.formatTemp = (c) => `${c} °C`;\n";
+    expect(moduleStyleProblems([{ path: "src/format.js", original: null, proposed: cjsFile }], "module")).toEqual([expect.stringMatching(/ES module project/)]);
+    expect(moduleStyleProblems([{ path: "src/format.js", original: cjsFile, proposed: cjsFile + "// x\n" }], "module")).toEqual([]);
+    expect(moduleStyleProblems([{ path: "src/format.cjs", original: null, proposed: cjsFile }], "module")).toEqual([]);
+  });
+});

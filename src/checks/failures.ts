@@ -13,7 +13,8 @@ export function failureLines(output: string): string[] {
         .replace(/\s+/g, " ")
         .trim(),
     )
-    .filter((l) => /\b(FAIL|FAILED|failing|not ok|AssertionError|Error:)\b|[✗✖×]/.test(l))
+    // "TypeError: x" counts too (run 16: a crash's error line was not seen as a failure line).
+    .filter((l) => /\b(FAIL|FAILED|failing|not ok|AssertionError)\b|\b\w*Error\b(?=:)|[✗✖×]/.test(l))
     .filter((l, i, all) => l.length > 0 && all.indexOf(l) === i);
 }
 

@@ -70,6 +70,11 @@ export function moduleStyleProblems(changes: { path: string; original: string | 
       problems.push(`${c.path} uses import/export, but this project uses CommonJS (package.json has no "type": "module" and its files use require and module.exports), so it cannot load with the rest. Use require(...) and module.exports.`);
       continue;
     }
+    // Run 16 repeat 2, new-module-esm: a new format.js used exports.x in a "type": "module" project, and main.js's import threw.
+    if (project === "module" && /\.js$/i.test(c.path) && CJS.test(c.proposed) && !ESM.test(c.proposed) && !(c.original !== null && CJS.test(c.original))) {
+      problems.push(`${c.path} uses require/module.exports, but this project is an ES module project (package.json has "type": "module"), so it cannot load with the rest. Use import and export.`);
+      continue;
+    }
     if (mixes(c.proposed) && !(c.original !== null && mixes(c.original))) {
       problems.push(`${c.path} uses both import/export and require/module.exports, so Node cannot load it. Use one module style, the one the rest of the file and project uses.`);
       continue;
