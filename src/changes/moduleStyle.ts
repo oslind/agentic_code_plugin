@@ -476,7 +476,12 @@ function importedNames(text: string): { name: string; from: string }[] {
  * `const { formatTemp } = require("./format")` and nothing called it, and the final reply said formatTemp was used.
  */
 export function unusedImports(changes: { path: string; original: string | null; proposed: string }[]): string[] {
-  const out: string[] = [];
+  return unusedImportNames(changes).map((u) => `${u.path} imports ${u.name} but never uses it: an import alone does not use it. Call ${u.name} where the request needs it, or remove the import.`);
+}
+
+/** The names behind unusedImports(), for a differently worded note right after a write. */
+export function unusedImportNames(changes: { path: string; original: string | null; proposed: string }[]): { path: string; name: string }[] {
+  const out: { path: string; name: string }[] = [];
   for (const c of changes) {
     if (!/\.(c|m)?[jt]sx?$/i.test(c.path)) continue;
     // Only modules the file did not import before: a half-done rename of an existing import is renameLeftovers' job.
@@ -484,7 +489,7 @@ export function unusedImports(changes: { path: string; original: string | null; 
     const code = c.proposed.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
     for (const name of new Set(importedNames(c.proposed).filter((i) => !had.has(i.from)).map((i) => i.name))) {
       const uses = code.match(new RegExp(`(?<![\\w$.])${name.replace(/\$/g, "\\$")}(?![\\w$])`, "g"))?.length ?? 0;
-      if (uses <= 1) out.push(`${c.path} imports ${name} but never uses it: an import alone does not use it. Call ${name} where the request needs it, or remove the import.`);
+      if (uses <= 1) out.push({ path: c.path, name });
     }
   }
   return out;

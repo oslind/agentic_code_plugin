@@ -333,7 +333,8 @@ export function revertsAccepted(
   accepted: { original: string | null; proposed: string },
   draft: { original: string | null; proposed: string },
 ): string | undefined {
-  if (/\b(undo|revert|restore|roll ?back|put back)\b/i.test(instructions) || accepted.original === null || draft.original === null) return undefined;
+  // "Remove the unrequested change to average" is such a task too (review of the run 16 fixes).
+  if (/\b(undo|revert|restore|roll ?back|put back|remove|drop|take out|discard)\b/i.test(instructions) || accepted.original === null || draft.original === null) return undefined;
   const lines = (t: string) => new Set(t.split("\n").map((l) => l.trim()).filter((l) => l.length > 2));
   const [accBefore, accAfter, before, after] = [lines(accepted.original), lines(accepted.proposed), lines(draft.original), lines(draft.proposed)];
   const added = [...accAfter].filter((l) => !accBefore.has(l));

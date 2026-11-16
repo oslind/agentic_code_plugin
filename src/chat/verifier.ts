@@ -22,7 +22,7 @@ import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
 import { FailedCommand, failedCommandsOf } from "./synthesis";
-import { failedBefore, splitFailures, withAssertNotes } from "../checks/failures";
+import { asksToFixFailures, failedBefore, splitFailures, withAssertNotes } from "../checks/failures";
 import { runScope, userMessagesOf, userRequestOf } from "./scope";
 import { promises as fs } from "fs";
 import * as path from "path";
@@ -55,7 +55,14 @@ export function beforeTheRun(changes: Pick<PendingChange, "path" | "original">[]
 
 /** The sub-agents' failed commands, plus each program the drafts are part of that is not among them (run 16). */
 export function withEntryPoints(failed: FailedCommand[], programs: string[]): FailedCommand[] {
-  return [...failed, ...programs.filter((line) => !failed.some((f) => f.line.replace(/\s+/g, " ").trim() === line)).map((line) => ({ line, output: "" }))];
+  // The programs go first: only the first few commands are run again, and the program is the one that shows the request working.
+  return [...programs.filter((line) => !failed.some((f) => f.line.replace(/\s+/g, " ").trim() === line)).map((line) => ({ line, output: "" })), ...failed];
+}
+
+/** When the user asked to fix a failure, a command that still fails the way it did before is missing work, not an old problem. */
+export function fixIsTheRequest<T extends Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures">>(compared: T, said: string): T {
+  if (!asksToFixFailures(said) || !compared.preexistingFailures?.length) return compared;
+  return { ...compared, failedCommands: [...(compared.failedCommands ?? []), ...compared.preexistingFailures], preexistingFailures: [] };
 }
 
 export class Verifier {
@@ -183,10 +190,10 @@ export class Verifier {
         ? `Verifying the work before I call it done: running ${checks.length} check(s) on a copy of the project with all drafts together, then reading the drafts against your request.`
         : "Verifying the work before I call it done: reading the drafts against your request. No checks are set up for this project, so nothing is run.",
     });
-    const results = await this.runVerifyChecks(conversationId, workspaceRoot, runId, checks, signal);
+    const c = await this.conversations.load(conversationId);
+    const results = await this.runVerifyChecks(conversationId, workspaceRoot, runId, checks, signal, userMessagesOf(runScope(c.entries, runId)).join("\n"));
     signal.throwIfAborted();
     const run = await this.tasks.load(runId);
-    const c = await this.conversations.load(conversationId);
     // The latest review of each task: one that ended "not accepted" (sent back as often as allowed) holds "done".
     const reviews = new Map<string, string>();
     for (const e of await this.tasks.readLog(runId).catch(() => [])) {
@@ -220,7 +227,7 @@ export class Verifier {
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
       conventions: conventionsText(await this.host.skills?.(workspaceRoot).catch(() => undefined)),
-      ...(await this.compareWithProject(conversationId, workspaceRoot, runId, withEntryPoints(failedCommandsOf(runScope(c.entries, runId)), await this.entryPoints(workspaceRoot, run.changes ?? [], newest)), checks, signal)),
+      ...fixIsTheRequest(await this.compareWithProject(conversationId, workspaceRoot, runId, withEntryPoints(failedCommandsOf(runScope(c.entries, runId)), await this.entryPoints(workspaceRoot, run.changes ?? [], newest)), checks, signal), said),
     };
     let v: Verification;
     try {
@@ -251,7 +258,7 @@ export class Verifier {
    * pending draft of the run written in. Accepted drafts are already on disk.
    * Each one needs the same approval as a sub-agent's check.
    */
-  async runVerifyChecks(conversationId: string, workspaceRoot: string, runId: string, checks: CheckConfig[], signal: AbortSignal): Promise<CheckResult[]> {
+  async runVerifyChecks(conversationId: string, workspaceRoot: string, runId: string, checks: CheckConfig[], signal: AbortSignal, said?: string): Promise<CheckResult[]> {
     if (checks.length === 0) return [];
     const root = await this.host.openFolder(workspaceRoot);
     if (!root) throw new Error(`${workspaceRoot} is not open in VS Code, so the work cannot be verified.`);
@@ -275,6 +282,8 @@ export class Verifier {
           command: { line: command, output: String(data.output ?? "") },
         });
       }
+      // When fixing a failure is the request itself, a check that still fails the old way is exactly what is missing.
+      if (asksToFixFailures(said)) return results;
       return await this.compareChecksWithProject(root, workspaceRoot, runId, checks, results, signal, (check) => this.approveVerifyCheck(conversationId, runId, check, trusted));
     } finally {
       await scratch.remove().catch(() => undefined);

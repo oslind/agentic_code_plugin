@@ -7,7 +7,7 @@ import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
 import { draftsForReview, ReviewSkip, ReviewVerdict } from "./review";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
-import { failedBefore, splitFailures, withAssertNotes } from "../checks/failures";
+import { asksToFixFailures, failedBefore, pinsOldValue, splitFailures, withAssertNotes } from "../checks/failures";
 import { detectChecks } from "../checks/detect";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
@@ -331,7 +331,9 @@ export class Orchestrator {
           const b = baseline!.find((x) => x.name === c.name);
           return b && !b.skipped && failedBefore(c.output, b) === "before";
         });
-        if (old.length === failed.length) {
+        // Not when fixing a failure is the task itself: then the old failure is the work (review of the run 16 fixes).
+        const fixing = asksToFixFailures(task.instructions);
+        if (old.length === failed.length && !fixing) {
           await this.log("checks_preexisting", `Checks failed (${failed.map((c) => c.name).join(", ")}) only the way they failed before this sub-agent's changes; left to verification`, task.id, { checks: failed.map((c) => c.name) });
           break;
         }
@@ -354,12 +356,13 @@ export class Orchestrator {
         result = await w.run(
           `Your work is not done. These checks failed:\n\n${failed.map((c) => `## ${c.name}\n${withAssertNotes(c.output)}`).join("\n\n")}\n\nFix the problems, then finish.${
             // Run 16, old-test-pins-value: the task could only change src/thermostat.js, an old test pinned the value the
-            // user asked to change, and fix rounds undid the user's change to make it pass.
-            !task.fileScope.some((f) => isTestPath(f) || f.includes("*"))
-              ? " You may not change test files. If a failing test still expects the old behaviour that the user asked to change, do not undo the change to make it pass: keep it and finish, and say which test needs updating."
+            // user asked to change, and fix rounds undid the user's change to make it pass. Only for a failed comparison
+            // of values: a crash (TypeError, "is not a function") is the sub-agent's own bug and gets no such way out.
+            !fixing && !task.fileScope.some((f) => isTestPath(f) || f.includes("*")) && pinsOldValue(failed.map((c) => c.output).join("\n"))
+              ? " You may not change test files. Only if a failing test compares against the old value that the user asked to change: do not undo the change to make it pass; keep it, finish, and say which test needs updating. Any other failure is yours to fix."
               : ""
           }${
-            baseline?.length ? ` Failures that were already there before your changes (${failed.flatMap((c) => splitFailures(c.output, baseline!.find((x) => x.name === c.name) ?? { passed: true, output: "" }).before).slice(0, 4).join(" | ") || "none"}) are not yours to fix.` : ""
+            baseline?.length && !fixing ? ` Failures that were already there before your changes (${failed.flatMap((c) => splitFailures(c.output, baseline!.find((x) => x.name === c.name) ?? { passed: true, output: "" }).before).slice(0, 4).join(" | ") || "none"}) are not yours to fix.` : ""
           }`,
         );
       }

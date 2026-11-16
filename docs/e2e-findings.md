@@ -285,6 +285,18 @@ Over three tries: same-file-parallel and typo-swedish 3/3; parallel-changes, que
 - A finished task's pending draft is protected from fix-ups that undo it (question-then-answer: -4 went back to -3 twice).
 - A task that may not edit tests is told not to undo the user's change for a test that pins the old value.
 
+### Review of the run 16 fixes before any run (2026-11-16)
+
+Oskar asked to look for ways these fixes could bring back problems seen before. Found and fixed, each with a unit test (test/run16Review.test.ts) and two new scenarios (fix-old-failing-test, new-module-used-twice), none run live:
+
+- A failure "from before the request" was ignored even when fixing it was the request, so a fix that did not work could be called done. When the user's words (or a task's instructions) ask to fix a failure, old failures count as missing work again.
+- The note "keep your change if a test expects the old behaviour" went to every task without a test file in scope. It now goes only with a failed comparison of values, never with a crash, and says any other failure is the sub-agent's to fix.
+- The block on undoing an earlier change also stopped tasks asked to remove or drop an unrequested change. Those words now let a task through.
+- The program run in verification came after the sub-agents' failed commands and was cut off when there were three. It goes first now.
+- The unused-import warning right after a write said "or remove the import" before the call was written. After a write it is now a note to go on; only the review and verification hold it as a problem.
+
+Known gaps, not fixed: the program run only catches crashes, not wrong output with exit code 0; a program that hangs (other than servers and input readers) runs until the command time limit, twice; with "Run commands" off the user gets more approval prompts per verification.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
