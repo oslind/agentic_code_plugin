@@ -1,3 +1,4 @@
+import * as os from "os";
 import { INTERRUPTED } from "./taskStore";
 import { Run, Task } from "./types";
 
@@ -24,10 +25,19 @@ export type ResumeState = "elsewhere" | "interrupted" | "stopped";
 
 const MID_FLIGHT: ReadonlySet<Task["status"]> = new Set(["running", "verifying", "awaiting_approval"]);
 
-export function resumeState(run: Run, ownPid: number, alive: (pid: number) => boolean = isProcessAlive): ResumeState | undefined {
+/** When this machine last started, in ms since the epoch. */
+export function bootTime(): number {
+  return Date.now() - os.uptime() * 1000;
+}
+
+export function resumeState(run: Run, ownPid: number, alive: (pid: number) => boolean = isProcessAlive, bootedAt: number = bootTime()): ResumeState | undefined {
   if (run.kind === "research" || run.tasks.length === 0) return undefined;
   const owner = run.activeIn?.pid;
-  if (owner !== undefined && owner !== ownPid && alive(owner)) return "elsewhere";
+  // A window that took the run before the machine last started is gone, whatever process has its id now
+  // (Gemini audit LOW-4: a reused id after a reboot blocked Resume for good). A minute's slack for clock jitter.
+  const since = Date.parse(run.activeIn?.since ?? "");
+  const beforeBoot = Number.isFinite(since) && since < bootedAt - 60_000;
+  if (owner !== undefined && owner !== ownPid && !beforeBoot && alive(owner)) return "elsewhere";
   const started = run.tasks.some((t) => t.attempts > 0);
   if (!started) return undefined;
   if (run.tasks.some((t) => MID_FLIGHT.has(t.status))) return "interrupted";

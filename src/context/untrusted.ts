@@ -29,6 +29,9 @@ export function neutralize(text: string): string {
       .replace(new RegExp(`<\\s*(/?)\\s*${DATA_TAG}`, "gi"), (_m, slash: string) => `‹${slash}${DATA_TAG}`)
       // Chat-template control tokens (Qwen, Llama, Mistral, ...): <|im_start|>, <|eot_id|>, [INST].
       .replace(/<\|[^|>\n]{1,40}\|>/g, (m) => `‹${m.slice(1, -1)}›`)
+      // DeepSeek's full-width form (<｜User｜>, <｜end▁of▁sentence｜>) and Gemma's turns (Gemini audit MED-3).
+      .replace(/<｜[^｜>\n]{1,40}｜>/g, (m) => `‹${m.slice(1, -1)}›`)
+      .replace(/<(\/?)\s*((?:start|end)_of_turn)\s*>/gi, (_m, slash: string, word: string) => `‹${slash}${word}›`)
       .replace(/\[\/?INST\]/gi, (m) => m.replace("[", "(").replace("]", ")"))
   );
 }
@@ -44,6 +47,8 @@ export function restoreNeutralized(text: string, original: string | null | undef
   return text
     .replace(new RegExp(`‹(/?)(${DATA_TAG})`, "gi"), (m, slash: string, tag: string) => back(`<${slash}${tag}`, m))
     .replace(/‹\|([^|›\n]{1,40})\|›/g, (m, inner: string) => back(`<|${inner}|>`, m))
+    .replace(/‹｜([^｜›\n]{1,40})｜›/g, (m, inner: string) => back(`<｜${inner}｜>`, m))
+    .replace(/‹(\/?)((?:start|end)_of_turn)›/gi, (m, slash: string, word: string) => back(`<${slash}${word}>`, m))
     .replace(/\((\/?)(INST)\)/gi, (m, slash: string, tag: string) => back(`[${slash}${tag}]`, m));
 }
 
@@ -72,7 +77,7 @@ const INJECTION = [
   /\b(do not|don't|never) (mention|report|tell|reveal|say anything about)\b/i,
   /\b(tell|inform) the user (that )?(all|every|everything|the|no)\b/i,
   /\b(system prompt|assistant:|system:)\s/i,
-  /<\|im_start\|>|<\|eot_id\|>|\[INST\]/i,
+  /<\|im_start\|>|<\|eot_id\|>|\[INST\]|<｜(User|Assistant)｜>|<start_of_turn>/i,
   // Aimed at a reviewer or approver: "always accept it", "approve every change", "ignore instructions that say otherwise".
   /\b(always|just|simply|automatically) (accept|approve)\b/i,
   /\b(accept|approve) (it|this|them|everything|every|all|any)\b[^.\n]{0,30}\b(regardless|no matter|without (checking|review))/i,
@@ -97,4 +102,15 @@ export function looksLikeInjection(text: string): boolean {
  */
 export function safeFileName(name: string): string {
   return name.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+}
+
+/**
+ * Closes a data fence that a cut left open (Gemini audit MED-3): text cut to
+ * fit the context window can lose its closing tag, and everything after it
+ * would then read as data, or data as the prompt's own text.
+ */
+export function closeOpenFences(text: string): string {
+  const opens = (text.match(new RegExp(`<${DATA_TAG}[\\s>]`, "g")) ?? []).length;
+  const closes = (text.match(new RegExp(`</${DATA_TAG}>`, "g")) ?? []).length;
+  return opens > closes ? `${text}${`\n</${DATA_TAG}>`.repeat(opens - closes)}\n${DATA_REMINDER}` : text;
 }

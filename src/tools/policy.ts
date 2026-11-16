@@ -103,7 +103,7 @@ const SECRET_EXCEPTIONS = ["**/.env.example", "**/.env.sample", "**/.env.templat
  * the extension's own state, and files that make VS Code change settings or
  * run commands on its own.
  */
-const PROTECTED_EXTRA = [".agentic", ".agentic/**", ".vscode/settings.json", ".vscode/tasks.json", "**/*.code-workspace"];
+const PROTECTED_EXTRA = [".agentic", ".agentic/**", "**/.vscode/settings.json", "**/.vscode/tasks.json", "**/*.code-workspace"];
 
 /**
  * Writable only with the user's approval (or the "sensitive files" switch):
@@ -123,6 +123,40 @@ const SENSITIVE = [
   "**/.yarnrc",
   "**/.pnpmfile.cjs",
   "**/.pnpmfile.js",
+  // JavaScript test, lint and build configs: code that `npm test`, `npm run lint` or a build loads and runs (Gemini audit MED-2)
+  "**/vitest.config.*",
+  "**/vitest.workspace.*",
+  "**/vite.config.*",
+  "**/jest.config.*",
+  "**/playwright.config.*",
+  "**/cypress.config.*",
+  "**/karma.conf.*",
+  "**/.mocharc.*",
+  "**/ava.config.*",
+  "**/eslint.config.*",
+  "**/.eslintrc.js",
+  "**/.eslintrc.cjs",
+  "**/.eslintrc.mjs",
+  "**/prettier.config.*",
+  "**/.prettierrc.js",
+  "**/.prettierrc.cjs",
+  "**/.prettierrc.mjs",
+  "**/webpack.config.*",
+  "**/rollup.config.*",
+  "**/babel.config.*",
+  "**/.babelrc.js",
+  "**/.babelrc.cjs",
+  "**/postcss.config.*",
+  "**/tailwind.config.*",
+  "**/svelte.config.*",
+  "**/next.config.*",
+  "**/nuxt.config.*",
+  "**/astro.config.*",
+  "**/esbuild.config.*",
+  "**/tsup.config.*",
+  "**/turbo.json",
+  "**/nx.json",
+  "**/lerna.json",
   // Make, CMake, just, Task and other task runners
   "**/Makefile",
   "**/GNUmakefile",
@@ -197,22 +231,24 @@ const SENSITIVE = [
   "**/docker-compose*.yaml",
   "**/compose.yml",
   "**/compose.yaml",
-  ".pre-commit-config.yaml",
-  // CI outside .github
+  // CI, dev containers, hooks and editor folders. Matched at any depth (Gemini audit MED-2): a monorepo package or a
+  // folder opened on its own later has its own.
+  "**/.pre-commit-config.yaml",
   "**/Jenkinsfile",
   "**/azure-pipelines.yml",
   "**/azure-pipelines.yaml",
-  ".circleci/**",
-  ".buildkite/**",
-  "bitbucket-pipelines.yml",
-  ".travis.yml",
-  ".github/**",
-  ".gitlab-ci.yml",
-  ".devcontainer/**",
-  ".husky/**",
-  ".githooks/**",
-  ".vscode/**",
-  ".gitmodules",
+  "**/.circleci/**",
+  "**/.buildkite/**",
+  "**/bitbucket-pipelines.yml",
+  "**/.travis.yml",
+  "**/.github/**",
+  "**/.gitlab-ci.yml",
+  "**/.devcontainer/**",
+  "**/.devcontainer.json",
+  "**/.husky/**",
+  "**/.githooks/**",
+  "**/.vscode/**",
+  "**/.gitmodules",
 ];
 
 /**
@@ -309,6 +345,16 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
         return {
           verdict: "deny",
           reason: `'${p}' is outside this task's file scope (${ctx.fileScope.join(", ")}). Only change files in scope.`,
+        };
+      }
+      // Gemini audit HIGH-1: a draft of package.json, a Makefile or conftest.py is used by the very next check or
+      // command in the scratch copy, so it could run anything before the user ever saw it. Such a draft is asked
+      // about first, unless the "sensitive files" switch is on (the approver checks the switch).
+      if (isSensitivePath(p)) {
+        return {
+          verdict: "ask",
+          path: p,
+          reason: `Draft a change to ${p}${ctx.followUp ? " in a reopened conversation" : ""}. This file decides what commands such as tests and builds run, so the draft is used by this run's commands and checks only if you allow it. Your file is still written only when you accept the draft under Changes`,
         };
       }
       if (ctx.followUp) {

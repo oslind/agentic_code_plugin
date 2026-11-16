@@ -382,21 +382,43 @@ export function duplicateFunctions(changes: { path: string; original: string | n
   return out;
 }
 
-/** Top-level functions of a JavaScript text by name, with their whole text (brace counted, strings ignored roughly). */
+/** The most of a function body read, and the largest text looked at: bounds the work (Gemini audit LOW-2). */
+const MAX_BODY_CHARS = 50_000;
+const MAX_TEXT_CHARS = 500_000;
+
+/**
+ * Where the block opened at `open` closes: braces counted outside strings and comments (a "{" in a string no
+ * longer runs every function to the end of the file). Stops after MAX_BODY_CHARS.
+ */
+function bodyEnd(text: string, open: number): number {
+  const stop = Math.min(text.length, open + MAX_BODY_CHARS);
+  let depth = 0;
+  for (let i = open; i < stop; i++) {
+    const c = text[i];
+    if (c === "/" && text[i + 1] === "/") {
+      const nl = text.indexOf("\n", i);
+      i = nl < 0 ? stop : nl;
+    } else if (c === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      i = close < 0 ? stop : close + 1;
+    } else if (c === '"' || c === "'" || c === "`") {
+      for (i++; i < stop && text[i] !== c; i++) if (text[i] === "\\") i++;
+    } else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return stop - 1;
+}
+
+/** Top-level functions of a JavaScript text by name, with their whole text (brace counted outside strings and comments). */
 function functionBodies(text: string): Map<string, string> {
   const out = new Map<string, string>();
+  if (text.length > MAX_TEXT_CHARS) return out;
   const re = /^(?:export\s+)?(?:async\s+)?function\s*\*?\s*([\w$]+)\s*\(|^(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[\w$]+\s*=>)/gm;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const name = (m[1] ?? m[2])!;
     const open = text.indexOf("{", m.index);
     if (open < 0) continue;
-    let depth = 0;
-    let end = open;
-    for (; end < text.length; end++) {
-      if (text[end] === "{") depth++;
-      else if (text[end] === "}" && --depth === 0) break;
-    }
-    out.set(name, text.slice(m.index, end + 1).replace(/\s+/g, " "));
+    out.set(name, text.slice(m.index, bodyEnd(text, open) + 1).replace(/\s+/g, " "));
   }
   return out;
 }

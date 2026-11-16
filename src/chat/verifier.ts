@@ -65,6 +65,16 @@ export function fixIsTheRequest<T extends Pick<VerifyContext, "failedCommands" |
   return { ...compared, failedCommands: [...(compared.failedCommands ?? []), ...compared.preexistingFailures], preexistingFailures: [] };
 }
 
+/**
+ * A path that can be put after `node ` as it is: letters, digits, `_`, `.`, `/`
+ * and `-` only, not starting with `-` or `/`, no `..`, ending in .js/.cjs/.mjs.
+ * Gemini audit MED-1: a drafted file or package.json "main" named
+ * "--import=./x.mjs" or "a.js; curl …" became node flags or a shell command.
+ */
+export function isSafeScriptPath(p: string): boolean {
+  return /^[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:c|m)?js$/.test(p) && !p.split("/").includes("..") && !p.includes("//");
+}
+
 export class Verifier {
   private readonly host: ChatHost;
   private readonly tasks: TaskStore;
@@ -263,7 +273,7 @@ export class Verifier {
     const root = await this.host.openFolder(workspaceRoot);
     if (!root) throw new Error(`${workspaceRoot} is not open in VS Code, so the work cannot be verified.`);
     const run = await this.tasks.load(runId);
-    const scratch = new ScratchCopy(root, [`verify-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    const scratch = new ScratchCopy(root, [`verify-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? []);
     const trusted = new Set(checks.map((c) => c.command));
     try {
       // The copy is made only once a check is approved, so nothing is copied for a check the user rejects.
@@ -308,7 +318,7 @@ export class Verifier {
     const failed = results.filter((r) => !r.passed && !r.skipped && !r.timedOut && !r.notFound);
     if (!failed.length) return results;
     const run = await this.tasks.load(runId);
-    const scratch = new ScratchCopy(root, [`verify-base-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    const scratch = new ScratchCopy(root, [`verify-base-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? []);
     try {
       const again = checks.filter((k) => failed.some((r) => r.name === k.name));
       const base = await runAllChecks(again, () => scratch.sync(beforeTheRun(run.changes ?? [])), signal, approve, this.host.terminal?.(workspaceRoot));
@@ -392,7 +402,7 @@ export class Verifier {
       }
       const out: string[] = [];
       for (const p of [...js.map((d) => d.path), ...fromPkg, "index.js", "main.js", "app.js", "src/index.js", "src/main.js", "src/app.js"]) {
-        if (out.includes(p) || out.length >= 2 || isTestPath(p)) continue;
+        if (out.includes(p) || out.length >= 2 || isTestPath(p) || !isSafeScriptPath(p)) continue;
         const text = drafted.get(p)?.proposed ?? (await read(p));
         if (text === undefined || !isScript(text)) continue;
         const loadsDraft = drafted.has(p) || stems.some((st) => new RegExp(`(?:require\\s*\\(|from)\\s*["'][./]*(?:[\\w-]+/)*${escapeRegExp(st)}(?:\\.(?:c|m)?js)?["']`).test(text));
@@ -424,8 +434,8 @@ export class Verifier {
     if (!own.length) return {};
     const root = await this.host.openFolder(workspaceRoot);
     if (!root) return { uncomparedFailures: own };
-    const scratch = new ScratchCopy(root, [`baseline-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
-    const current = new ScratchCopy(root, [`rerun-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? ["node_modules"]);
+    const scratch = new ScratchCopy(root, [`baseline-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? []);
+    const current = new ScratchCopy(root, [`rerun-${runId.slice(0, 8)}`], this.host.scratchLinkDirs?.(workspaceRoot) ?? []);
     const caused: FailedCommand[] = [];
     const preexisting: FailedCommand[] = [];
     const uncompared: FailedCommand[] = [];

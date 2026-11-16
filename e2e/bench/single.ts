@@ -81,10 +81,9 @@ export async function runSingle(task: BenchTask, model: ModelProvider, opts: Sin
     clearTimeout(timer);
   }
   // Applied like accepted drafts, so a stopped attempt is scored on what it wrote.
-  for (const [rel, text] of overlay.allChanges()) {
-    await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
-    await fs.writeFile(path.join(root, rel), text);
-  }
+  // Through the sandbox, like an accept: a planted path or link cannot write outside the throwaway project.
+  const disk = await WorkspaceSandbox.create(root);
+  for (const [rel, text] of overlay.allChanges()) await disk.writeFile(rel, text);
   const judged = await judge(task, root, answer);
   if (opts.outDir) {
     await fs.mkdir(opts.outDir, { recursive: true });

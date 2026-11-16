@@ -282,6 +282,30 @@ describe("ChatController", () => {
     return { controller: new ChatController(conversations, tasks, host), started, provider, usedChecks, savedChecks, tasks, shown, closed, cancelled };
   }
 
+  it("retries failed tasks through the chat, with its hooks, never as a bare run (Gemini audit HIGH-3)", async () => {
+    let runs = 0;
+    const s = setup([turn("Plan below.", "plan", "Add a User model and an API that uses it."), plan], "act", {
+      saved: [],
+      during: async (_hooks, runId, tasks) => {
+        if (runs++ === 0) {
+          await tasks.setStatus(runId, "add-api", "running");
+          await tasks.setStatus(runId, "add-api", "failed", "The model gave up.");
+        }
+      },
+    });
+    await s.controller.send("add users");
+    const runId = s.started[0]!;
+    expect((await s.tasks.load(runId)).tasks.find((t) => t.id === "add-api")!.status).toBe("failed");
+    await s.controller.retryTasks(runId);
+    // Run again through host.runPlan with the chat's hooks: review, budget wrapper and approvals.
+    expect(s.started).toEqual([runId, runId]);
+    expect(s.usedChecks).toHaveLength(2);
+    expect((await s.tasks.load(runId)).tasks.find((t) => t.id === "add-api")!.status).not.toBe("failed");
+    // A run the chat does not own is left alone.
+    await s.controller.retryTasks("not-a-chat-run");
+    expect(s.started).toHaveLength(2);
+  });
+
   describe("reviewing changes in the chat", () => {
     async function runWithChanges(permissions: Partial<AutoApprove>) {
       const ws = path.join(dir, "ws");

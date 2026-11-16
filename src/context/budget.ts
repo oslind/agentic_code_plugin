@@ -1,4 +1,4 @@
-import { safeFileName } from "./untrusted";
+import { closeOpenFences, DATA_TAG, safeFileName } from "./untrusted";
 
 /**
  * Rough token estimate. Real tokenizers vary by model; for code and English
@@ -54,7 +54,10 @@ export function fitToBudget(sections: ContextSection[], budgetTokens: number): F
       continue;
     }
     const room = budgetTokens - used - (s.wrap ? estimateTokens(s.wrap("")) : 0);
-    const cut = truncateToTokens(s.text, room);
+    // A section whose text holds its own fences (skills, fenced findings) is closed again after the cut.
+    const ownFences = !s.wrap && s.text.includes(`<${DATA_TAG}`);
+    const cutText = truncateToTokens(s.text, ownFences ? room - 40 : room);
+    const cut = cutText && ownFences ? closeOpenFences(cutText) : cutText;
     if (cut) {
       kept.set(s, framed(s, cut));
       used += estimateTokens(framed(s, cut));

@@ -43,7 +43,8 @@ What to do about it:
 
 - Every command needs your approval unless **Run commands** is on in your user settings. Checks from a project's own settings are only suggestions and always ask.
 - Commands that obviously point outside the project (absolute paths, `..`, `~`, variables, `$(...)`, `sudo`, `ssh`) are refused. This is a text check, not a boundary.
-- Simple commands run without a shell. Environment variables whose names look like credentials, ones that point at credential files or agents, and VS Code's own git and IPC channels are removed.
+- Simple commands run without a shell. Environment variables whose names look like credentials (tokens, PATs, DSNs, connection strings, password-manager sessions), connection URLs such as `DATABASE_URL`, any value with a password in a URL, ones that point at credential files or agents, git's own programs and config overrides, and VS Code's own git and IPC channels are removed.
+- A draft of a file that decides what commands run (package.json, lockfiles, Makefiles, conftest.py, JavaScript test, lint and build configs, CI and editor folders at any depth) is asked about before the sub-agent may make it, unless the "sensitive files" switch is on, because the next check in the scratch copy would run with it. Other drafted code still runs when checks run on the drafts: a check is approved for the drafts as they are.
 - Commands have a time limit, can be stopped, and their output is limited and sanitized before it reaches the terminal.
 
 Keep **Run commands** off for projects you do not trust.
