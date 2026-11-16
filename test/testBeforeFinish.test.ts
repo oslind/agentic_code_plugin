@@ -32,8 +32,9 @@ async function worker(model: ModelProvider, testCommand?: string, instructions =
   const now = new Date().toISOString();
   const task: Task = { id: "t1", title: "Add toKelvin", instructions, dependsOn: [], fileScope: ["convert.js"], status: "running", attempts: 0, createdAt: now, updatedAt: now };
   const overlay = new OverlayFiles(await WorkspaceSandbox.create(root));
-  // Commands are declined, so nothing runs in the test.
-  const w = new Worker({ provider: model, sandbox: overlay, task, checks: [], testCommand, maxTurns: 8, approve: async (_r, call) => call.tool !== "run_command", log: () => {} });
+  // Commands really run (in the temporary project): since the security audit of PR #55, only a command that
+  // executed counts as run, so a declined one would not.
+  const w = new Worker({ provider: model, sandbox: overlay, task, checks: [], testCommand, maxTurns: 8, approve: async () => true, log: () => {} });
   return { w, root };
 }
 

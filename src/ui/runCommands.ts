@@ -152,7 +152,7 @@ export function registerRunCommands(
       onChanges: hooks?.onChanges ?? (async (_task, changes) => {
         // Outside the chat: accept what the switches allow, and leave the rest for "Review pending changes".
         for (const c of changes) {
-          if (isChangeAutoAccepted(c.path, readPermissions())) await acceptChange(store, run.id, c.path, folder.uri.fsPath, { auto: true });
+          if (isChangeAutoAccepted(c.path, readPermissions(), c)) await acceptChange(store, run.id, c.path, folder.uri.fsPath, { auto: true });
         }
       }),
       askUser: hooks?.askUser,

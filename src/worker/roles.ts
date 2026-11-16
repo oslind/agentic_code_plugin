@@ -82,3 +82,22 @@ export const UNMET_NOTE = {
   untested: (what: string) => `Note from the extension: this sub-agent did not run ${what} after its last change.`,
   testsNotRun: (changed: boolean) => `Note from the extension: this test sub-agent did not run the tests${changed ? " after its last change" : ""}, so any test results in its report are not confirmed.`,
 } as const;
+
+/** Commands that run a test suite: the common runners and package-manager test scripts. */
+const TEST_RUNNER =
+  /(^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|npx\s+(?:vitest|jest|mocha|ava|tap)\b|(?:vitest|jest|mocha|ava|jasmine|karma|pytest|nose2|tox|ctest|phpunit|rspec)\b|python3?\s+-m\s+(?:pytest|unittest)\b|go\s+test\b|cargo\s+test\b|make\s+(?:test|check)\b|dotnet\s+test\b|\.?\/?gradlew?\s+test\b|mvn\s+test\b|node\s+--test\b|deno\s+test\b)/;
+
+/**
+ * True when a command runs tests: the project's test command, a known test runner, or a test file of the
+ * project run directly ("node test.js", "python tests/test_api.py"). A generic command (ls, node -e, echo) is
+ * not a test run, so it cannot satisfy a test task's finish rule (security audit of PR #55).
+ */
+export function isTestCommand(command: string, ctx: { testCommand?: string }): boolean {
+  const c = command.trim();
+  if (!c) return false;
+  if (ctx.testCommand && c === ctx.testCommand.trim()) return true;
+  if (TEST_RUNNER.test(c)) return true;
+  const runs = /(^|[\s;&|(])(?:node|python3?|py|deno\s+run|bun)\s+(?:-[\w-]+\s+)*(\.?\/?[\w./-]+)/.exec(c);
+  const file = runs?.[2]?.replace(/^\.\//, "");
+  return !!file && isTestPath(file);
+}

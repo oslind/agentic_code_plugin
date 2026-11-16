@@ -1,3 +1,4 @@
+import { testWeakening } from "../changes/testGuard";
 import { TaskStore } from "../state/taskStore";
 import { Task } from "../state/types";
 import { CheckConfig } from "../checks/runner";
@@ -126,8 +127,11 @@ export class Approvals {
         const outcome = this.oversight.reviewOutcomes.get(`${runId}:${task.id}`);
         const held = isUnreviewed(outcome) ? changes.filter((ch) => isChangeAutoAccepted(ch.path, auto)).length : 0;
         const written: string[] = [];
+        // Drafts that change or remove test assertions wait for the user even with auto-approve on.
+        // (Not a changeNotes entry: a note there makes the next accept overwrite the file on disk.)
+        const weakening = changes.flatMap((ch) => (testWeakening(ch.path, ch.original, ch.proposed) ? [{ path: ch.path }] : []));
         for (const ch of changes) {
-          if (held || !isChangeAutoAccepted(ch.path, auto)) continue;
+          if (held || !isChangeAutoAccepted(ch.path, auto, ch)) continue;
           const res = await acceptChange(this.tasks, runId, ch.path, workspaceRoot, { auto: true });
           if (res.ok) written.push(ch.path);
           else this.s.changeNotes.set(`${runId}:${ch.path}`, res.message);
@@ -141,7 +145,7 @@ export class Approvals {
           agentName: task.title,
           tone: waiting.length ? "warning" : "success",
           text: waiting.length
-            ? `I have ${waiting.length} draft change(s) for you to review under Changes. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}${held ? " My result did not pass the coordinator's review, so they were not written automatically even though an auto-approve switch is on." : ""}`
+            ? `I have ${waiting.length} draft change(s) for you to review under Changes. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}${held ? " My result did not pass the coordinator's review, so they were not written automatically even though an auto-approve switch is on." : ""}${weakening.length ? ` ${weakening.length} of them change or remove test assertions, so ${weakening.length === 1 ? "it waits" : "they wait"} for you whatever the switches say: ${weakening.map((x) => x.path).join(", ")}.` : ""}`
             : `My ${written.length} change(s) were written to your project, because an auto-approve switch is on.`,
         });
         // Open what waits for review, so the user sees it right away.

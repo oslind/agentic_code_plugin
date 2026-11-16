@@ -5,7 +5,7 @@ import { withAssertNotes } from "../checks/failures";
 import { ProjectFiles } from "../tools/sandbox";
 import { ToolCall } from "../tools/protocol";
 import { isSecretPath } from "../tools/policy";
-import { safeFileName } from "../context/untrusted";
+import { neutralize, restoreNeutralized, safeFileName } from "../context/untrusted";
 import { renameLeftovers } from "../coordinator/review";
 
 const MAX_READ_LINES = 300;
@@ -75,7 +75,9 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const more = end < lines.length ? `\n[lines ${end + 1}-${lines.length} not shown; read again with startLine=${end + 1}]` : "";
         const big = head.truncated ? `\n[the file is ${Math.round(head.size / (1024 * 1024))} MB; only its first ${lines.length} lines can be read. Use search to find something further on]` : "";
         const read: FileRead[] = end >= start ? [{ path: call.path, from: start, to: end, total: lines.length, cut: head.truncated }] : [];
-        return { ok: true, output: `${call.path} (${head.truncated ? `first ${lines.length}` : lines.length} lines)\n${body}${more}${big}`, read };
+        // File text is shown with chat-template tokens and data fences broken (neutralize), and the name escaped,
+        // so a file cannot fake a turn or a fence (security audit of PR #55). Writes put such tokens back.
+        return { ok: true, output: `${safeFileName(call.path)} (${head.truncated ? `first ${lines.length}` : lines.length} lines)\n${neutralize(body)}${more}${big}`, read };
       }
       case "read_files": {
         // Benchmark pass 1, find-throwing: a researcher given 15 files spent a model call (about 30 s) on each.
@@ -87,7 +89,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         for (const p of paths) {
           const head = await ctx.sandbox.readHead(p, MAX_READ_BYTES).catch((err: Error) => ({ error: err.message }));
           if ("error" in head) {
-            parts.push(`${p}: could not be read (${head.error}).${await samePathHint(ctx, p)}`);
+            parts.push(`${safeFileName(p)}: could not be read (${head.error}).${await samePathHint(ctx, p)}`);
             continue;
           }
           const lines = head.text.split("\n");
@@ -102,7 +104,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
           }
           const more = shown.length < lines.length ? `\n[lines ${shown.length + 1}-${lines.length} not shown; read them with read_file and startLine=${shown.length + 1}]` : "";
           const big = head.truncated ? `\n[the file is too large to read to its end; only its first ${lines.length} lines can be read]` : "";
-          parts.push(`${p} (${lines.length} lines)\n${shown.join("\n")}${more}${big}`);
+          parts.push(`${safeFileName(p)} (${lines.length} lines)\n${neutralize(shown.join("\n"))}${more}${big}`);
           read.push({ path: p, from: 1, to: shown.length, total: lines.length, cut: head.truncated });
         }
         return { ok: true, output: parts.join("\n\n"), read };
@@ -142,17 +144,18 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
           scanned += Buffer.byteLength(text, "utf8");
           if (text.includes("\u0000")) continue;
           text.split("\n").forEach((line, i) => {
-            if (hits.length < MAX_MATCHES && line.includes(call.query)) hits.push(`${safeFileName(f)}:${i + 1}: ${line.trim().slice(0, 200)}`);
+            if (hits.length < MAX_MATCHES && line.includes(call.query)) hits.push(`${safeFileName(f)}:${i + 1}: ${neutralize(line.trim().slice(0, 200))}`);
           });
         }
         const partial = stoppedEarly ? `\n[search stopped after reading ${MAX_SEARCH_TOTAL_BYTES / (1024 * 1024)} MB; use a narrower glob]` : "";
         return { ok: true, output: (hits.length ? hits.join("\n") : `No matches for '${call.query}'.`) + partial };
       }
       case "write_file": {
-        const before = /\.(c|m)?js$/i.test(call.path) ? await ctx.sandbox.readFile(call.path).catch(() => null) : null;
+        const existing = await ctx.sandbox.readFile(call.path).catch(() => null);
+        const before = /\.(c|m)?js$/i.test(call.path) ? existing : null;
         // Run 13, new-module-used: qwen wrote "\\n" in its JSON, so src/format.js became one line starting with
         // "//": the whole module was a comment, exported nothing, and the next task failed for 30 minutes.
-        const { text: content, note } = realBreaks(call.content);
+        const { text: content, note } = realBreaks(restoreNeutralized(call.content, existing));
         await ctx.sandbox.writeFile(call.path, content);
         return { ok: true, output: draftNote(call.path, `${content.split("\n").length} lines`) + note + (await writeWarning(ctx, call.path, before, content)), wrote: call.path };
       }
@@ -161,7 +164,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const text = await ctx.sandbox.readFile(call.path);
         const lines = text.split("\n");
         if (call.line > lines.length + 1) return { ok: false, output: `${call.path} has ${lines.length} lines; line must be between 1 and ${lines.length + 1}.` };
-        const { text: inserted, note } = realBreaks(call.text);
+        const { text: inserted, note } = realBreaks(restoreNeutralized(call.text, text));
         const added = inserted.replace(/\n$/, "").split("\n");
         lines.splice(call.line - 1, 0, ...added);
         const edited = lines.join("\n");
@@ -170,7 +173,9 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
       }
       case "replace_in_file": {
         const text = await ctx.sandbox.readFile(call.path);
-        let { search, replace } = call;
+        // Text the model copied from a neutralized read gets the file's own tokens back, so it still matches.
+        let search = restoreNeutralized(call.search, text);
+        let replace = restoreNeutralized(call.replace, text);
         let count = occurrences(text, search);
         let note = "";
         // A rename: every occurrence at once (run 10: a rename cost 9 minutes of exact-match retries).

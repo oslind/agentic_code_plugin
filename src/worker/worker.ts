@@ -19,7 +19,7 @@ import { compactHistory } from "./history";
 import { compactSteps, planStepCompaction } from "./stepSummary";
 import { executeTool, realBreaks } from "./tools";
 import { prepareContext } from "./prepare";
-import { AgentRole, notAvailable, offeredTools, offeredTurnSchema, roleAllows, roleOf, UNMET_NOTE } from "./roles";
+import { AgentRole, isTestCommand, notAvailable, offeredTools, offeredTurnSchema, roleAllows, roleOf, UNMET_NOTE } from "./roles";
 
 /** A message waiting for a sub-agent's next step: from the user, or from the coordinator keeping an eye on it. */
 export interface InboxMessage {
@@ -292,12 +292,17 @@ export class Worker {
   private skillLoads = 0;
   /** Set once it was told its report claims a change it never wrote. */
   private toldNoWrites = false;
-  /** Ran a command or check after its last successful write. */
+  /**
+   * A command or check actually ran after its last successful write. Set only once it executed: a call that was
+   * refused, declined, or whose command does not exist does not count (security audit of PR #55).
+   */
   private ranSinceWrite = false;
   /** Writes refused because the file is outside the task's files. */
   private outOfScope = 0;
   /** True once the program a task is about (outputCommand) ran after the last write. Run 12B: npm test ran, index.js never did. */
   private ranOutputSinceWrite = false;
+  /** A test command ran to a result (an exit code) after the last write: what a test task's finish rule needs. */
+  private testedSinceWrite = false;
   private toldToTest = false;
   /** Set once a test sub-agent was told to run the tests before it finishes. */
   private toldToRunTests = false;
@@ -394,7 +399,7 @@ export class Worker {
         const tries = [this.checks.length === 0 && !this.ranSinceWrite ? this.opts.testCommand : undefined, this.ranOutputSinceWrite ? undefined : outputCommand(this.opts.task)].filter((c): c is string => !!c);
         if (tries.length) notes.push(UNMET_NOTE.untested(tries.map((c) => `\`${c}\``).join(" or ")));
       }
-      if (this.role === "tester" && !this.ranSinceWrite && this.toldToRunTests) notes.push(UNMET_NOTE.testsNotRun(this.changed.size > 0));
+      if (this.role === "tester" && !this.testedSinceWrite) notes.push(UNMET_NOTE.testsNotRun(this.changed.size > 0));
     }
     return notes.length ? `${summary}\n\n${notes.join("\n")}` : summary;
   }
@@ -455,6 +460,18 @@ export class Worker {
     return before.writes < this.writes
       ? "\n\nThis is exactly the same failure as before your last change, so your change does not affect it. If it is about code outside your task's files, it is not yours to fix: do not run it again; finish and name the failing test and file in your summary."
       : "\n\nThis is exactly the same result as the last time you ran it, and nothing changed in between. Running it again will not change it.";
+  }
+
+  /**
+   * Records a command that actually ran. A test command (isTestCommand) that ended with an exit code counts
+   * as a test run; one that timed out or does not exist here does not.
+   */
+  private noteExecuted(command: string, res: CheckResult): void {
+    // 126 and 127 are the shell's "cannot execute" and "command not found": nothing ran.
+    if (res.notFound || res.code === undefined || res.code === null || res.code === 126 || res.code === 127) return;
+    this.ranSinceWrite = true;
+    if (runsProgram(command, outputCommand(this.opts.task))) this.ranOutputSinceWrite = true;
+    if (!res.timedOut && isTestCommand(command, { testCommand: this.opts.testCommand })) this.testedSinceWrite = true;
   }
 
   private logCommand(command: string, res: CheckResult): void {
@@ -518,8 +535,6 @@ export class Worker {
         continue;
       }
 
-      if (turn.call.tool === "run_command" || turn.call.tool === "run_check" || turn.call.tool === "request_check") this.ranSinceWrite = true;
-      if (turn.call.tool === "run_command" && runsProgram(turn.call.command, outputCommand(task))) this.ranOutputSinceWrite = true;
 
       const checks = this.checks;
       const decision = checkToolCall(turn.call, {
@@ -580,7 +595,7 @@ export class Worker {
         }
         // Test task (every file a test file): the tests run after its last change, or its report of them is a guess.
         // Once per change, like the other reminders, and a declined command counts as run (it was tried).
-        if (this.role === "tester" && !this.opts.followUp && !this.ranSinceWrite && !this.toldToTest && !this.toldToRunTests) {
+        if (this.role === "tester" && !this.opts.followUp && !this.testedSinceWrite && !this.toldToTest && !this.toldToRunTests) {
           this.toldToRunTests = true;
           this.opts.log("untested", "A test task tried to finish without running the tests after its last change");
           const how = this.checks[0] ? `run_check "${this.checks[0].name}"` : this.opts.testCommand ? `run_command "${this.opts.testCommand}"` : "run_command with the project's test command";
@@ -646,6 +661,7 @@ export class Worker {
         // Approved above (by the user, or by the "Run commands" switch).
         const res = await runCheck({ name: "command", command: turn.call.command }, await this.commandDir(), signal, 4000, this.opts.terminal);
         this.logCommand(turn.call.command, res);
+        this.noteExecuted(turn.call.command, res);
         // Run 13, readme-typo: a researcher "fixed" README.md with sed -i in its copy, and the answer said it was fixed.
         const readOnlyNote = this.opts.readOnly && WRITES_FILES.test(turn.call.command)
           ? "\nNote: you are a read-only researcher. This command ran in a scratch copy that is thrown away, so it changed nothing in the user's project. Do not say in your report that anything was changed or fixed; report what you found, and what should change."
@@ -684,7 +700,10 @@ export class Worker {
         signal,
         checkDir: this.opts.checkDir,
         terminal: this.opts.terminal,
-        onCommand: (command, res) => this.logCommand(command, res),
+        onCommand: (command, res) => {
+          this.logCommand(command, res);
+          this.noteExecuted(command, res);
+        },
         said: this.opts.task.instructions,
       });
       // Logged after the read, with the lines it showed: coverage counts only reads that worked (audit of PR #54).
@@ -693,6 +712,7 @@ export class Worker {
         this.changed.add(outcome.wrote);
         this.ranSinceWrite = false;
         this.ranOutputSinceWrite = false;
+        this.testedSinceWrite = false;
         this.writes++;
       }
       this.messages.push({ role: "user", content: `${outcome.ok ? "Result" : "Error"}:\n${outcome.output}` });

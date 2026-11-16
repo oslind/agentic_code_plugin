@@ -33,6 +33,20 @@ export function neutralize(text: string): string {
   );
 }
 
+/**
+ * Undoes neutralize() in text a model writes back into a file, but only for tokens the file itself already
+ * holds raw: a file that really contains <|im_start|> (LLM tooling code) is shown neutralized to the model, and
+ * a replace_in_file that copies the shown text must still match and keep the file's own bytes.
+ */
+export function restoreNeutralized(text: string, original: string | null | undefined): string {
+  if (!original || !/[‹(]/.test(text)) return text;
+  const back = (raw: string, shown: string) => (original.includes(raw) ? raw : shown);
+  return text
+    .replace(new RegExp(`‹(/?)(${DATA_TAG})`, "gi"), (m, slash: string, tag: string) => back(`<${slash}${tag}`, m))
+    .replace(/‹\|([^|›\n]{1,40})\|›/g, (m, inner: string) => back(`<|${inner}|>`, m))
+    .replace(/\((\/?)(INST)\)/gi, (m, slash: string, tag: string) => back(`[${slash}${tag}]`, m));
+}
+
 /** A label for the source attribute: one line, no quotes or angle brackets. */
 function label(source: string): string {
   return source.replace(/[\s"<>]+/g, " ").trim().slice(0, 120) || "unknown";
