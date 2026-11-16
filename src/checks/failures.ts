@@ -14,7 +14,7 @@ export function failureLines(output: string): string[] {
         .trim(),
     )
     // "TypeError: x" counts too (run 16: a crash's error line was not seen as a failure line).
-    .filter((l) => /\b(FAIL|FAILED|failing|not ok|AssertionError)\b|\b\w*Error\b(?=:)|[✗✖×]/.test(l))
+    .filter((l) => /\b(FAIL|FAILED|failing|not ok|AssertionError)\b|(^|\s)\w*Error:|[✗✖×]/.test(l))
     .filter((l, i, all) => l.length > 0 && all.indexOf(l) === i);
 }
 
@@ -56,3 +56,29 @@ export function withAssertNotes(text: string): string {
   );
 }
 
+
+/**
+ * True when the words ask to fix failing tests, a failure or a bug, in one sentence ("Fix the bug in average so the
+ * tests pass", "fixa det fallerande testet"). Review of the run 16 fixes: a failure that was there before the request
+ * is not missing work, unless fixing it is the request; otherwise a fix that does not work would be called done.
+ */
+export function asksToFixFailures(words: string | undefined): boolean {
+  if (!words) return false;
+  const FAILURE = /\b(tests?|testet|testerna|failing|fails?|failure|failed|bugs?|buggen|bugg|errors?|felet|crash(es)?|kraschar)\b|\bpass(es)?\b/i;
+  // "There is a bug in stats.js. Fix it." names the failure one sentence before the fix.
+  if (/\b(fix|repair|solve|resolve|correct|fixa|laga|rätta|åtgärda)\s+(it|them|this|that|den|det|dem)\b/i.test(words) && FAILURE.test(words)) return true;
+  return words
+    .split(/(?<=[.!?])\s+|\n+/)
+    .some(
+      (sentence) =>
+        /\b(fix|fixes|repair|debug|solve|resolve|correct|fixa|laga|rätta|åtgärda)\b/i.test(sentence) &&
+        FAILURE.test(sentence),
+    );
+}
+
+/** A check output that fails on a comparison of values and has no crash in it: the kind a test that pins an old value gives. */
+export function pinsOldValue(output: string): boolean {
+  const plain = toPlainText(output);
+  if (/\b(TypeError|ReferenceError|SyntaxError|RangeError)\b|is not a function|is not defined|Cannot find module|Cannot read propert/.test(plain)) return false;
+  return /Expected values to be|\S+ !==? \S+|\bexpected\b.*\b(to (be|equal)|got|but)\b|AssertionError/i.test(plain);
+}

@@ -1,4 +1,4 @@
-import { docInsideBody, droppedCalls, duplicateDeclarations, duplicateFunctions, unusedImports, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
+import { docInsideBody, droppedCalls, duplicateDeclarations, duplicateFunctions, unusedImportNames, exportStyleHints, halfIndexHints, ModuleStyle, moduleStyleOf, importProblems, moduleStyleProblems, unexportedProblems } from "../changes/moduleStyle";
 import { CommandSink } from "../checks/commandTerminal";
 import { CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { withAssertNotes } from "../checks/failures";
@@ -259,10 +259,13 @@ async function writeWarning(ctx: ToolContext, path: string, before: string | nul
  * function after the closing brace of a replace_in_file edit; nothing told the sub-agent until review.
  */
 export function loadWarning(path: string, before: string | null, after: string, style?: ModuleStyle, said?: string): string {
-  const unexported = [...unexportedProblems([{ path, original: before, proposed: after }], said), ...docInsideBody([{ path, original: before, proposed: after }]), ...duplicateFunctions([{ path, original: before, proposed: after }]), ...unusedImports([{ path, original: before, proposed: after }])];
+  const unexported = [...unexportedProblems([{ path, original: before, proposed: after }], said), ...docInsideBody([{ path, original: before, proposed: after }]), ...duplicateFunctions([{ path, original: before, proposed: after }])];
   const problems = moduleStyleProblems([{ path, original: before, proposed: after }], style);
   const hints = halfIndexHints(path, after).filter((h) => !before || !halfIndexHints(path, before).includes(h));
-  const exportsHint = [...exportStyleHints(path, before, after), ...droppedCalls([{ path, original: before, proposed: after }], said)];
+  // Not a warning here: the import usually comes one edit before the call, and "remove the import" right after adding
+  // it made the model flip a require back and forth (run 13). The review and verification hold it as a problem.
+  const notUsedYet = unusedImportNames([{ path, original: before, proposed: after }]).map((n) => `${path} imports ${n.name} now and does not use it yet: call ${n.name} where the request needs it before you finish.`);
+  const exportsHint = [...exportStyleHints(path, before, after), ...droppedCalls([{ path, original: before, proposed: after }], said), ...notUsedYet];
   const hint = `${hints.length ? `\nCheck: ${hints.join(" ")} Try the function on an odd-length input with run_command (node -e) before you finish.` : ""}${exportsHint.length ? `\nCheck: ${exportsHint.join(" ")}` : ""}`;
   const leftovers = renameLeftovers([{ path, text: after }], said);
   const exportNote = [...unexported, ...leftovers].length ? `\nWarning: ${[...unexported, ...leftovers].join(" ")}` : "";
