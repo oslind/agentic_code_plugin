@@ -18,6 +18,7 @@ async function runOf(files: Record<string, string>, extra: Partial<ScenarioRun> 
     state: {} as ScenarioRun["state"],
     entries: [],
     cards: [],
+    gates: [],
     calls: [],
     read: (rel) => fs.readFile(path.join(ws, rel), "utf8").catch(() => undefined),
     sh: (command, args) => new Promise((resolve) => execFile(command, args, { cwd: ws }, (err, stdout, stderr) => resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, output: `${stdout}${stderr}` }))),

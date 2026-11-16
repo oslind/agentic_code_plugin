@@ -52,6 +52,17 @@ printf 'FROM qwen3:8b\nPARAMETER num_ctx 16384\n' > /tmp/Modelfile.e2e && ollama
 AGENTIC_E2E_MODEL=qwen3-8b-16k npm run e2e
 ```
 
+## How the autopilot answers approvals
+
+The autopilot stands in for a user who reads each card, not one who allows everything:
+
+- **Commands and checks:** allowed, unless it is one a careful user refuses in a test project: anything that installs or downloads (`npm install`, `pip install`, `npx`, `curl`), deletes folders (`rm -r`), needs `sudo`, changes git state or the machine. Those are denied, and the sub-agent has to manage without.
+- **Drafts of files that decide what commands run** (package.json, build files, CI): allowed only when the scenario lists the file in `mayChange`, which it does when the request is about that file. Otherwise denied.
+- **Changes to existing tests, snapshots, fixtures and test settings:** these always wait for review, whatever the switches say. At the end they are accepted like the other drafts, unless the scenario sets `mayChangeTests: false` (the request gives no reason to touch a test); then they are rejected and the scenario fails.
+- **`deny: true`** still denies every card.
+
+Before the drafts are accepted at the end, the harness checks that no existing test-like file and no such sensitive file changed on disk; one that did was written past its gate, and the scenario fails. Every gate that fired is recorded with its answer in `ScenarioRun.gates`, at the top of each `transcript.md`, in `summary.json`, and as a count per scenario in the run's summary lines. test/e2eGates.test.ts drives a run with a fake model through each gate.
+
 ## Replays
 
 `AGENTIC_E2E_RECORD=1` saves the model calls of each passing live scenario to `e2e/recordings/<scenario>.jsonl`. `npm run e2e:replay` then plays those replies back in order, with no model, in seconds. That checks the controller still handles what the real model actually said (odd formatting, an unexpected action) after a code change. Prompts that changed since the recording are listed as drift; if the flow changed enough that the run asks for more replies than were recorded, the scenario fails and needs a new recording. Scenarios without a recording are skipped.
