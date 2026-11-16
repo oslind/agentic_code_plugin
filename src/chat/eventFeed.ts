@@ -299,6 +299,11 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
         tag: `skill ${name}`,
       });
     }
+    case "prepared": {
+      // The harness read these before the first step (src/worker/prepare.ts), so no model step was spent on them.
+      const files = Array.isArray(data.files) ? data.files.filter((f): f is string => typeof f === "string") : [];
+      return agent({ text: files.length ? `Started with ${files.join(", ")} already read.` : "Started with the project's file list.", tag: "read ahead" });
+    }
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);
     default:

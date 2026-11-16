@@ -97,6 +97,12 @@ export interface StructuredCallOptions<T> {
   maxTokens?: number;
   /** Repairs the parsed JSON before it is validated, for slips that have one safe fix (a retry costs a model call). */
   repair?: (value: unknown) => unknown;
+  /**
+   * The schema sent to the server, when it should be narrower than the one the reply is checked
+   * against: a sub-agent's role offers only some tools, but a model that ignores the format and
+   * names another still gets a normal answer from the caller instead of a retry.
+   */
+  sendSchema?: z.ZodType;
 }
 
 /**
@@ -135,7 +141,7 @@ export class StructuredOutputError extends Error {
 export async function callStructured<T>(options: StructuredCallOptions<T>): Promise<T> {
   const { provider, schema, schemaName, signal } = options;
   const maxRetries = options.maxRetries ?? 2;
-  const jsonSchema = z.toJSONSchema(schema) as Record<string, unknown>;
+  const jsonSchema = z.toJSONSchema(options.sendSchema ?? schema) as Record<string, unknown>;
   const messages = [...options.messages];
   let lastReply = "";
   let lastError = "";
