@@ -520,7 +520,7 @@ export class RunLoop {
         await this.tasks.setStatus(run.id, task.id, "running");
         let worker: Worker | undefined;
         // Nothing is copied until the first command runs.
-        const scratch = new ScratchCopy(root, [`research-${run.id.slice(0, 8)}`, task.id], ["node_modules"]);
+        const scratch = new ScratchCopy(root, [`research-${run.id.slice(0, 8)}`, task.id], this.host.scratchLinkDirs?.(c.workspaceRoot) ?? []);
         scratches.push(scratch);
         try {
           worker = new Worker({
@@ -824,6 +824,34 @@ export class RunLoop {
       return `- ${t.title} (${t.status.replace("_", " ")}): ${said.replace(/\s+/g, " ").slice(0, 300)}`;
     });
     return `\n\nReports from the sub-agents:\n${lines.join("\n")}`;
+  }
+
+  /**
+   * "Retry failed" (or a retry from the task tree) on a run this chat started:
+   * the failed and stopped tasks, or the given ones, go back to pending and
+   * the run continues through the chat, with the coordinator's review, the
+   * run's model-call budget, the auto-accept guards and verification (Gemini
+   * audit HIGH-3: the bare runPlan command had none of them).
+   */
+  async retryTasks(runId: string, taskIds?: string[]): Promise<void> {
+    const conversationId = this.s.runOwner.get(runId);
+    if (!conversationId) return;
+    if (this.s.busy) {
+      await this.s.append(conversationId, { author: "system", tone: "warning", text: `Nothing was retried because the chat is busy (${this.s.busy.replace(/…$/, "")}). Try again when it is done.` });
+      return;
+    }
+    const run = await this.tasks.load(runId);
+    if (resumeState(run, process.pid) === "elsewhere") {
+      await this.s.append(conversationId, { author: "system", tone: "warning", text: "This run is still working in another VS Code window, so nothing was retried here." });
+      return;
+    }
+    const again = run.tasks.filter((t) => (taskIds ? taskIds.includes(t.id) : t.status === "failed" || t.status === "cancelled"));
+    for (const t of again) if (t.status !== "done") await this.tasks.retryTask(runId, t.id);
+    if (this.s.currentId !== conversationId) {
+      this.s.currentId = conversationId;
+      this.s.mode = (await this.conversations.load(conversationId)).mode;
+    }
+    await this.startRun(conversationId, await this.tasks.load(runId), true);
   }
 
   /**

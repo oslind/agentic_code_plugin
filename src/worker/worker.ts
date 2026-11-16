@@ -146,7 +146,7 @@ const CLAIMS_CHANGE = /\b(added|adds|updated|created|changed|fixed|wrote|written
  */
 export function outputCommand(task: Pick<Task, "instructions" | "fileScope">): string | undefined {
   if (!/\b(print|prints|printed|printing|output|outputs|console\.log|display|displays)\b/i.test(task.instructions)) return undefined;
-  const file = task.fileScope.find((f) => /^[\w./-]+\.(js|cjs|mjs|py)$/.test(f) && !/(^|\/)(test|tests|__tests__)\/|\.test\.|_test\.|(^|\/)test_/.test(f) && task.instructions.includes(f));
+  const file = task.fileScope.find((f) => /^\w[\w./-]*\.(js|cjs|mjs|py)$/.test(f) && !f.split("/").includes("..") && !/(^|\/)(test|tests|__tests__)\/|\.test\.|_test\.|(^|\/)test_/.test(f) && task.instructions.includes(f));
   if (!file) return undefined;
   return `${file.endsWith(".py") ? "python" : "node"} ${file}`;
 }
@@ -766,7 +766,8 @@ export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max =
 /** What the model is told after run_command. */
 export function commandResult(command: string, res: CheckResult): string {
   const status = res.notFound ? "did not run: the command does not exist here" : res.timedOut ? "timed out" : res.code === 0 ? "exit code 0" : res.code === undefined || res.code === null ? "did not run" : `exit code ${res.code}`;
-  return `Result of \`${command}\` (${status}):\n${res.output.trim() || "(no output)"}`;
+  // Output can hold file text (cat, a test's diff): chat-template tokens and data fences are broken, like read_file's.
+  return `Result of \`${command}\` (${status}):\n${neutralize(res.output.trim()) || "(no output)"}`;
 }
 
 /** The most command output shown in the chat; the terminal has all of it. */

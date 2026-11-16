@@ -1,3 +1,4 @@
+import { untrustedSection } from "../context/untrusted";
 import { Run, Task } from "../state/types";
 import { ChatEntry } from "./types";
 
@@ -112,10 +113,12 @@ export function earlierWork(task: Task, entries: ChatEntry[], runId: string, max
     .map((e) => (e.author === "user" ? `- The user said: ${e.text}` : `- ${e.tag ? `${e.tag}: ` : ""}${e.thought || e.text}`).replace(/\s+/g, " ").slice(0, 300));
   let shown = steps.join("\n");
   if (shown.length > maxChars) shown = `[… earlier steps left out]\n${shown.slice(-maxChars)}`;
-  return [
+  const body = [
     task.summary ? `Your report when you finished:\n${task.summary}` : task.error ? `Your task ended with: ${task.error}` : "",
     shown ? `Your steps:\n${shown}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
+  // Fenced (Gemini audit MED-3): the report and steps were written by a model that read project files.
+  return body ? untrustedSection("What you did earlier, as the chat shows it:", "your earlier report and steps", body) : "";
 }

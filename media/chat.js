@@ -18,7 +18,11 @@
   // Which collapsible parts are open, so re-rendering does not close them.
   const open = new Set(Array.isArray(saved.open) ? saved.open : []);
   /** Model calls in flight, by "coordinator" or "runId:taskId". Updated many times a second while a model streams. */
-  let live = {};
+  let live = Object.create(null);
+  /** Live progress by key, without a prototype: a key such as "constructor" never finds Object's own (Gemini audit LOW-3). */
+  function liveFrom(value) {
+    return Object.assign(Object.create(null), value && typeof value === "object" ? value : {});
+  }
 
   function persist() {
     vscode.setState({ draft, attachments, tab, agentView, filesBy, open: [...open].slice(-80) });
@@ -325,10 +329,14 @@
       persist();
       render();
     };
+    // Gemini audit MED-5: the row cuts long text with an ellipsis, so one-click Run/Allow is offered only when the
+    // row shows the whole command, and never for a change with a diff to look at. Otherwise the row opens first.
+    const cmd = e.kind === "approval" ? /`([^`]+)`/.exec(e.text || "") : null;
+    const shownWhole = e.kind === "approval" && !e.preview && (cmd ? cmd[1].length <= 60 && !/\s{2,}/.test(cmd[1]) : !e.rememberable);
     const quick =
-      e.kind === "approval"
+      shownWhole
         ? el("button", { class: "primary small", title: e.rememberable ? "Run this command once" : "Allow this change", onclick: (ev) => { ev.stopPropagation(); decide(e, { kind: "allow" }); } }, e.rememberable ? "Run" : "Allow")
-        : el("button", { class: "ghost small", onclick: toggle }, e.kind === "checks" ? "Review" : "Answer");
+        : el("button", { class: "ghost small", onclick: toggle }, e.kind === "checks" || e.kind === "approval" ? "Review" : "Answer");
     return el(
       "div",
       { class: "need" + (expanded ? " open" : "") },
@@ -515,7 +523,7 @@
     const verdictEntry = [...entries].reverse().find((e) => isVerify(e) && e.tag !== "verifying");
     const reply = [...entries].reverse().find((e) => e.kind === "answer" && e.tag === "final reply");
     const vKey = f.status === "stopped" || f.status === "failed" ? f.status : verdictEntry ? verdictEntry.tag : f.status;
-    const [tone, icon, label] = VERDICT[vKey] || VERDICT.finished;
+    const [tone, icon, label] = (Object.prototype.hasOwnProperty.call(VERDICT, vKey) && VERDICT[vKey]) || VERDICT.finished;
     const plan = state.plans[runId] || { tasks: [], changes: [] };
     const failed = plan.tasks.filter((t) => t.status === "failed" || t.status === "cancelled");
     const unfinished = plan.tasks.length - failed.length - plan.tasks.filter((t) => t.status === "done").length;
@@ -1295,7 +1303,7 @@
         el("div", { class: "card-head" }, el("span", { class: "card-title" }, "Oversight")),
         el("div", { class: "muted small" }, "How closely the coordinator watches, reviews and verifies its sub-agents. Higher levels make more model calls."),
         el("div", { class: "segmented wide", role: "radiogroup", "aria-label": "Oversight level" }, OVERSIGHT.map(([v, label]) => el("button", { class: "seg-btn" + (level === v ? " on" : ""), role: "radio", "aria-checked": level === v ? "true" : "false", onclick: () => post({ type: "setOversight", level: v }) }, label))),
-        el("div", { class: "small level-help" }, OVERSIGHT.find(([v]) => v === level)[2]),
+        el("div", { class: "small level-help" }, (OVERSIGHT.find(([v]) => v === level) || OVERSIGHT[0])[2]),
       ),
       el(
         "section",
@@ -1590,7 +1598,7 @@
     if (msg && msg.type === "state") {
       const before = state && state.current ? state.current.id : null;
       state = msg.state;
-      live = (state && state.live) || {};
+      live = liveFrom(state && state.live);
       // Another conversation: start on its Overview.
       if (before && (!state.current || state.current.id !== before)) {
         tab = "overview";
@@ -1599,7 +1607,7 @@
       }
       render();
     } else if (msg && msg.type === "live") {
-      live = msg.live && typeof msg.live === "object" ? msg.live : {};
+      live = liveFrom(msg.live);
       patchLive();
     } else if (msg && msg.type === "focusInput") {
       document.getElementById("input")?.focus();

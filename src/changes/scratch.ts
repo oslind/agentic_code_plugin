@@ -324,9 +324,19 @@ export class ScratchCopy {
         await this.linkTree(from, to);
         continue;
       }
-      const isDir = await fs.stat(from).then((x) => x.isDirectory(), () => false);
-      // Windows needs extra rights for file links; a copy of the file does the same job.
-      await fs.symlink(from, to, isDir ? (process.platform === "win32" ? "junction" : "dir") : "file").catch(() => fs.cp(from, to, { recursive: true }));
+      const st = await fs.stat(from).catch(() => undefined);
+      if (!st) continue;
+      if (st.isDirectory()) {
+        // A link that cannot be made is replaced entry by entry, through the same checks.
+        await fs.symlink(from, to, process.platform === "win32" ? "junction" : "dir").catch(() => this.linkTree(from, to, false));
+        continue;
+      }
+      // Windows needs extra rights for file links; a copy of the file does the same job. A copy counts toward the
+      // copy's size limits like any other (Gemini audit MED-5: the old fs.cp fallback was never counted).
+      await fs.symlink(from, to, "file").catch(async () => {
+        this.count(st.size, true);
+        await fs.copyFile(from, to);
+      });
     }
   }
 

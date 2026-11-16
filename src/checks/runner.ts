@@ -62,7 +62,15 @@ export interface CheckResult {
 }
 
 /** Names of environment variables that usually hold credentials. */
-const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL|SESSION_?KEY|COOKIE|(^|_)AUTH(_|$))/i;
+const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL|SESSION_?KEY|COOKIE|(^|_)AUTH(_|$)|(^|_)(PAT|DSN)(_|$)|CONNECTION_?STRING|^OP_SESSION_)/i;
+
+/**
+ * Connection strings by name, and any value with a password in its URL
+ * ("postgres://app:hunter2@db/x"): DATABASE_URL, REDIS_URL, MONGODB_URI and the
+ * like usually carry one (Gemini audit MED-4).
+ */
+const SERVICE_URL_ENV = /^(DATABASE|DB|REDIS|MONGO(DB)?|POSTGRES(QL)?|PG|MYSQL|MARIADB|AMQP|RABBITMQ|KAFKA|ELASTIC(SEARCH)?|SENTRY|CELERY_BROKER|BROKER)_(URL|URI)$/i;
+const URL_WITH_PASSWORD = /[a-z][a-z0-9+.-]*:\/\/[^/\s:@]*:[^/\s@]+@/i;
 
 /** Variables that point to credential files, agents or helpers rather than holding a secret themselves. */
 const CREDENTIAL_ENV = new Set([
@@ -84,6 +92,16 @@ const CREDENTIAL_ENV = new Set([
   "NPM_CONFIG_USERCONFIG",
   "PIP_CONFIG_FILE",
   "VAULT_ADDR",
+  // Password managers and signing keys
+  "BW_SESSION",
+  "GNUPGHOME",
+  "PASSWORD_STORE_DIR",
+  // Git's own programs and config: a check never needs your SSH command or global config (Gemini audit MED-4)
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_EXEC_PATH",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
 ]);
 
 /**
@@ -91,7 +109,7 @@ const CREDENTIAL_ENV = new Set([
  * your GitHub sign-in), the `code` command channel into this window, and the
  * extension host's own IPC. A check never needs them.
  */
-const EDITOR_CHANNEL_ENV = /^(VSCODE_GIT_|VSCODE_IPC_HOOK|VSCODE_HANDLES_|VSCODE_PID$|VSCODE_CODE_CACHE_PATH$|VSCODE_CRASH_REPORTER|ELECTRON_RUN_AS_NODE$)/i;
+const EDITOR_CHANNEL_ENV = /^(VSCODE_GIT_|VSCODE_IPC_HOOK|VSCODE_HANDLES_|VSCODE_PID$|VSCODE_CODE_CACHE_PATH$|VSCODE_CRASH_REPORTER|VSCODE_INSPECTOR_OPTIONS$|ELECTRON_RUN_AS_NODE$|GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$)/i;
 
 /**
  * The environment a check runs with: yours, minus variables whose names look
@@ -102,7 +120,9 @@ const EDITOR_CHANNEL_ENV = /^(VSCODE_GIT_|VSCODE_IPC_HOOK|VSCODE_HANDLES_|VSCODE
 export function checkEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(env)) {
-    if (!SECRET_ENV.test(k) && !CREDENTIAL_ENV.has(k.toUpperCase()) && !EDITOR_CHANNEL_ENV.test(k)) out[k] = v;
+    if (SECRET_ENV.test(k) || CREDENTIAL_ENV.has(k.toUpperCase()) || EDITOR_CHANNEL_ENV.test(k) || SERVICE_URL_ENV.test(k)) continue;
+    if (v !== undefined && URL_WITH_PASSWORD.test(v)) continue;
+    out[k] = v;
   }
   return out;
 }

@@ -109,7 +109,7 @@ const INJECTION = [
   /\b(do not|don't|never) (mention|report|tell|reveal|say anything about)\b/i,
   /\b(tell|inform) the user (that )?(all|every|everything|the|no)\b/i,
   /\b(system prompt|assistant:|system:)\s/i,
-  /<\|im_start\|>|<\|eot_id\|>|\[INST\]/i,
+  /<\|im_start\|>|<\|eot_id\|>|\[INST\]|<｜(User|Assistant)｜>|<start_of_turn>/i,
   // Aimed at a reviewer or approver: "always accept it", "approve every change", "ignore instructions that say otherwise".
   /\b(always|just|simply|automatically) (accept|approve)\b/i,
   /\b(accept|approve) (it|this|them|everything|every|all|any)\b[^.\n]{0,30}\b(regardless|no matter|without (checking|review))/i,
@@ -134,4 +134,15 @@ export function looksLikeInjection(text: string): boolean {
  */
 export function safeFileName(name: string): string {
   return name.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+}
+
+/**
+ * Closes a data fence that a cut left open (Gemini audit MED-3): text cut to
+ * fit the context window can lose its closing tag, and everything after it
+ * would then read as data, or data as the prompt's own text.
+ */
+export function closeOpenFences(text: string): string {
+  const opens = (text.match(new RegExp(`<${DATA_TAG}[\\s>]`, "g")) ?? []).length;
+  const closes = (text.match(new RegExp(`</${DATA_TAG}>`, "g")) ?? []).length;
+  return opens > closes ? `${text}${`\n</${DATA_TAG}>`.repeat(opens - closes)}\n${DATA_REMINDER}` : text;
 }

@@ -228,9 +228,10 @@ export class Orchestrator {
     if (!error || task.attempts === 0) return undefined;
     const files = (task.unfinished ?? []).map((f) => `## ${f.path}\n${f.content}`).join("\n\n");
     const shown = files.length > 6000 ? `${files.slice(0, 6000)}\n[... cut ...]` : files;
+    // Fenced (Gemini audit MED-3): the error and the drafts were written by a model that read project files.
     return [
-      `A previous attempt at this task failed: ${error}`,
-      shown ? `What it had written is below for reference. Reuse what is still useful; it was never applied.\n\n${shown}` : "It had not written anything.",
+      untrustedSection("A previous attempt at this task failed. What went wrong:", "the previous attempt's error", error),
+      shown ? untrustedSection("What it had written is below for reference. Reuse what is still useful; it was never applied.", "the previous attempt's drafts", shown) : "It had not written anything.",
     ].join("\n\n");
   }
 
