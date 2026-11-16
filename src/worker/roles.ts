@@ -16,10 +16,23 @@ import { ToolCall, toolCallSchema } from "../tools/protocol";
  */
 export type AgentRole = "researcher" | "editor" | "tester";
 
-/** A test file by its path: test/ or tests/ folders, *.test.*, *.spec.*, *_test.*, test_*.py, or a root test.js. */
+/**
+ * A test file by its path, in any letter case (Test/ and test/ are one folder on Windows and macOS): test, tests,
+ * __tests__, spec and e2e folders, *.test.*, *.spec.*, *.e2e.*, *_test.*, test_*.py, *Test.cs / *Tests.java and
+ * the like, or a root test.js.
+ */
 export function isTestPath(path: string): boolean {
-  const p = path.replace(/\\/g, "/").replace(/^\.\//, "");
-  return /(^|\/)(test|tests|__tests__|spec)\//.test(p) || /\.(test|spec)\.[\w]+$/.test(p) || /_test\.[\w]+$/.test(p) || /(^|\/)test_[^/]+\.py$/.test(p) || /(^|\/)tests?\.(js|cjs|mjs|ts|py)$/.test(p);
+  const original = path.replace(/\\/g, "/").replace(/^\.\//, "");
+  const p = original.toLowerCase();
+  return (
+    /(^|\/)(test|tests|__tests__|spec|specs|e2e)\//.test(p) ||
+    /\.(test|spec|e2e)\.[\w]+$/.test(p) ||
+    /_test\.[\w]+$/.test(p) ||
+    /(^|\/)test_[^/]+\.py$/.test(p) ||
+    // CalcTests.cs, UserTest.java: the capital T marks the word, so attest.cs is not a test.
+    /(^|\/|[a-z0-9])Tests?\.(cs|java|kt|scala|swift|php)$/.test(original) ||
+    /(^|\/)tests?\.(js|cjs|mjs|ts|py)$/.test(p)
+  );
 }
 
 /**
@@ -33,7 +46,7 @@ export function roleOf(task: Pick<Task, "fileScope">, readOnly: boolean | undefi
 
 type ToolName = ToolCall["tool"];
 
-/** Tools a role can never use. A call to one gets a plain "not available" step, never a retry. */
+/** The tools each role may use. A call to any other gets a plain "not available" step, never a retry. */
 const ROLE_TOOLS: Record<AgentRole, readonly ToolName[]> = {
   researcher: ["list_files", "read_file", "read_files", "search", "run_command", "ask_coordinator", "load_skill", "finish"],
   editor: ["read_file", "list_files", "search", "write_file", "replace_in_file", "insert_lines", "run_check", "run_command", "request_check", "ask_coordinator", "ask_user", "load_skill", "finish", "read_files"],
@@ -80,24 +93,51 @@ export function notAvailable(role: AgentRole, tool: string, tools: Set<ToolName>
 export const UNMET_NOTE = {
   noWrites: "Note from the extension: this sub-agent wrote no file in this task, although its report describes a change.",
   untested: (what: string) => `Note from the extension: this sub-agent did not run ${what} after its last change.`,
+  testsRan: (code: number) => `Note from the extension: this test sub-agent's last test run after its last change exited with code ${code}${code === 0 ? "" : " (a failure, or the tests could not start)"}.`,
   testsNotRun: (changed: boolean) => `Note from the extension: this test sub-agent did not run the tests${changed ? " after its last change" : ""}, so any test results in its report are not confirmed.`,
 } as const;
 
-/** Commands that run a test suite: the common runners and package-manager test scripts. */
+/** A runner at the start of a command segment: the common test runners and package-manager test scripts. */
 const TEST_RUNNER =
-  /(^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|npx\s+(?:vitest|jest|mocha|ava|tap)\b|(?:vitest|jest|mocha|ava|jasmine|karma|pytest|nose2|tox|ctest|phpunit|rspec)\b|python3?\s+-m\s+(?:pytest|unittest)\b|go\s+test\b|cargo\s+test\b|make\s+(?:test|check)\b|dotnet\s+test\b|\.?\/?gradlew?\s+test\b|mvn\s+test\b|node\s+--test\b|deno\s+test\b)/;
+  /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|npx\s+(?:vitest|jest|mocha|ava|tap|playwright\s+test)\b|(?:vitest|jest|mocha|ava|jasmine|karma|pytest|nose2|tox|ctest|phpunit|rspec)\b|python3?\s+-m\s+(?:pytest|unittest)\b|go\s+test\b|cargo\s+test\b|make\s+(?:test|check)\b|dotnet\s+test\b|\.?\/?gradlew?\s+test\b|mvn\s+test\b|node\s+--test\b|deno\s+test\b)/;
+/** Flags that make a runner list, describe or print instead of running tests. */
+const NOT_A_RUN = /(^|\s)(?:--help|-h|--version|-V|--collect-only|--co|--listTests|--list|--dry-run|--showConfig)(?=\s|=|$)/;
+/** An interpreter running one file, with no flags before it: "node test.js", "python tests/test_api.py". */
+const RUNS_FILE = /^(?:node|python3?|py|bun|deno\s+run)\s+(\.?\/?[\w./-]+)(?:\s|$)/;
 
 /**
- * True when a command runs tests: the project's test command, a known test runner, or a test file of the
- * project run directly ("node test.js", "python tests/test_api.py"). A generic command (ls, node -e, echo) is
- * not a test run, so it cannot satisfy a test task's finish rule (security audit of PR #55).
+ * True when a command runs tests (second audit of PR #55, F5): the project's test command, or a command segment
+ * (split at && and ;, after an optional "cd dir") that starts with a known runner or runs a test file directly,
+ * without --help, --version, --collect-only and the like. A command with || never counts, and one that only
+ * mentions a runner (echo npm test, ls jest, cat pytest.ini) does not either.
  */
 export function isTestCommand(command: string, ctx: { testCommand?: string }): boolean {
   const c = command.trim();
   if (!c) return false;
   if (ctx.testCommand && c === ctx.testCommand.trim()) return true;
-  if (TEST_RUNNER.test(c)) return true;
-  const runs = /(^|[\s;&|(])(?:node|python3?|py|deno\s+run|bun)\s+(?:-[\w-]+\s+)*(\.?\/?[\w./-]+)/.exec(c);
-  const file = runs?.[2]?.replace(/^\.\//, "");
-  return !!file && isTestPath(file);
+  if (c.includes("||")) return false;
+  return c
+    .split(/&&|;/)
+    // What runs after a pipe only reads the output; the runner is the part before it.
+    .map((seg) => seg.split("|")[0]!.trim().replace(/^(?:[A-Za-z_][\w]*=\S*\s+)+/, ""))
+    .filter((seg) => seg && !/^cd(\s|$)/.test(seg))
+    .some((seg) => {
+      if (NOT_A_RUN.test(seg)) return false;
+      if (TEST_RUNNER.test(seg)) return true;
+      const file = RUNS_FILE.exec(seg)?.[1]?.replace(/^\.\//, "");
+      return !!file && isTestPath(file);
+    });
+}
+
+/** A check name that may appear in the extension's own words and prompts: one short plain word (F7). */
+export function isPlainCheckName(name: string): boolean {
+  return /^[\w.-]{1,40}$/.test(name);
+}
+
+/**
+ * A model's report with every line that reads like the extension's own note marked as the model's, so only the
+ * extension's notes start with "Note from the extension" (second audit of PR #55, F6).
+ */
+export function markForgedNotes(summary: string): string {
+  return summary.replace(/^([ \t>*_-]*)(note from the extension\b)/gim, (_m, lead: string, words: string) => `${lead}(The sub-agent wrote:) ${words}`);
 }

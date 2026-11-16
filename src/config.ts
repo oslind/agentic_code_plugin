@@ -3,6 +3,7 @@ import { OpenAICompatibleConfig, OpenAICompatibleProvider } from "./providers/op
 import { StructuredOutputMode } from "./providers/types";
 import { CheckConfig } from "./checks/runner";
 import { safeLinkDirs } from "./changes/scratch";
+import { isPlainCheckName } from "./worker/roles";
 import { AutoApprove } from "./tools/policy";
 import {
   autoRetriesFrom,
@@ -124,7 +125,7 @@ export interface RunConfig {
 export function readRunConfig(scope?: vscode.Uri): RunConfig {
   const c = vscode.workspace.getConfiguration("agentic", scope);
   const valid = (list: unknown): CheckConfig[] =>
-    (Array.isArray(list) ? (list as CheckConfig[]) : []).filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command);
+    (Array.isArray(list) ? (list as CheckConfig[]) : []).filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command && isPlainCheckName(x.name));
   const checks = valid(c.get<unknown>("checks", []));
   return {
     checks,

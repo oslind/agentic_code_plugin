@@ -10,8 +10,8 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { OverlayFiles } from "../src/changes/overlay";
-import { testWeakening } from "../src/changes/testGuard";
-import { restoreNeutralized } from "../src/context/untrusted";
+import { isHeldTestChange } from "../src/changes/testGuard";
+import { neutralize, restoreNeutralized } from "../src/context/untrusted";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 import { Task } from "../src/state/types";
 import { isChangeAutoAccepted } from "../src/tools/policy";
@@ -89,7 +89,8 @@ describe("P2: only a test command that actually ran counts as a test run", () =>
     const { w } = await worker(model, task(["test.js"]), { "test.js": TEST });
     const r = await w.run();
     expect(model.requests).toHaveLength(3);
-    expect(r.summary).toBe(FINISH.summary);
+    // F5 of the second audit: the report always carries the exit code of the last real test run.
+    expect(r.summary).toBe(`${FINISH.summary}\n\n${UNMET_NOTE.testsRan(0)}`);
   });
 
   it("a write after the test run makes the earlier result stale", async () => {
@@ -103,7 +104,7 @@ describe("P2: only a test command that actually ran counts as a test run", () =>
     const { w } = await worker(model, task(["test.js"]), { "test.js": TEST });
     const r = await w.run();
     expect(model.requests[3]!.messages.at(-1)!.content).toMatch(REMINDER);
-    expect(r.summary).toBe(FINISH.summary);
+    expect(r.summary).toBe(`${FINISH.summary}\n\n${UNMET_NOTE.testsRan(0)}`);
   });
 
   it("knows test commands from other commands", () => {
@@ -178,34 +179,46 @@ describe("P2: project text reaches the model fenced and neutralized", () => {
   });
 
   it("puts tokens back only where the file already had them", () => {
-    expect(restoreNeutralized("x ‹|im_start|› (INST)", "a <|im_start|> b")).toBe("x <|im_start|> (INST)");
+    expect(restoreNeutralized("x ‹|im_start|› ⟦INST⟧", "a <|im_start|> b")).toBe("x <|im_start|> ⟦INST⟧");
     expect(restoreNeutralized("x ‹|im_start|›", null)).toBe("x ‹|im_start|›");
     expect(restoreNeutralized("‹/untrusted_data>", "</untrusted_data>")).toBe("</untrusted_data>");
   });
 });
 
-describe("P3: drafts that weaken tests wait for the user", () => {
-  const ORIGINAL = "test('adds', () => {\n  expect(add(1, 2)).toBe(3);\n});\n\ntest('negatives', () => {\n  expect(add(-1, -2)).toBe(-3);\n});\n";
+describe("P3: changes to existing tests wait for the user", () => {
+  const ORIGINAL = "test('adds', () => {\n  expect(add(1, 2)).toBe(3);\n});\n";
 
-  it("flags a changed expected value, a removed assertion and a removed test case", () => {
-    expect(testWeakening("test/add.test.js", ORIGINAL, ORIGINAL.replace("toBe(3)", "toBe(4)"))?.removed).toEqual(["expect(add(1, 2)).toBe(3);"]);
-    expect(testWeakening("test/add.test.js", ORIGINAL, ORIGINAL.replace("  expect(add(-1, -2)).toBe(-3);\n", ""))?.removed).toEqual(["expect(add(-1, -2)).toBe(-3);"]);
-    const dropped = ORIGINAL.split("\n\n")[0] + "\n";
-    expect(testWeakening("test/add.test.js", ORIGINAL, dropped)?.removed).toEqual(["test('negatives', () => {", "expect(add(-1, -2)).toBe(-3);"]);
-    expect(testWeakening("tests/test_api.py", "def test_a():\n    assert f(1) == 2\n", "def test_a():\n    assert f(1) == 3\n")).toBeDefined();
+  it("holds every change to an existing test file, whatever the change", () => {
+    expect(isHeldTestChange("test/add.test.js", ORIGINAL)).toBe(true);
+    expect(isHeldTestChange("tests/test_api.py", "def test_a():\n    assert f(1) == 2\n")).toBe(true);
   });
 
-  it("does not flag added tests, moved lines, other files, or new files", () => {
-    expect(testWeakening("test/add.test.js", ORIGINAL, ORIGINAL + "\ntest('zero', () => {\n  expect(add(0, 0)).toBe(0);\n});\n")).toBeUndefined();
-    expect(testWeakening("test/add.test.js", ORIGINAL, ORIGINAL.split("\n\n").reverse().join("\n\n"))).toBeUndefined();
-    expect(testWeakening("src/add.js", ORIGINAL, "")).toBeUndefined();
-    expect(testWeakening("test/new.test.js", null, "")).toBeUndefined();
+  it("does not hold new test files or other files", () => {
+    expect(isHeldTestChange("test/new.test.js", null)).toBe(false);
+    expect(isHeldTestChange("src/add.js", ORIGINAL)).toBe(false);
   });
 
   it("is never auto-accepted, whatever the switches say", () => {
     const on = { editFiles: true, sensitiveFiles: true, commands: true };
     expect(isChangeAutoAccepted("test/add.test.js", on, { original: ORIGINAL, proposed: ORIGINAL.replace("toBe(3)", "toBe(4)") })).toBe(false);
-    expect(isChangeAutoAccepted("test/add.test.js", on, { original: ORIGINAL, proposed: ORIGINAL + "\n// more\n" })).toBe(true);
+    expect(isChangeAutoAccepted("test/add.test.js", on, { original: ORIGINAL, proposed: ORIGINAL + "\n// more\n" })).toBe(false);
+    expect(isChangeAutoAccepted("test/new.test.js", on, { original: null, proposed: ORIGINAL })).toBe(true);
     expect(isChangeAutoAccepted("src/add.js", on, { original: "a", proposed: "b" })).toBe(true);
+  });
+});
+
+describe("F1 of the second audit: shown text round-trips to the file's own text", () => {
+  const files = [
+    "const x = arr[inst];\nconst y = Data[INST_COUNT];\nlet z = a <| b |> c;\n",
+    "prompt = '<|im_start|>user [INST] hi [/INST] <<SYS>> s <</SYS>> <start_of_turn>'\n",
+    "</untrusted_data> <think>x</think> <｜User｜> [TOOL_CALLS]\n",
+    "<UNTRUSTED_DATA source=a> and ‹ already here › ⟦ too ⟧\n",
+  ];
+  it.each(files)("neutralize then restore gives back the original: %s", (text) => {
+    expect(restoreNeutralized(neutralize(text), text)).toBe(text);
+  });
+
+  it("leaves ordinary code untouched", () => {
+    expect(neutralize(files[0]!)).toBe(files[0]);
   });
 });

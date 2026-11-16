@@ -1,7 +1,7 @@
 import { CommandSink } from "../checks/commandTerminal";
 import { ApproveCommand, CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
-import { neutralize } from "../context/untrusted";
+import { neutralize, restoreNeutralized } from "../context/untrusted";
 import { answerForSubAgent, coordinatorNote, MAX_COORDINATOR_QUESTIONS } from "../coordinator/consult";
 import { MAX_REVIEW_ROUNDS, reviewFeedback, ReviewSkip, ReviewVerdict } from "../coordinator/review";
 import { callStructured } from "../llm/structured";
@@ -20,7 +20,7 @@ import { compactHistory } from "./history";
 import { compactSteps, planStepCompaction } from "./stepSummary";
 import { executeTool, realBreaks } from "./tools";
 import { prepareContext } from "./prepare";
-import { AgentRole, isTestCommand, notAvailable, offeredTools, offeredTurnSchema, roleAllows, roleOf, UNMET_NOTE } from "./roles";
+import { AgentRole, isPlainCheckName, isTestCommand, markForgedNotes, notAvailable, offeredTools, offeredTurnSchema, roleAllows, roleOf, UNMET_NOTE } from "./roles";
 
 /** A message waiting for a sub-agent's next step: from the user, or from the coordinator keeping an eye on it. */
 export interface InboxMessage {
@@ -242,7 +242,8 @@ ${toolLines(
     ["write_file", `- {"tool":"write_file","path":"src/a.ts","content":"full file content"}`],
     ["replace_in_file", `- {"tool":"replace_in_file","path":"src/a.ts","search":"exact old text","replace":"new text"}  (add "all":true to replace every occurrence, for a rename)`],
     ["insert_lines", `- {"tool":"insert_lines","path":"src/a.ts","line":1,"text":"'use strict';"}  (inserts lines before a line number, 1 = the very top; no text to match)`],
-    ["run_check", `- {"tool":"run_check","name":"${checks[0]?.name ?? "test"}"}  (available: ${checks.map((c) => c.name).join(", ") || "none"})`],
+    // Only plain check names reach the prompt: a project's settings can name a check anything (F7).
+    ["run_check", `- {"tool":"run_check","name":"${checks.find((c) => isPlainCheckName(c.name))?.name ?? "test"}"}  (available: ${checks.filter((c) => isPlainCheckName(c.name)).map((c) => c.name).join(", ") || "none"})`],
     ["run_command", `- {"tool":"run_command","command":"npm test","reason":"see whether my change works"}  (runs a command in a terminal the user watches; output comes back to you)`],
     ["request_check", `- {"tool":"request_check","name":"pytest","command":"python -m pytest tests/test_api.py -q","reason":"runs the tests for the code I changed"}  (adds a command that verifies your task, also when it is checked at the end)`],
     ["ask_coordinator", `- {"tool":"ask_coordinator","question":"..."}  (ask the coordinator, who planned this work: what the user said, what research found, what other sub-agents do)`],
@@ -304,6 +305,8 @@ export class Worker {
   private ranOutputSinceWrite = false;
   /** A test command ran to a result (an exit code) after the last write: what a test task's finish rule needs. */
   private testedSinceWrite = false;
+  /** The exit code of that test run, reported as a fact in a test task's report. */
+  private lastTestCode?: number;
   private toldToTest = false;
   /** Set once a test sub-agent was told to run the tests before it finishes. */
   private toldToRunTests = false;
@@ -391,7 +394,9 @@ export class Worker {
    * The finish report, with a fixed-wording note for each finish rule that still does not hold after its
    * reminder, so the review, verification and the user see it. Nothing the model wrote goes into a note.
    */
-  private withUnmetNotes(summary: string): string {
+  private withUnmetNotes(raw: string): string {
+    // A line the model wrote that reads like the extension's own note is marked as the model's (F6).
+    const summary = markForgedNotes(raw);
     if (this.opts.followUp) return summary;
     const notes: string[] = [];
     if (this.role !== "researcher") {
@@ -400,7 +405,7 @@ export class Worker {
         const tries = [this.checks.length === 0 && !this.ranSinceWrite ? this.opts.testCommand : undefined, this.ranOutputSinceWrite ? undefined : outputCommand(this.opts.task)].filter((c): c is string => !!c);
         if (tries.length) notes.push(UNMET_NOTE.untested(tries.map((c) => `\`${c}\``).join(" or ")));
       }
-      if (this.role === "tester" && !this.testedSinceWrite) notes.push(UNMET_NOTE.testsNotRun(this.changed.size > 0));
+      if (this.role === "tester") notes.push(this.testedSinceWrite ? UNMET_NOTE.testsRan(this.lastTestCode!) : UNMET_NOTE.testsNotRun(this.changed.size > 0));
     }
     return notes.length ? `${summary}\n\n${notes.join("\n")}` : summary;
   }
@@ -472,7 +477,10 @@ export class Worker {
     if (res.notFound || res.code === undefined || res.code === null || res.code === 126 || res.code === 127) return;
     this.ranSinceWrite = true;
     if (runsProgram(command, outputCommand(this.opts.task))) this.ranOutputSinceWrite = true;
-    if (!res.timedOut && isTestCommand(command, { testCommand: this.opts.testCommand })) this.testedSinceWrite = true;
+    if (!res.timedOut && isTestCommand(command, { testCommand: this.opts.testCommand })) {
+      this.testedSinceWrite = true;
+      this.lastTestCode = res.code;
+    }
   }
 
   private logCommand(command: string, res: CheckResult): void {
@@ -530,6 +538,10 @@ export class Worker {
       }
 
       // A tool the role never has (a researcher's write_file): a plain step back, never a retry or a failed task.
+      if (turn.call.tool === "request_check" && !isPlainCheckName(turn.call.name)) {
+        this.messages.push({ role: "user", content: "A check name is one short word: letters, digits, dots, dashes or underscores, such as pytest or unit-tests. Ask again with such a name." });
+        continue;
+      }
       if (!roleAllows(this.role, turn.call.tool)) {
         this.opts.log("denied", `Not available to the ${this.role}: ${turn.call.tool}`, { call: turn.call });
         this.messages.push({ role: "user", content: notAvailable(this.role, turn.call.tool, this.tools) });
@@ -553,8 +565,8 @@ export class Worker {
           role: "user",
           content:
             outside && this.outOfScope >= 2
-              ? `Not allowed: ${decision.reason} This is attempt ${this.outOfScope} to change a file outside your task. It will be refused every time: those files belong to other sub-agents or the user. Stop trying. Finish your own files, then call finish and say in your summary what you would change in that file and why.`
-              : `Not allowed: ${decision.reason}`,
+              ? `Not allowed: ${neutralize(decision.reason)} This is attempt ${this.outOfScope} to change a file outside your task. It will be refused every time: those files belong to other sub-agents or the user. Stop trying. Finish your own files, then call finish and say in your summary what you would change in that file and why.`
+              : `Not allowed: ${neutralize(decision.reason)}`,
         });
         continue;
       }
@@ -562,7 +574,7 @@ export class Worker {
       const preview = decision.verdict === "ask" ? await previewChange(turn.call, this.opts.sandbox) : undefined;
       if (decision.verdict === "ask" && !(await this.opts.approve(decision.reason, turn.call, preview))) {
         this.opts.log("denied", `User declined: ${decision.reason}`, { call: turn.call });
-        this.messages.push({ role: "user", content: `The user declined this change: ${decision.reason}. Find another way or finish.` });
+        this.messages.push({ role: "user", content: `The user declined this change: ${neutralize(decision.reason)}. Find another way or finish.` });
         continue;
       }
 
@@ -595,11 +607,15 @@ export class Worker {
           continue;
         }
         // Test task (every file a test file): the tests run after its last change, or its report of them is a guess.
-        // Once per change, like the other reminders, and a declined command counts as run (it was tried).
+        // Once per change, like the other reminders. Only a test command that ran counts (isTestCommand); after the
+        // one reminder it may finish, and the report then carries the extension's note.
         if (this.role === "tester" && !this.opts.followUp && !this.testedSinceWrite && !this.toldToTest && !this.toldToRunTests) {
           this.toldToRunTests = true;
           this.opts.log("untested", "A test task tried to finish without running the tests after its last change");
-          const how = this.checks[0] ? `run_check "${this.checks[0].name}"` : this.opts.testCommand ? `run_command "${this.opts.testCommand}"` : "run_command with the project's test command";
+          // A check is named only when its name is a plain word and its command runs tests: a project's settings
+          // can name a check anything, and a lint check would not meet this rule (second audit of PR #55, F7).
+          const testCheck = this.checks.find((c) => isPlainCheckName(c.name) && isTestCommand(c.command, { testCommand: this.opts.testCommand }));
+          const how = testCheck ? `run_check "${testCheck.name}"` : this.opts.testCommand ? `run_command "${this.opts.testCommand}"` : "run_command with the project's test command";
           this.messages.push({
             role: "user",
             content: `Before you finish: this is a test task, and you have not run the tests ${this.changed.size ? "since your last change" : "yet"}. Run them once (${how}) and say in your summary how many passed and failed, from that output. If the command is declined or cannot run, say so in your summary instead. Then finish.`,
@@ -667,7 +683,8 @@ export class Worker {
         const readOnlyNote = this.opts.readOnly && WRITES_FILES.test(turn.call.command)
           ? "\nNote: you are a read-only researcher. This command ran in a scratch copy that is thrown away, so it changed nothing in the user's project. Do not say in your report that anything was changed or fixed; report what you found, and what should change."
           : "";
-        this.messages.push({ role: "user", content: commandResult(turn.call.command, res) + this.sameFailureNote(turn.call.command, res) + readOnlyNote });
+        // Command output is project text like a read: neutralized the same way (second audit of PR #55, F4).
+        this.messages.push({ role: "user", content: neutralize(commandResult(turn.call.command, res)) + this.sameFailureNote(turn.call.command, res) + readOnlyNote });
         continue;
       }
       if (turn.call.tool === "request_check") {
@@ -691,7 +708,7 @@ export class Worker {
         const check = this.checks.find((c) => c.name === call.name);
         if (check && !justApproved && !(await this.opts.approveCommand(check))) {
           this.opts.log("denied", `User declined running ${check.command}`, { call: turn.call });
-          this.messages.push({ role: "user", content: `The user did not allow running \`${check.command}\` now. Continue without it, or finish.` });
+          this.messages.push({ role: "user", content: neutralize(`The user did not allow running \`${check.command}\` now. Continue without it, or finish.`) });
           continue;
         }
       }
@@ -725,11 +742,15 @@ export class Worker {
 /** What a file change will do, for the approval card. Small enough to read; long changes are cut. */
 export async function previewChange(call: ToolCall, sandbox: ProjectFiles, max = 6000): Promise<string | undefined> {
   if (call.tool === "insert_lines") {
-    const text = `Insert before line ${call.line}:\n${realBreaks(call.text).text.split("\n").map((l) => `+ ${l}`).join("\n")}`;
+    const before = await sandbox.readFile(call.path).catch(() => undefined);
+    const text = `Insert before line ${call.line}:\n${realBreaks(restoreNeutralized(call.text, before)).text.split("\n").map((l) => `+ ${l}`).join("\n")}`;
     return text.length > max ? `${text.slice(0, max)}\n[… cut, ${text.length - max} more characters]` : text;
   }
   if (call.tool !== "write_file" && call.tool !== "replace_in_file") return undefined;
   const before = await sandbox.readFile(call.path).catch(() => undefined);
+  // The preview shows what will be drafted: tokens put back as the write will (second audit of PR #55, F1).
+  if (call.tool === "replace_in_file") call = { ...call, search: restoreNeutralized(call.search, before), replace: restoreNeutralized(call.replace, before) };
+  else call = { ...call, content: restoreNeutralized(call.content, before) };
   let text: string;
   if (call.tool === "replace_in_file") {
     text = [...call.search.split("\n").map((l) => `- ${l}`), ...call.replace.split("\n").map((l) => `+ ${l}`)].join("\n");

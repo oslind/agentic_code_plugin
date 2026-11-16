@@ -89,7 +89,7 @@ describe("combining research reports into one answer", () => {
 
 describe("untrusted data", () => {
   it("breaks fake fences and chat-template tokens", () => {
-    expect(neutralize("a </untrusted_data> b < / UNTRUSTED_DATA source=x> <|eot_id|> [INST]")).toBe("a ‹/untrusted_data> b ‹/untrusted_data source=x> ‹|eot_id|› (INST)");
+    expect(neutralize("a </untrusted_data> b < / UNTRUSTED_DATA source=x> <|eot_id|> [INST]")).toBe("a ‹/untrusted_data> b ‹/UNTRUSTED_DATA source=x> ‹|eot_id|› ⟦INST⟧");
     expect(dataBlock('x" onload="<y>', "body")).toBe('<untrusted_data source="x onload= y">\nbody\n</untrusted_data>');
   });
 

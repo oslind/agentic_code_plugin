@@ -54,8 +54,25 @@ export interface ToolOutcome {
   read?: FileRead[];
 }
 
-/** Runs an already policy-checked call. Every file access goes through the sandbox. */
+/** Longest line a read shows; the rest of a longer line is cut (second audit of PR #55, F2). */
+export const MAX_LINE_CHARS = 2000;
+
+/** A line as a read shows it: cut at MAX_LINE_CHARS, saying how much is left out. */
+function shownLine(line: string): string {
+  return line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)} [… line cut: ${line.length - MAX_LINE_CHARS} more characters]` : line;
+}
+
+/**
+ * Runs an already policy-checked call. Every file access goes through the sandbox. Every result, errors and
+ * file names included, is neutralized here, the one place all tool output passes (second audit of PR #55, F4):
+ * project text can never carry a live chat-template token or a data fence to the model.
+ */
 export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolOutcome> {
+  const out = await runTool(call, ctx);
+  return { ...out, output: neutralize(out.output) };
+}
+
+async function runTool(call: ToolCall, ctx: ToolContext): Promise<ToolOutcome> {
   try {
     switch (call.tool) {
       case "read_file": {
@@ -70,7 +87,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
         const end = Math.min(lines.length, call.endLine ?? start + MAX_READ_LINES - 1, start + MAX_READ_LINES - 1);
         const body = lines
           .slice(start - 1, end)
-          .map((l, i) => `${String(start + i).padStart(4)}| ${l}`)
+          .map((l, i) => `${String(start + i).padStart(4)}| ${shownLine(l)}`)
           .join("\n");
         const more = end < lines.length ? `\n[lines ${end + 1}-${lines.length} not shown; read again with startLine=${end + 1}]` : "";
         const big = head.truncated ? `\n[the file is ${Math.round(head.size / (1024 * 1024))} MB; only its first ${lines.length} lines can be read. Use search to find something further on]` : "";
@@ -97,7 +114,7 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
           const shown: string[] = [];
           let used = 0;
           for (const [i, l] of lines.slice(0, MAX_READ_LINES).entries()) {
-            const line = `${String(i + 1).padStart(4)}| ${l}`;
+            const line = `${String(i + 1).padStart(4)}| ${shownLine(l)}`;
             if (used + line.length > share && shown.length) break;
             shown.push(line);
             used += line.length + 1;
@@ -117,7 +134,8 @@ export async function executeTool(call: ToolCall, ctx: ToolContext): Promise<Too
           return { ok: true, output: elsewhere.length ? `No files match "${call.glob}" exactly, but the project has: ${elsewhere.map(safeFileName).join(", ")}. Paths start at the project root.` : "No files match." };
         }
         const more = files.length > MAX_LIST ? "\n[more files not shown; use a narrower glob]" : "";
-        return { ok: true, output: files.slice(0, MAX_LIST).map(safeFileName).join("\n") + more };
+        // Secret files are never readable; their names are left out too (second audit of PR #55).
+        return { ok: true, output: files.slice(0, MAX_LIST).filter((f) => !isSecretPath(f)).map(safeFileName).join("\n") + more };
       }
       case "search": {
         const files = await ctx.sandbox.listFiles(call.glob ?? "**", 5000);
