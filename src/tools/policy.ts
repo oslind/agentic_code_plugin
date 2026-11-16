@@ -1,4 +1,4 @@
-import { testWeakening } from "../changes/testGuard";
+import { isHeldTestChange } from "../changes/testGuard";
 import { matchesAny, normalizeWorkspacePath } from "./paths";
 import { ToolCall } from "./protocol";
 import { commandLeavesProject } from "./commandGuard";
@@ -341,12 +341,12 @@ export function isProtectedPath(path: string): boolean {
 }
 
 /**
- * Whether a pending change may be written without the user, given the switches. A draft of a test file that
- * changes or removes assertions or test cases never is, whatever is switched on: the user sees it first
- * (security audit of PR #55).
+ * Whether a pending change may be written without the user, given the switches. A change to an existing test
+ * file, snapshot, fixture or test-runner config never is, whatever is switched on: the user sees it first
+ * (security audits of PR #55). New test files follow the switches.
  */
 export function isChangeAutoAccepted(path: string, auto: AutoApprove, change?: { original: string | null; proposed: string }): boolean {
-  if (change && testWeakening(path, change.original, change.proposed)) return false;
+  if (change && isHeldTestChange(path, change.original)) return false;
   return isSensitivePath(path) ? auto.sensitiveFiles : auto.editFiles;
 }
 

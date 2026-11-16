@@ -1,38 +1,29 @@
 import { isTestPath } from "../worker/roles";
 
-/**
- * Lines that check something in a test: assertions in the common frameworks, and the lines that declare a
- * test case. A changed or removed one can weaken what the tests prove.
- */
-const ASSERTION =
-  /\b(?:assert\w*|expect|should|toBe\w*|toEqual|toMatch\w*|toThrow\w*|toHave\w*|assertEqual|assertTrue|assertFalse|assertRaises|assertIn|pytest\.raises|EXPECT_\w+|ASSERT_\w+|REQUIRE\w*|CHECK\w*)\s*[.(]|\bt\.(?:is|not|deepEqual|equal|true|false|throws)\s*\(|^\s*assert\s/;
-const TEST_CASE = /^\s*(?:(?:it|test|describe)(?:\.\w+)?\s*\(|def\s+test_\w*|func\s+Test\w*|TEST(?:_F)?\s*\(|#\[test\])/;
+/** Snapshots, fixtures and test-runner configs: files that decide what the tests check or which tests run. */
+const TEST_SUPPORT = [
+  /(^|\/)__snapshots__\//,
+  /\.snap$/,
+  /(^|\/)(fixtures|__fixtures__|testdata|test-data)\//,
+  /(^|\/)(vitest|jest|ava|playwright|cypress)\.(config|workspace)\.[\w.]+$/,
+  /(^|\/)karma\.conf\.[\w.]+$/,
+  /(^|\/)\.mocharc(\.[\w.]+)?$/,
+  /(^|\/)(pytest\.ini|conftest\.py|tox\.ini|\.nycrc(\.[\w.]+)?)$/,
+];
 
-export interface TestWeakening {
-  /** Assertion or test-case lines of the original that the draft no longer has, as they were (trimmed). */
-  removed: string[];
+/** A test file, snapshot, fixture or test-runner config, in any letter case. */
+export function isTestLikePath(path: string): boolean {
+  const p = path.replace(/\\/g, "/").replace(/^\.\//, "");
+  return isTestPath(p) || TEST_SUPPORT.some((re) => re.test(p.toLowerCase()));
 }
 
 /**
- * Whether a draft of a test file removes or changes lines that assert or declare tests. Adding tests never
- * counts. A heuristic that cannot judge whether a change is right: it only decides that the user sees the draft
- * before it is written (security audit of PR #55: "never bend a test" was a prompt rule only).
+ * Whether a draft changes an existing test file, snapshot, fixture or test-runner config. Such a draft is never
+ * written without the user, whatever the auto-approve switches say. Only new test files are left to the
+ * switches. Second audit of PR #55 (F3): telling a weakened test from a refactor by its lines missed a skip
+ * wrapper, an early return, a mock, a changed expected value on its own line and more, so every change to an
+ * existing one is held instead.
  */
-export function testWeakening(path: string, original: string | null, proposed: string): TestWeakening | undefined {
-  if (original === null || !isTestPath(path)) return undefined;
-  const left = new Map<string, number>();
-  for (const l of proposed.split("\n")) {
-    const t = l.trim();
-    if (t) left.set(t, (left.get(t) ?? 0) + 1);
-  }
-  const removed: string[] = [];
-  for (const l of original.split("\n")) {
-    const t = l.trim();
-    if (!t || !(ASSERTION.test(t) || TEST_CASE.test(l))) continue;
-    const n = left.get(t) ?? 0;
-    if (n > 0) left.set(t, n - 1);
-    else removed.push(t);
-  }
-  return removed.length ? { removed } : undefined;
+export function isHeldTestChange(path: string, original: string | null): boolean {
+  return original !== null && isTestLikePath(path);
 }
-
