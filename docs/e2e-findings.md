@@ -297,6 +297,21 @@ Oskar asked to look for ways these fixes could bring back problems seen before. 
 
 Known gaps, not fixed: the program run only catches crashes, not wrong output with exit code 0; a program that hangs (other than servers and input readers) runs until the command time limit, twice; with "Run commands" off the user gets more approval prompts per verification.
 
+## Run 17: all 51 on 7e77551, 48 passed, 560.4 min
+
+2026-11-17, with 60 minutes per scenario, PR #55 and #56 merged in, and the autopilot answering approvals like a reading user.
+rename-then-run-tests passed for the first time, and so did the new fix-old-failing-test and new-module-used-twice.
+Gates: 205 allowed, 6 held test changes accepted, 3 denials (all in command-denied, by design), no file changed on disk before review.
+One false completion claim (validate-input); every other final reply matched what was done.
+
+| Scenario | What happened | Fix (not run live yet) |
+|---|---|---|
+| validate-input | `targetTemp()` with no argument threw. The program run caught it, but fix-ups then changed two old expectations in test.js, the autopilot accepted the held test change, and the reply said "The work is complete" while listing the failure. | Whether an old failure is a task's work is decided from the user's own words, not a fix-up's model-written instructions. A final reply for unverified work starts with "This work is not verified as done". The scenario rejects test changes. |
+| typo-please-correct | "Which word in README.md would you like corrected?" twice, without reading the file. | The prompt says never to ask for what a file answers. A question identical to the last one becomes read-only research. |
+| old-test-pins-value | The one task could only change src/thermostat.js; the old test expects 18, so the saved check failed every attempt (18 spawns) and the draft was dropped each time. The reply honestly said nothing was changed. | After one fix round that was told so, a draft that fails only a comparison of values in a test the task may not change is kept (`checks_pinned`) and left to verification, which sends a fix-up for the test. |
+
+Known risk: a fix-up can edit a test to match wrong code. Such an edit is always held for the user.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
