@@ -312,6 +312,19 @@ One false completion claim (validate-input); every other final reply matched wha
 
 Known risk: a fix-up can edit a test to match wrong code. Such an edit is always held for the user.
 
+### Run 17, big questions (agentic, 2 attempts each, 148.3 min)
+
+Mean 96%, 3 of 8 fully solved, median 17.9 min. Every file was opened in every attempt, no list had a wrong entry, and no answer made a false claim.
+
+| Modules | Attempt 1 | Attempt 2 |
+|---|---|---|
+| 5 | 2/2 (2.8 min) | 2/2 (3.1 min) |
+| 20 | 7/8 (10.8 min), missed 014 | 6/8 (10.3 min), missed 007, 014 |
+| 50 | 22/22 (24.9 min) | 21/22 (25.5 min), missed 007 |
+| 100 | 36/44 (31.1 min) | 37/44 (39.8 min) |
+
+Most misses are modules that throw through `assertNonNegative` in util: the researcher reports "does not explicitly throw" and does not follow the call. In 100 #2 a whole block (028-030, 035-037) was missed, which looks like one batch's report. Run 14 had 36/44 and 34/44. Not fixed yet.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
