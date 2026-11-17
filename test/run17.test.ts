@@ -54,3 +54,24 @@ describe("a fix-up plan whose merge leaves a dependency cycle (run 18, rename-th
     expect(breakCycles(plan)).toBe(plan);
   });
 });
+
+import { buildVerifyMessages } from "../src/coordinator/verify";
+import { outputTail, printedEvidence } from "../src/chat/verifier";
+
+describe("what a program printed on the drafts is evidence (run 18, new-module-used)", () => {
+  const printed = { line: "node src/index.js", before: "Target: 21 C (21.1 C is 70 F)", now: "Target: 21 C (21.1 C is 70 F) (212.0 °C °C)" };
+
+  it("shows verification the output with and without the drafts, fenced", () => {
+    const messages = buildVerifyMessages({ userMessages: ["Add formatTemp and use it in index.js."], request: "add formatTemp", tasks: [], drafts: "", checks: [], round: 0, programOutputs: [printed] }, 16000);
+    const text = messages.map((m) => m.content).join("\n");
+    expect(text).toContain("Checked by rule: program 1 runs without crashing on all drafts together, and what it prints changed with the drafts.");
+    expect(text).toContain("With the drafts:\nTarget: 21 C (21.1 C is 70 F) (212.0 °C °C)");
+    expect(text).toContain("Without the drafts:\nTarget: 21 C (21.1 C is 70 F)");
+  });
+
+  it("puts the real output in the evidence the user and the final reply see", () => {
+    expect(printedEvidence([printed])).toBe(' With the drafts, `node src/index.js` printed: "Target: 21 C (21.1 C is 70 F) (212.0 °C °C)".');
+    expect(printedEvidence(undefined)).toBe("");
+    expect(outputTail("a\n\u001b[31mb\u001b[0m\n")).toBe("a\nb");
+  });
+});

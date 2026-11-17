@@ -1,3 +1,4 @@
+import { toPlainText } from "../checks/terminalText";
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
 import { importProblems, isTestPath, moduleStyleOf, projectTestText } from "../changes/moduleStyle";
@@ -51,6 +52,19 @@ export function beforeTheRun(changes: Pick<PendingChange, "path" | "original">[]
     if (c.original !== null) out.set(c.path, c.original);
   }
   return out;
+}
+
+/** The last lines a command printed, as plain text. */
+export function outputTail(output: string, lines = 12): string {
+  return toPlainText(output).trim().split("\n").slice(-lines).join("\n").slice(0, 800);
+}
+
+/** What programs printed on all drafts together, for the "how it was verified" line the user and the final reply see. */
+export function printedEvidence(outputs: { line: string; now: string }[] | undefined): string {
+  return (outputs ?? [])
+    .slice(0, 2)
+    .map((p) => ` With the drafts, \`${p.line.replace(/\s+/g, " ").slice(0, 80)}\` printed: ${JSON.stringify(p.now.slice(0, 300))}.`)
+    .join("");
 }
 
 /** The sub-agents' failed commands, plus each program the drafts are part of that is not among them (run 16). */
@@ -248,6 +262,8 @@ export class Verifier {
       this.host.log("warn", `The coordinator could not verify the run: ${(err as Error).message}`);
       v = factsOnlyVerification(ctx, "the model call failed");
     }
+    // By rule, not from the model: the final reply then has the real output in front of it.
+    v = { ...v, evidence: `${v.evidence}${printedEvidence(ctx.programOutputs)}` };
     signal.throwIfAborted();
     this.host.log("info", `Verification ${round + 1}: ${v.verified ? "verified" : "not verified"}.${v.adjusted ? ` ${v.adjusted}` : ""}`);
     const left = v.missing.length ? `\n\nStill left:\n${v.missing.map((m) => `- ${m}`).join("\n")}` : "";
@@ -429,7 +445,7 @@ export class Verifier {
     failed: FailedCommand[],
     checks: CheckConfig[],
     signal: AbortSignal,
-  ): Promise<Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures">> {
+  ): Promise<Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures" | "programOutputs">> {
     const own = failed.filter((f) => !checks.some((k) => k.command === f.line)).slice(0, 3);
     if (!own.length) return {};
     const root = await this.host.openFolder(workspaceRoot);
@@ -439,6 +455,7 @@ export class Verifier {
     const caused: FailedCommand[] = [];
     const preexisting: FailedCommand[] = [];
     const uncompared: FailedCommand[] = [];
+    const programOutputs: NonNullable<VerifyContext["programOutputs"]> = [];
     // One approval per command covers both runs: without the drafts, and again with all of them.
     const asked = new Map<string, Promise<boolean>>();
     const approve = (check: CheckConfig) => {
@@ -483,8 +500,14 @@ export class Verifier {
       own.forEach((f, i) => {
         const b = base[i];
         const n = now[i];
-        // It passes with the drafts as they are now: it is no longer a failure at all.
-        if (n && !n.skipped && n.passed) return;
+        // It passes with the drafts as they are now: it is no longer a failure at all. What it prints is kept when
+        // the drafts changed it, so verification can compare it with the request.
+        if (n && !n.skipped && n.passed) {
+          const printed = outputTail(n.output);
+          const before = b && !b.skipped && b.passed ? outputTail(b.output) : undefined;
+          if (printed && printed !== before) programOutputs.push({ line: f.line, before, now: printed });
+          return;
+        }
         const output = n && !n.skipped ? n.output : f.output;
         const verdict = !b || b.skipped ? "unknown" : failedBefore(output, b);
         const tail = withAssertNotes(output.trim()).split("\n").slice(-8).join("\n");
@@ -509,7 +532,7 @@ export class Verifier {
       await current.remove().catch(() => undefined);
     }
     if (preexisting.length) this.host.log("info", `Failed already without the drafts, so not this request's to fix: ${preexisting.map((f) => f.line).join(", ")}.`);
-    return { failedCommands: caused, preexistingFailures: preexisting, uncomparedFailures: uncompared };
+    return { failedCommands: caused, preexistingFailures: preexisting, uncomparedFailures: uncompared, ...(programOutputs.length ? { programOutputs } : {}) };
   }
 
   /** Same rule as a sub-agent's checks: approved checks run when "Run commands" is on or allowed for this run, otherwise the user is asked. */

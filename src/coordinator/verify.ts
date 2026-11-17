@@ -81,6 +81,11 @@ export interface VerifyContext {
   preexistingFailures?: { line: string; output: string }[];
   /** Failed commands that could not be compared with the project without the drafts (not approved, or nothing to compare). */
   uncomparedFailures?: { line: string; output: string }[];
+  /**
+   * Commands that ran without failing on all drafts together and printed something else than on the project
+   * without the drafts (`before` is undefined when there was nothing to compare with). Their output is untrusted.
+   */
+  programOutputs?: { line: string; before?: string; now: string }[];
   /** The project's file tree. Untrusted (file names). Run 8: verification named test files that do not exist. */
   fileTree?: string;
   /** The project's trusted conventions (AGENTS.md, .clinerules), already fenced by conventionsText(). */
@@ -204,6 +209,13 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   ].slice(0, 3);
   failures.forEach(({ c, how }, i) => {
     evidence.push(`Command ${i + 1} a sub-agent ran failed the last time it ran. It ${how}. Its line and the end of its output:\n${dataBlock(`failed command ${i + 1}`, `$ ${commandLine(c)}\n${fit(c.output, 400) ?? "(no output)"}`)}`);
+  });
+  // Run 18, new-module-used: index.js printed "(212.0 °C °C)", the program did not crash, and the work was verified with
+  // a reply that said it prints "100.0 °C". What a program printed with the drafts is shown, to compare with the request.
+  (ctx.programOutputs ?? []).slice(0, 2).forEach((p, i) => {
+    evidence.push(
+      `Checked by rule: program ${i + 1} runs without crashing on all drafts together, and what it prints ${p.before === undefined ? "is below" : "changed with the drafts"}. Not crashing does not make it right: compare what it prints now with what the user asked for. Output that is not what the user asked for (a wrong value, a doubled unit, a line that is missing) is missing work.\n${dataBlock(`program ${i + 1} and what it printed`, `$ ${commandLine(p)}\n${p.before === undefined ? "" : `Without the drafts:\n${fit(p.before, 250) ?? "(nothing)"}\n`}With the drafts:\n${fit(p.now, 250) ?? "(nothing)"}`)}`,
+    );
   });
   const tree = fit(ctx.fileTree, 1200);
   if (tree) evidence.push(`The project's files. Name only these files (or files in the drafts) in missing; never guess a path:\n${dataBlock("the project's file tree", tree)}`);
