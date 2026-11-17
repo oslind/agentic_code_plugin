@@ -313,7 +313,21 @@ export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterR
   // Run 17, typo-please-correct: "Which word in README.md would you like corrected?", the user said "Yes, please go
   // ahead.", and the same question came again. A question the user already answered is not asked twice (checked by
   // shape: the same text as the last reply): read-only sub-agents look for the answer in the files instead.
-  if (turn.action === "none" && ctx.asked && !ctx.afterResearch && ctx.canResearch && user && turn.reply.includes("?") && sameText(turn.reply, ctx.asked.question)) {
+  const again = turn.action === "none" && ctx.asked && !ctx.afterResearch && user && turn.reply.includes("?") && sameText(turn.reply, ctx.asked.question);
+  // Run 18, pass 2: the request was an edit ("Please correct the misspelled word in README.md."), research cannot
+  // edit, and its answer said the word "was corrected". An edit request is planned, with the finding inside the task.
+  if (again && ctx.asked && asksForEdit(ctx.asked.request)) {
+    return {
+      ...turn,
+      action: "plan",
+      goal: "change",
+      complete: false,
+      request: `${ctx.asked.request.trim()}\n\nThe sub-agent finds what this needs by reading the files it names, then makes the change. Do not ask the user.`.slice(0, 3000),
+      reply: "I already asked that, so I'll have a sub-agent find it in the file and make the change instead of asking again.",
+      overridden: "The same question was about to be asked twice, so a sub-agent looks in the files and makes the change instead.",
+    };
+  }
+  if (again && ctx.asked && ctx.canResearch) {
     return {
       ...asks([`${ctx.asked.request.trim()}\n\nFind what this needs by reading the files it names. Report exactly what you found (the word, line or value) and where.`]),
       reply: "I already asked that, so I'll have a read-only sub-agent find it in the files instead of asking again.",

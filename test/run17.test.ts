@@ -19,13 +19,20 @@ describe("a question the user already answered is not asked twice", () => {
     expect(askedBefore([entries[0]!, entries[1]!, { author: "system" as never, text: "note" }, entries[2]!])?.question).toBe(QUESTION);
   });
 
-  it("sends read-only sub-agents to the files instead of the same question", () => {
+  it("plans an edit request instead of the same question: research cannot edit (run 18, pass 2)", () => {
     const out = routeTurn(again, { userText: "Yes, please go ahead.", afterResearch: false, canResearch: true, asked: askedBefore(entries) });
-    expect(out.action).toBe("research");
-    expect(out.questions?.[0]).toMatch(/^Please correct the misspelled word in README\.md\./);
+    expect(out).toMatchObject({ action: "plan", goal: "change" });
+    expect(out.request).toMatch(/^Please correct the misspelled word in README\.md\./);
     expect(out.reply).toMatch(/already asked/);
     // Small differences in punctuation and case are the same question.
-    expect(routeTurn({ ...again, reply: "which word in README.md would you like corrected ?" }, { userText: "go", afterResearch: false, canResearch: true, asked: askedBefore(entries) }).action).toBe("research");
+    expect(routeTurn({ ...again, reply: "which word in README.md would you like corrected ?" }, { userText: "go", afterResearch: false, canResearch: true, asked: askedBefore(entries) }).action).toBe("plan");
+  });
+
+  it("sends read-only sub-agents to the files when the request was a question", () => {
+    const asked = { question: "Which function do you mean?", request: "Which function sets the default target?" };
+    const out = routeTurn({ ...again, reply: asked.question }, { userText: "The one in the thermostat.", afterResearch: false, canResearch: true, asked });
+    expect(out.action).toBe("research");
+    expect(out.questions?.[0]).toMatch(/^Which function sets the default target\?/);
   });
 
   it("leaves a first question, a different question, and a question after research alone", () => {
