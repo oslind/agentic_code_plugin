@@ -1,4 +1,4 @@
-import { failureLines, withAssertNotes } from "../checks/failures";
+import { asksToFixFailures, failureLines, withAssertNotes } from "../checks/failures";
 import { z } from "zod";
 import { CheckResult, checkStatus } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
@@ -267,6 +267,26 @@ export function unaskedFixes(missing: string[], words: string[]): string[] {
   });
 }
 
+/** What an old failure line names: "FAIL average of three: 30 !== 20" gives "average of three". */
+function failureName(line: string): string | undefined {
+  const name = line
+    .replace(/^\W*(?:FAIL(?:ED)?|failing|not ok(?:\s+\d+)?|AssertionError(?:\s*\[[^\]]*\])?)\b\W*/i, "")
+    .split(/\s*[:(]\s|\s+-\s+|\s*:\s*$/)[0]!
+    .trim()
+    .toLowerCase();
+  return name.length >= 6 && !/^\w*error$/.test(name) ? name : undefined;
+}
+
+/**
+ * Missing items that name a failure that was there before the request. Run 18, rename-then-run-tests: the checks
+ * said the tests "failed, the same way as before the changes", but the model's own "Still left" had "Fix the
+ * 'average of three' test failure", and a fix-up fixed that old bug, which nobody asked for.
+ */
+export function aboutOldFailures(missing: string[], oldLines: string[]): string[] {
+  const names = [...new Set(oldLines.map(failureName).filter((n): n is string => !!n))];
+  return missing.filter((m) => names.some((n) => m.toLowerCase().includes(n)));
+}
+
 /** ": <first failure line>" of a command's output, for a missing-work item. */
 function firstFailure(output: string): string {
   const line = failureLines(output)[0];
@@ -275,7 +295,7 @@ function firstFailure(output: string): string {
 
 export function guardVerification(
   d: VerifyDecision,
-  ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string; failedCommands?: { line: string; output: string }[] },
+  ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string; failedCommands?: { line: string; output: string }[]; preexistingFailures?: { line: string; output: string }[] },
 ): Omit<Verification, "thinking"> {
   // A check that failed only the way it failed before the run is not this request's to fix (run 16, old-test-pins-value).
   const failed = ctx.checks.filter((c) => !c.passed && !c.skipped && c.failedBefore !== "before");
@@ -287,7 +307,11 @@ export function guardVerification(
   // Run 6D: verification called the run done while the toKelvin task's review had said the function was missing.
   const rejected = ctx.tasks.filter((t) => t.unfinished === undefined && t.notAccepted !== undefined);
   let missing = d.missing.map((m) => m.replace(/\s+/g, " ").trim()).filter((m) => m.length >= 5);
-  const removals = [...unaskedRemovals(missing, ctx.userMessages), ...(ctx.userMessages ? unaskedFixes(missing, [...ctx.userMessages, ctx.request ?? ""]) : [])];
+  // Not when fixing a failure is what the user asked for: then the old failure is the work.
+  const oldLines = asksToFixFailures((ctx.userMessages ?? []).join("\n"))
+    ? []
+    : [...ctx.checks.flatMap((c) => (c.failedBefore === "before" ? failureLines(c.output) : (c.oldFailures ?? []))), ...(ctx.preexistingFailures ?? []).flatMap((c) => failureLines(c.output))];
+  const removals = [...unaskedRemovals(missing, ctx.userMessages), ...(ctx.userMessages ? unaskedFixes(missing, [...ctx.userMessages, ctx.request ?? ""]) : []), ...aboutOldFailures(missing, oldLines)];
   missing = missing.filter((m) => !removals.includes(m));
   const forced: string[] = [
     ...draftProblemsOf(ctx.drafts ?? ""),
@@ -306,6 +330,12 @@ export function guardVerification(
     const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : caused.length ? "a command fails because of the drafts" : unfinished.length ? "a task did not finish" : rejected.length ? "a task's review did not accept its drafts" : "a draft cannot load"}, so it is not.` : undefined;
     missing = [...forced, ...missing.filter((m) => !forced.includes(m))].slice(0, 6);
     return { verified: false, evidence, summary, missing, thought: d.thought, adjusted };
+  }
+  // Everything it named is a failure the checks showed was there before the request: by rule that is not missing
+  // work, so the request is done, and the old failure is named for the user.
+  const onlyOld = d.verdict === "not_done" && missing.length === 0 && removals.length > 0 && removals.every((m) => aboutOldFailures([m], oldLines).length > 0);
+  if (onlyOld) {
+    return { verified: true, evidence, summary, missing: [], thought: d.thought, adjusted: `It said not done, but all it named (${removals.join("; ").slice(0, 200)}) failed the same way before your request, so that is not missing work. It is still failing, and was not touched.` };
   }
   if (d.verdict === "not_done" && missing.length === 0) {
     const why = removals.length ? "only asked to remove or fix things outside your request" : "named nothing that is missing";

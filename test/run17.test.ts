@@ -82,3 +82,31 @@ describe("what a program printed on the drafts is evidence (run 18, new-module-u
     expect(outputTail("a\n\u001b[31mb\u001b[0m\n")).toBe("a\nb");
   });
 });
+
+import { aboutOldFailures, guardVerification } from "../src/coordinator/verify";
+
+describe("a failure from before the request is not left to fix (run 18, rename-then-run-tests)", () => {
+  const old = { name: "tests", passed: false, output: "FAIL average of three: 30 !== 20\n4 passed, 1 failed", failedBefore: "before" as const };
+  const decision = { verdict: "not_done" as const, verified: "The rename is complete in all three files.", missing: ["Fix the 'average of three' test failure"] };
+
+  it("finds missing items that name an old failure", () => {
+    expect(aboutOldFailures(["Fix the 'average of three' test failure", "Rename toCelsius in test.js"], ["FAIL average of three: 30 !== 20"])).toEqual(["Fix the 'average of three' test failure"]);
+    expect(aboutOldFailures(["Fix the error"], ["TypeError: x is not a function"])).toEqual([]);
+  });
+
+  it("calls the request done when the old failure is all the model named, and says so", () => {
+    const v = guardVerification(decision, { checks: [old], tasks: [], userMessages: ["Rename toCelsius to fahrenheitToCelsius everywhere, then run the tests to check nothing broke."] });
+    expect(v.verified).toBe(true);
+    expect(v.missing).toEqual([]);
+    expect(v.adjusted).toMatch(/failed the same way before your request/);
+  });
+
+  it("keeps other missing work, and keeps the old failure when fixing it is the request", () => {
+    const more = guardVerification({ ...decision, missing: [...decision.missing, "Rename toCelsius in src/index.js"] }, { checks: [old], tasks: [], userMessages: ["Rename toCelsius everywhere."] });
+    expect(more.verified).toBe(false);
+    expect(more.missing).toEqual(["Rename toCelsius in src/index.js"]);
+    const asked = guardVerification(decision, { checks: [old], tasks: [], userMessages: ["Fix the failing 'average of three' test."] });
+    expect(asked.verified).toBe(false);
+    expect(asked.missing).toEqual(decision.missing);
+  });
+});

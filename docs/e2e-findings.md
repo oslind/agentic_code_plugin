@@ -325,6 +325,31 @@ Mean 96%, 3 of 8 fully solved, median 17.9 min. Every file was opened in every a
 
 Most misses are modules that throw through `assertNonNegative` in util: the researcher reports "does not explicitly throw" and does not follow the call. In 100 #2 a whole block (028-030, 035-037) was missed, which looks like one batch's report. Run 14 had 36/44 and 34/44. Not fixed yet.
 
+## Run 18: 10 scenarios twice, to confirm the run 17 fixes
+
+2026-11-17. Pass 1 on d4672d3: 6/10 (164.2 min). Pass 2 on 60ffde4: 8/10 (120.6 min). No file changed on disk before review in either pass.
+
+| Scenario | Pass 1 | Pass 2 |
+|---|---|---|
+| validate-input | passed | passed |
+| typo-swedish | passed | passed |
+| old-test-pins-value | passed (first time ever, `checks_pinned`) | passed |
+| new-module-esm | passed | passed |
+| fix-old-failing-test | passed | passed |
+| parallel-changes | failed: a sub-agent said "Restored" without restoring; honestly partial | passed |
+| question-then-answer | failed: guessed 2 degrees instead of asking | passed |
+| new-module-used | failed: verified with output "(212.0 °C °C)", reply claimed "100.0 °C" | passed |
+| typo-please-correct | passed | failed: false "was corrected" from research |
+| rename-then-run-tests | failed: fix-up plan had a dependency cycle | failed: a fix-up fixed the old average bug |
+
+What was learned, and the fix for each (those after 60ffde4 are not run live):
+
+- A prompt sentence against asking for what a file answers made question-then-answer guess an amount. Taken back in 60ffde4; pass 2 confirms.
+- A repeated question on an edit request went to read-only research, which claimed the change. It is now planned as a change; only a question goes to research.
+- Merging two fix-up tasks on one file around a third left a dependency cycle. Cycles are broken by listing order (`breakCycles`).
+- A program that runs without crashing was enough for "verified". What it prints with and without the drafts is now shown to verification and added to the evidence.
+- The model's own "Still left" named a failure the checks had marked as there before the request. Such items are dropped by rule; when they are all it named, the request counts as done and the old failure is named.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
