@@ -16,3 +16,8 @@ docs/
 e2e/
 tsconfig.e2e.json
 vitest.e2e.config.mts
+
+# Container setup (docs/podman.md)
+container/
+.containerignore
+.dockerignore

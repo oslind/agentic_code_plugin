@@ -1,0 +1,9 @@
+# Python packages installed for every project with pip, at build time.
+# Same format as a requirements.txt; lines starting with # are ignored.
+# Prefer a virtual environment inside a project (python -m venv .venv) for
+# project-specific packages; put only tools you want everywhere here.
+#
+# Examples (remove the # to install):
+# pytest
+# ruff
+# requests

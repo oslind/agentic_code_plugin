@@ -1,0 +1,26 @@
+# Ubuntu 22.04 packages installed into the image with apt-get.
+# One package per line; lines starting with # are ignored.
+# Search for names with: podman run --rm docker.io/library/ubuntu:22.04 \
+#   sh -c "apt-get update -qq && apt-cache search <word>"
+
+# Everyday command-line tools
+less
+nano
+vim-tiny
+file
+tree
+zip
+unzip
+xz-utils
+jq
+ripgrep
+procps
+iputils-ping
+ca-certificates
+build-essential
+
+# Python 3.10 with pip and venv
+python3
+python3-pip
+python3-venv
+python-is-python3
