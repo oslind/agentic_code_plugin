@@ -27,6 +27,7 @@ import { Approvals } from "./approvals";
 import { FollowUps } from "./followUps";
 import { Verifier } from "./verifier";
 import { fileFindings, picksFiles, SORT_MIN_FILES, sortFact, Sorted, sortFiles, withSortedFiles } from "./perFile";
+import { helpersUsed } from "./calledHelpers";
 import { batchesOf, batchFilesOf, mentionsFile, batchQuestion, batchReview, coverageFact, coverageNote, coverageOf, fileList, askedScope, filesRead, LIST_LIMIT, readExtents, tooManyNote, codeFiles } from "./coverage";
 
 /**
@@ -239,7 +240,9 @@ export class RunLoop {
             author: "coordinator",
             text: `Your question is about ${files!.length} files${unread.length < files!.length ? `, and ${unread.length} of them have not been opened yet` : ""}. Splitting them over ${batches.length} researcher(s), up to ${batches[0]!.length} files each, so every file is read${covered < unread.length ? ` (${unread.length - covered} more wait for the next round)` : ""}.`,
           });
-          t = { ...t, questions: batches.map((b) => batchQuestion(userRequest ?? text, b)) };
+          const sandbox = await WorkspaceSandbox.create(c.workspaceRoot).catch(() => undefined);
+          const helpers = await Promise.all(batches.map((b) => (sandbox ? helpersUsed(sandbox, b).catch(() => undefined) : undefined)));
+          t = { ...t, questions: batches.map((b, i) => batchQuestion(userRequest ?? text, b, helpers[i])) };
         } else if (tooMany && round === 1) {
           await this.s.append(c.id, { author: "coordinator", text: `Your question is about ${codeFiles(tooMany, askedCut)} of the project, too many to read one by one. The researchers will search instead, and the answer will say that not every file was read. Name a folder to have every file in it read.` });
           if (!t.questions?.length) t = { ...t, questions: [userRequest ?? text] };
