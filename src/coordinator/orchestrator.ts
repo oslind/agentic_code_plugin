@@ -333,7 +333,10 @@ export class Orchestrator {
           return b && !b.skipped && failedBefore(c.output, b) === "before";
         });
         // Not when fixing a failure is the task itself: then the old failure is the work (review of the run 16 fixes).
-        const fixing = asksToFixFailures(task.instructions);
+        // Run 17, validate-input: decided from the user's own words when the run has them. A fix-up task's instructions
+        // are written by a model and say "fix the failing ...", which made an old failure the task's work, and it then
+        // rewrote the old tests. Runs without the user's words (not started from the chat) fall back to the task.
+        const fixing = asksToFixFailures((await this.o.store.load(this.o.runId)).userRequest ?? task.instructions);
         if (old.length === failed.length && !fixing) {
           await this.log("checks_preexisting", `Checks failed (${failed.map((c) => c.name).join(", ")}) only the way they failed before this sub-agent's changes; left to verification`, task.id, { checks: failed.map((c) => c.name) });
           break;

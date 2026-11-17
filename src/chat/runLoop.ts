@@ -806,7 +806,7 @@ export class RunLoop {
       tag: "final reply",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
       runId: run.id,
-      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withNoChangeNotice(withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))), changes),
+      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withNotVerifiedNotice(withNoChangeNotice(withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))), changes), verification),
       thinking: clip(result.thinking),
     });
     return result.cutOff;
@@ -1001,3 +1001,14 @@ export function withNoChangeNotice(text: string, changes: { status: string }[]):
   return `Nothing in your project was changed in this run: no sub-agent left a draft${changes.length ? " you kept" : ""}, so where the reply below says something was changed, that did not happen.\n\n${text}`;
 }
 
+/**
+ * A final reply for work that verification did not pass starts with that fact, by rule. Run 17, validate-input: a
+ * drafted program crashed, the fix-ups did not solve it, and the reply said "The work is complete for the requested
+ * changes" before listing the failure.
+ */
+export function withNotVerifiedNotice(text: string, verification: Pick<Verification, "verified" | "missing" | "manualReview"> | undefined): string {
+  if (!verification || verification.verified) return text;
+  const left = verification.missing.length;
+  const why = left ? `${left} thing${left === 1 ? " is" : "s are"} still left (listed under "Not verified yet" above)` : "check the drafts against your request yourself";
+  return `This work is not verified as done: ${why}. Where the reply below says the work is complete, that is not confirmed.\n\n${text}`;
+}

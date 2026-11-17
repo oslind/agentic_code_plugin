@@ -200,6 +200,27 @@ describe("Orchestrator without git", () => {
     expect(log.some((e) => e.type === "checks_preexisting" && e.taskId === "a")).toBe(true);
   });
 
+  it("decides whether an old failure is the task's work from the user's words, not a fix-up's instructions (run 17)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const checks: CheckConfig[] = [{ name: "test", command: node("console.log('FAIL average of three');process.exit(1)") }];
+    const fixUp: NewTask = { ...task("a", ["a.txt"]), instructions: "Fix the failing test 'average of three' so the tests pass." };
+    // The user asked for something else: the model-written "fix the failing test" does not make the old failure this task's work.
+    const run = await store.createRun("validate input", repo, undefined, undefined, "Make targetTemp reject unknown modes.");
+    await store.addTasks(run.id, [fixUp]);
+    const outcome = await make(run.id, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).toContain("a");
+    expect((await store.readLog(run.id)).some((e) => e.type === "checks_preexisting" && e.taskId === "a")).toBe(true);
+    // The user asked to fix the failure: then it is the work, and a fix that does not work fails the task.
+    const asked = await store.createRun("fix test", repo, undefined, undefined, "Fix the failing 'average of three' test.");
+    await store.addTasks(asked.id, [fixUp]);
+    const second = await make(asked.id, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(second.done).not.toContain("a");
+    // No user words recorded (a run not started from the chat): the task's instructions decide, as before.
+    const bare = await setup([fixUp]);
+    const third = await make(bare, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(third.done).not.toContain("a");
+  });
+
   it("still retries a sub-agent whose changes add a failure", async () => {
     await writeFile(path.join(repo, "a.txt"), "old\n");
     const checks: CheckConfig[] = [{ name: "test", command: node("const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL new');process.exit(1)}") }];
