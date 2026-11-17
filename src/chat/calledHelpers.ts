@@ -36,8 +36,10 @@ export function functionSource(text: string, name: string): string | undefined {
   let opened = false;
   for (let i = start; i < lines.length && i < start + MAX_LINES; i++) {
     for (const ch of lines[i]!) {
-      if (ch === "{") (depth++, (opened = true));
-      else if (ch === "}") depth--;
+      if (ch === "{") {
+        depth++;
+        opened = true;
+      } else if (ch === "}") depth--;
     }
     if ((opened && depth <= 0) || (!opened && /;\s*$/.test(lines[i]!))) return lines.slice(start, i + 1).join("\n");
   }
