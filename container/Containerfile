@@ -1,0 +1,99 @@
+# Agentic Code in a container: OpenVSCode Server (VS Code in your browser) with
+# this extension installed. Build from the repository root:
+#
+#   podman build -t agentic-code -f container/Containerfile .
+#
+# Full guide: docs/podman.md
+
+ARG NODE_IMAGE=docker.io/library/node:22-bookworm-slim
+ARG VSCODE_IMAGE=docker.io/gitpod/openvscode-server:1.105.1
+
+# ---- Stage 1: build the extension's VSIX from this checkout ----------------
+FROM ${NODE_IMAGE} AS build
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY . .
+RUN npm run package
+
+# ---- Stage 2: the editor image ---------------------------------------------
+FROM ${NODE_IMAGE} AS node
+FROM ${VSCODE_IMAGE}
+
+USER root
+
+# Extra Linux programs. Edit container/apt-packages.txt to add or remove them.
+COPY container/apt-packages.txt /tmp/apt-packages.txt
+RUN apt-get update \
+ && grep -Ev '^\s*(#|$)' /tmp/apt-packages.txt | xargs -r apt-get install -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* /tmp/apt-packages.txt
+
+# Node.js and npm, for projects (like this one) whose checks run npm.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && node --version && npm --version
+
+# Python packages for every project, from container/python-requirements.txt.
+COPY container/python-requirements.txt /tmp/python-requirements.txt
+RUN if grep -Eqv '^\s*(#|$)' /tmp/python-requirements.txt; then \
+      python3 -m pip install --no-cache-dir -r /tmp/python-requirements.txt; \
+    fi \
+ && rm /tmp/python-requirements.txt
+
+# Your own additions: anything else to install as root, for example a .deb
+# file, a program unpacked into /opt, or a tool from its own apt repository.
+# See "Add programs" in docs/podman.md for examples.
+# RUN curl -fsSL -o /tmp/tool.deb https://example.com/tool_1.0_amd64.deb \
+#  && apt-get update && apt-get install -y /tmp/tool.deb \
+#  && rm -rf /var/lib/apt/lists/* /tmp/tool.deb
+
+# Your own scripts and programs: everything in container/bin goes on the PATH.
+COPY container/bin/ /usr/local/bin/
+RUN rm -f /usr/local/bin/README.md && chmod -R a+rx /usr/local/bin
+
+# The base image lets its user run sudo without a password. Inside the
+# container that would let any command an agent runs act as root there, so it
+# is removed unless you build with --build-arg ALLOW_SUDO=true.
+ARG ALLOW_SUDO=false
+RUN if [ "$ALLOW_SUDO" != true ]; then rm -f /etc/sudoers.d/openvscode-server; fi
+
+# Extensions live outside the home folder, so a rebuilt image always brings
+# its own versions, even when the home folder is kept in a volume.
+ENV VSCODE_EXTENSIONS_DIR=/opt/vscode-extensions
+RUN mkdir -p "$VSCODE_EXTENSIONS_DIR" \
+ && chown openvscode-server:openvscode-server "$VSCODE_EXTENSIONS_DIR"
+
+# Default settings (model address and so on), as machine settings.
+COPY --chown=openvscode-server:openvscode-server container/settings.json \
+     /home/workspace/.openvscode-server/data/Machine/settings.json
+COPY container/start.sh /usr/local/lib/agentic-code/start.sh
+
+USER openvscode-server
+ARG CLI="${OPENVSCODE_SERVER_ROOT}/bin/openvscode-server --extensions-dir /opt/vscode-extensions"
+
+# This extension (built in stage 1), then the extra extensions: ids from Open
+# VSX (container/extensions.txt) and any .vsix files in container/vsix/.
+COPY --from=build /src/agentic-code-plugin.vsix /tmp/install/agentic-code-plugin.vsix
+COPY container/extensions.txt /tmp/install/extensions.txt
+COPY container/vsix/ /tmp/install/vsix/
+RUN $CLI --install-extension /tmp/install/agentic-code-plugin.vsix \
+ && for id in $(grep -Ev '^\s*(#|$)' /tmp/install/extensions.txt); do \
+      $CLI --install-extension "$id" || exit 1; \
+    done \
+ && for f in /tmp/install/vsix/*.vsix; do \
+      [ -e "$f" ] || continue; \
+      $CLI --install-extension "$f" || exit 1; \
+    done \
+ && $CLI --list-extensions --show-versions
+
+USER root
+RUN rm -rf /tmp/install \
+ && mkdir -p /home/workspace/project \
+ && chown openvscode-server:openvscode-server /home/workspace/project
+USER openvscode-server
+
+WORKDIR /home/workspace/project
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/lib/agentic-code/start.sh"]

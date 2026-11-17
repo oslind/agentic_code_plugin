@@ -1,0 +1,12 @@
+# Keeps the image build context small and free of local build output.
+# Read by Podman (and by Docker as .dockerignore is a symlink to it).
+.git
+node_modules
+out
+dist
+coverage
+.vscode-test
+.agentic
+e2e/results
+*.vsix
+!container/vsix/*.vsix

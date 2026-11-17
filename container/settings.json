@@ -1,0 +1,13 @@
+{
+  // Copied into the image as OpenVSCode Server's machine settings. The plugin
+  // reads its model address only from user or machine settings, never from a
+  // project's .vscode/settings.json.
+  "agentic.model.baseUrl": "http://host.containers.internal:11434/v1",
+  "agentic.model.name": "qwen3:8b",
+  "telemetry.telemetryLevel": "off",
+  // Extensions come from the image. Never replace them with whatever Open VSX
+  // offers under the same name (this plugin is not published there).
+  "extensions.autoUpdate": false,
+  "extensions.autoCheckUpdates": false,
+  "security.workspace.trust.enabled": true
+}

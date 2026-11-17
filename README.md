@@ -101,6 +101,8 @@ What works now:
 
 Any folder works; git is not needed. Checks are commands you configure, and they run with your permissions like any VS Code task. Workers start them by name; any other command a worker runs goes through the same approval.
 
+To run VS Code with Agentic Code in a Podman container that sees only your project folder, see [docs/podman.md](docs/podman.md).
+
 Settings live under `agentic.model.*`. If your server rejects `json_schema` response formats, set `agentic.model.structuredOutput` to `json_object` or `none`.
 
 ## Development

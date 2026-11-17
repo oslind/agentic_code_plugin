@@ -1,0 +1,13 @@
+# Extra VS Code extensions installed into the image at build time.
+# One per line as publisher.name, optionally with @version (for example
+# ms-python.python@2025.6.1). They come from Open VSX (open-vsx.org), the
+# marketplace OpenVSCode Server uses; Microsoft's marketplace is not available.
+# Lines starting with # are ignored. For an extension that is not on Open VSX,
+# put its .vsix file in container/vsix/ instead.
+#
+# Examples (remove the # to install):
+# ms-python.python
+# charliermarsh.ruff
+# dbaeumer.vscode-eslint
+# esbenp.prettier-vscode
+# redhat.vscode-yaml
