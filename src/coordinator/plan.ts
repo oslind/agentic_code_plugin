@@ -214,7 +214,20 @@ export function mergeSameFileTasks(tasks: PlannedTask[]): PlannedTask[] {
     if (t.changes) host.changes = true;
   }
   for (const t of out) t.dependsOn = [...new Set(t.dependsOn.map((d) => into.get(d) ?? d))].filter((d) => d !== t.id);
-  return out;
+  return breakCycles(out);
+}
+
+/**
+ * Tasks whose dependencies form a cycle, with the cycle broken by listing order: a task then waits only for tasks
+ * listed before it. Run 18, rename-then-run-tests: a fix-up planned "fix convert.js", "update test.js" (after the
+ * first) and a second convert.js task (after the test task); merging the two convert.js tasks left the first
+ * waiting for the test task and the test task waiting for it, and the fix-up never ran ("Dependency cycle").
+ * A plan without a cycle is returned as it is.
+ */
+export function breakCycles<T extends Pick<PlannedTask, "id" | "dependsOn">>(tasks: T[]): T[] {
+  if (!findCycle(tasks)) return tasks;
+  const position = new Map(tasks.map((t, i) => [t.id, i]));
+  return tasks.map((t, i) => ({ ...t, dependsOn: t.dependsOn.filter((d) => (position.get(d) ?? -1) < i) }));
 }
 
 /**

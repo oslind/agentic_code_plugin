@@ -35,3 +35,22 @@ describe("a question the user already answered is not asked twice", () => {
     expect(routeTurn(again, { userText: "Yes, please go ahead.", afterResearch: true, canResearch: true, asked: askedBefore(entries) }).action).toBe("none");
   });
 });
+
+import { breakCycles, findCycle, mergeSameFileTasks } from "../src/coordinator/plan";
+
+describe("a fix-up plan whose merge leaves a dependency cycle (run 18, rename-then-run-tests)", () => {
+  const t = (id: string, fileScope: string[], dependsOn: string[] = []) => ({ id, title: id, instructions: `Do ${id}`, fileScope, dependsOn });
+
+  it("breaks the cycle by listing order when two tasks on one file are merged around a third", () => {
+    const merged = mergeSameFileTasks([t("fix-convert-js", ["src/convert.js"]), t("update-test-js", ["test.js"], ["fix-convert-js"]), t("finish-convert-js", ["src/convert.js"], ["update-test-js"])]);
+    expect(merged.map((x) => x.id)).toEqual(["fix-convert-js", "update-test-js"]);
+    expect(findCycle(merged)).toBeUndefined();
+    expect(merged[0]!.dependsOn).toEqual([]);
+    expect(merged[1]!.dependsOn).toEqual(["fix-convert-js"]);
+  });
+
+  it("leaves a plan without a cycle exactly as it is", () => {
+    const plan = [t("b", ["b.js"], ["a"]), t("a", ["a.js"])];
+    expect(breakCycles(plan)).toBe(plan);
+  });
+});
