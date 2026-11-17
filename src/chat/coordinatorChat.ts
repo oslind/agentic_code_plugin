@@ -62,7 +62,7 @@ You cannot read or change files yourself, and you never write code. Sub-agents d
 - To learn about the project (explain it, analyse it, find where something is, review code), use action "research" with up to ${researchers} questions. Split broad questions into several focused ones (for example structure, main features, build and tests, dependencies), one per read-only sub-agent; they work in parallel, read the files, can run commands (tests, builds, scripts) in a terminal the user watches, and report back, and then you answer the user. Research never changes the project. Questions like "do the tests pass?" or "does it build?" are research too.
 - To change the project, use action "plan" with a complete, standalone description of the work in request. A planner splits it into many small tasks, each done by one sub-agent limited to its own files. Delegate generously. A change request that names its file and says what to do (for example "add an 'away' mode to targetTemp in src/thermostat.js that returns 16") goes straight to action "plan", in Plan and in Act mode: the sub-agents read the file themselves. Research first only when you do not know which files the change touches.
 - Use action "none" only when you can answer from the conversation alone, or to ask the user a question. File names do not say what the code in them does: a question about the project's code needs research. That includes "what would change if…", "which files would I need to edit to…" and "how would I add…": a list of file names from the file tree is a guess, so use action "research" first.
-- When you ask the user a question, use action "none" and wait for the answer. Never plan in the same reply as a question: the sub-agents would have to guess what you asked. Ask when a change leaves out something only the user can decide, such as an amount or a name. For example "make the timeout longer" without saying how long: ask "How long should it be?" and do not plan yet. Never let a sub-agent pick the value.
+- When you ask the user a question, use action "none" and wait for the answer. Never plan in the same reply as a question: the sub-agents would have to guess what you asked. Ask when a change leaves out something only the user can decide, such as an amount or a name. For example "make the timeout longer" without saying how long: ask "How long should it be?" and do not plan yet. Never let a sub-agent pick the value. Never ask for something a file in the project answers: which word is misspelled, which line is wrong, what a function is called, where something is. The sub-agents find that by reading, so "correct the misspelled word in README.md" goes straight to action "plan". When the user answers your question with "yes" or "go ahead", never ask the same question again: act.
 - When the user says not to change some files ("make the tests pass, but do not change src/stats.js"), first find out with action "research" where the problem is. If it can only be fixed in a file the user ruled out, do not plan: answer that it cannot be done under that limit, name the file and the cause, and ask whether they want that file changed. Never plan work that bends other code or tests around it.
 - "Make sure", "ensure" or "check that" something holds: the plan's request says to check it first and change code only if it does not hold. Never write that the code is wrong or needs correcting before anyone has checked.
 - A plan's request restates only what the user asked: never add work they did not ask for (a toggle, a class, extra tests), and copy numbers and names exactly as the user wrote them.
@@ -249,12 +249,33 @@ export async function coordinatorTurn(
   const lastUser = [...ctx.entries].reverse().find((e) => e.author === "user")?.text ?? "";
   const routed = routeTurn(turn, {
     userText: lastUser,
+    asked: askedBefore(ctx.entries),
     afterResearch: !!ctx.answerFromResearch,
     canResearch: !ctx.answerFromResearch || (ctx.researchRoundsLeft ?? 0) > 0,
   });
   const result = ctx.answerFromResearch ? routed : enforceMode(routed, ctx.mode, ctx.pendingPlan !== undefined);
   return { ...result, thinking, modelAction: turn.action };
 }
+
+/** A question the coordinator asked last, with the user's message it was a reply to. */
+export interface AskedBefore {
+  question: string;
+  request: string;
+}
+
+/** The coordinator's last reply when it was a question the user has answered since, and what the user had asked. */
+export function askedBefore(entries: Pick<ChatEntry, "author" | "text" | "kind">[]): AskedBefore | undefined {
+  const said = entries.filter((e) => (e.author === "user" && e.kind !== "direct") || (e.author === "coordinator" && (e.kind === undefined || e.kind === "message" || e.kind === "answer")));
+  const [request, question, answer] = said.slice(-3);
+  if (!request || !question || !answer) return undefined;
+  if (request.author !== "user" || question.author !== "coordinator" || answer.author !== "user" || !question.text.includes("?")) return undefined;
+  return { question: question.text, request: request.text };
+}
+
+const sameText = (a: string, b: string): boolean => {
+  const plain = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return plain(a).length > 0 && plain(a) === plain(b);
+};
 
 /**
  * Turns the model's own structured choice into the action that runs. No
@@ -284,10 +305,21 @@ export async function coordinatorTurn(
  * Whatever comes out, verification (verify.ts) checks the result before the
  * request counts as done, so a wrong choice is caught there and not here.
  */
-export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterResearch: boolean; canResearch: boolean }): CoordinatorResult {
+export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterResearch: boolean; canResearch: boolean; asked?: AskedBefore }): CoordinatorResult {
   const user = ctx.userText.trim();
   const asks = (questions: string[]): CoordinatorResult => ({ ...turn, action: "research", request: "", questions: questions.map((q) => q.slice(0, 500)).filter((q) => q.length >= 5) });
   const limit = (): CoordinatorResult => ({ ...turn, action: "none", researchLimitReached: true });
+
+  // Run 17, typo-please-correct: "Which word in README.md would you like corrected?", the user said "Yes, please go
+  // ahead.", and the same question came again. A question the user already answered is not asked twice (checked by
+  // shape: the same text as the last reply): read-only sub-agents look for the answer in the files instead.
+  if (turn.action === "none" && ctx.asked && !ctx.afterResearch && ctx.canResearch && user && turn.reply.includes("?") && sameText(turn.reply, ctx.asked.question)) {
+    return {
+      ...asks([`${ctx.asked.request.trim()}\n\nFind what this needs by reading the files it names. Report exactly what you found (the word, line or value) and where.`]),
+      reply: "I already asked that, so I'll have a read-only sub-agent find it in the files instead of asking again.",
+      overridden: "The same question was about to be asked twice, so read-only sub-agents look in the files instead.",
+    };
+  }
 
   if (turn.action === "run" && ctx.afterResearch) return { ...turn, action: "none" };
   if (turn.action === "research" && !ctx.canResearch) return limit();

@@ -154,6 +154,8 @@ export const MORE_SCENARIOS: Scenario[] = [
   },
   {
     name: "validate-input",
+    // Run 17: fix-ups changed two old expectations in test.js to hide a crash, and the autopilot accepted them.
+    mayChangeTests: false,
     description: "A behaviour change with an error case keeps every existing case working.",
     mode: "act",
     files: thermostat,

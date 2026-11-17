@@ -353,6 +353,16 @@ export class Orchestrator {
           await this.log("checks_deferred", `Checks failed (${failed.map((c) => c.name).join(", ")}) while ${waiting.map((t) => `"${t.title}"`).join(", ")} still has to finish; left to verification on all drafts together`, task.id, { waiting: waiting.map((t) => t.id) });
           break;
         }
+        // Run 17, old-test-pins-value: the one task could only change src/thermostat.js, the old test expects the old
+        // value, and the saved check failed every attempt (18 spawns), so the user's change was thrown away each time
+        // and no fix-up could update the test on top of it. After a fix round that was told so, a failure that is only
+        // a comparison of values (no crash) in a task that may not touch tests keeps its draft: verification runs the
+        // checks on all drafts together, reports the failure, and sends a fix-up for the test.
+        const pinned = !fixing && !task.fileScope.some((f) => isTestPath(f) || f.includes("*")) && pinsOldValue(failed.map((c) => c.output).join("\n"));
+        if (pinned && round >= Math.min(1, this.o.maxFixRounds)) {
+          await this.log("checks_pinned", `Checks failed (${failed.map((c) => c.name).join(", ")}) on a comparison of values in a test this sub-agent may not change; the draft is kept and left to verification on all drafts together`, task.id, { checks: failed.map((c) => c.name) });
+          break;
+        }
         if (round >= this.o.maxFixRounds) {
           throw new OrchestratorError(`Checks failed: ${failed.map((c) => c.name).join(", ")}`);
         }
@@ -362,7 +372,7 @@ export class Orchestrator {
             // Run 16, old-test-pins-value: the task could only change src/thermostat.js, an old test pinned the value the
             // user asked to change, and fix rounds undid the user's change to make it pass. Only for a failed comparison
             // of values: a crash (TypeError, "is not a function") is the sub-agent's own bug and gets no such way out.
-            !fixing && !task.fileScope.some((f) => isTestPath(f) || f.includes("*")) && pinsOldValue(failed.map((c) => c.output).join("\n"))
+            pinned
               ? " You may not change test files. Only if a failing test compares against the old value that the user asked to change: do not undo the change to make it pass; keep it, finish, and say which test needs updating. Any other failure is yours to fix."
               : ""
           }${

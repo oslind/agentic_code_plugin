@@ -221,6 +221,29 @@ describe("Orchestrator without git", () => {
     expect(third.done).not.toContain("a");
   });
 
+  it("keeps a draft whose only failure is a test that pins the old value, after one fix round (run 17)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const pin = "const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL night is 3 lower\\nExpected values to be strictly equal:\\n17 !== 18');process.exit(1)}";
+    const runId = await setup([task("a", ["a.txt"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish, finish] }), { checks: [{ name: "test", command: node(pin) }], maxFixRounds: 2 }).o.run();
+    expect(outcome.done).toContain("a");
+    expect((await changesOf(runId))[0]?.proposed).toBe("x");
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_pinned" && e.taskId === "a")).toBe(true);
+    // The check ran twice: the first failure got its fix round, with the note; the second kept the draft.
+    expect(log.filter((e) => e.type === "checks").map((e) => e.message)).toEqual(["failed", "failed"]);
+  });
+
+  it("gives no such way out for a crash, or for a task that may change the test", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const crash = "const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('TypeError: targetTemp is not a function');process.exit(1)}";
+    const first = await setup([task("a", ["a.txt"])]);
+    expect((await make(first, scripted({ a: [write("a.txt", "x"), finish, finish, finish] }), { checks: [{ name: "test", command: node(crash) }], maxFixRounds: 2 }).o.run()).failed).toEqual(["a"]);
+    const pin = "const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL night\\n17 !== 18');process.exit(1)}";
+    const second = await setup([task("a", ["a.txt", "test.js"])]);
+    expect((await make(second, scripted({ a: [write("a.txt", "x"), finish, finish, finish] }), { checks: [{ name: "test", command: node(pin) }], maxFixRounds: 2 }).o.run()).failed).toEqual(["a"]);
+  });
+
   it("still retries a sub-agent whose changes add a failure", async () => {
     await writeFile(path.join(repo, "a.txt"), "old\n");
     const checks: CheckConfig[] = [{ name: "test", command: node("const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL new');process.exit(1)}") }];
