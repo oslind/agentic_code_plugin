@@ -119,3 +119,39 @@ describe("a fix-up task that only chases an old failure (run 19, rename-everywhe
     expect(aboutOldFailures(["Update index.js import\nRename toCelsius in src/index.js and keep console.log as it was."], old)).toEqual([]);
   });
 });
+
+import { verifySchema } from "../src/coordinator/verify";
+
+describe("each part of the request is checked against a line that shows it (run 19)", () => {
+  const user = ["Create src/format.js with formatTemp(celsius) that returns the number with one decimal followed by ' °C'. Use it in src/index.js to print the target."];
+  const parts = [
+    { asked: "src/format.js with formatTemp(celsius)", found: "+ function formatTemp(celsius) {", met: true },
+    { asked: "use it in src/index.js to print the target", found: "+ console.log(formatTemp(212));", met: false },
+  ];
+
+  it("turns 'done' with an unmet part into not done, naming the part", () => {
+    const v = guardVerification({ verdict: "done", verified: "Both files are there.", missing: [], parts }, { checks: [], tasks: [], userMessages: user });
+    expect(v.verified).toBe(false);
+    expect(v.missing).toEqual(["Not as asked: use it in src/index.js to print the target (the drafts have: + console.log(formatTemp(212));)."]);
+    expect(v.adjusted).toMatch(/marked a part of your request as not met/);
+  });
+
+  it("uses the unmet parts when 'not_done' names nothing to do", () => {
+    const v = guardVerification({ verdict: "not_done", verified: "The list is short.", missing: [], parts: [{ asked: "list each mode with its target temperature", found: "", met: false }] }, { checks: [], tasks: [], userMessages: ["Add a section called 'Modes' to README.md that lists each mode with its target temperature."] });
+    expect(v.manualReview).toBeUndefined();
+    expect(v.missing).toEqual(["Not as asked: list each mode with its target temperature (nothing in the drafts shows it)."]);
+  });
+
+  it("leaves a verdict with all parts met, or with no parts, as it was", () => {
+    expect(guardVerification({ verdict: "done", verified: "ok", missing: [], parts: [parts[0]!] }, { checks: [], tasks: [], userMessages: user }).verified).toBe(true);
+    expect(guardVerification({ verdict: "done", verified: "ok", missing: [] }, { checks: [], tasks: [], userMessages: user }).verified).toBe(true);
+    // A model that leaves the field out still gives a valid decision.
+    expect(verifySchema.parse({ verdict: "done", verified: "ok" }).parts).toEqual([]);
+  });
+
+  it("does not count an unmet part about a failure from before the request", () => {
+    const old = { name: "tests", passed: false, output: "FAIL average of three: 30 !== 20", failedBefore: "before" as const };
+    const v = guardVerification({ verdict: "done", verified: "ok", missing: [], parts: [{ asked: "the 'average of three' test passes", found: "", met: false }] }, { checks: [old], tasks: [], userMessages: ["Rename toCelsius everywhere."] });
+    expect(v.verified).toBe(true);
+  });
+});

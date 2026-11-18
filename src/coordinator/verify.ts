@@ -37,6 +37,11 @@ export function verifyRoundLimit(n: number | undefined): number {
 
 export const verifySchema = z.object({
   thought: z.string().max(600).optional().describe("One sentence on what you see. Shown to the user."),
+  parts: z
+    .array(z.object({ asked: z.string().max(300), found: z.string().max(400).default(""), met: z.boolean() }))
+    .max(8)
+    .default([])
+    .describe("Each separate thing the user asked for, with the line of the drafts or of the program output that shows it, and whether that is what was asked."),
   verdict: z.enum(["done", "not_done"]),
   verified: z.string().max(800).describe("What you checked and what it showed, in one or two sentences."),
   missing: z
@@ -126,12 +131,14 @@ Missing work is only what the user's request asked for. Never name removing or r
 When a new test and the code disagree on a detail the user did not name (an error message, a wording), the test is what is wrong: name the test as missing work, never ask to change the code to fit it.
 Commands the sub-agents ran during their tasks do not show that the final drafts pass: a later task may have changed files since. Only the checks on all drafts together show that. With no checks set up, never write that all tests passed.
 A draft that would not load or run is not done: for example ES import/export in a file or project that uses require and module.exports, or an import of a file or name that does not exist. With no checks run, look for this yourself.
+Before the verdict, fill "parts": split the user's own words into each separate thing they asked for (each file, each function with its example, each place something must be used or listed, each value), one item per thing. For each, copy into "found" the line of the drafts or of the program output that shows it, and set "met" to true only when that line is what the user asked for, with the user's own values and names. With no line to copy, "found" is "" and "met" is false. A program that prints something other than what the user asked to be printed is not met. Any part that is not met makes the verdict "not_done". Parts come only from the user's words, never from the reports.
 Do not ask for extras the user did not ask for (style, more tests, refactors). If the request is met, say "done".
 In "verified", say what you compared and what it showed, for example "The drafts add the --verbose flag in src/cli.ts and the README line; npm test passed on all drafts together."
 
 Reply with JSON only. Examples:
-{"thought":"Both parts are in the drafts and the tests pass.","verdict":"done","verified":"src/cli.ts parses --verbose and README.md documents it; npm test passed on all drafts.","missing":[]}
-{"thought":"The route exists but the check fails.","verdict":"not_done","verified":"src/api.ts adds GET /users/:id, but the typecheck fails on all drafts together.","missing":["Fix the type error in src/api.ts: User has no field name (see the typecheck output)."]}`;
+{"thought":"Both parts are in the drafts and the tests pass.","parts":[{"asked":"a --verbose flag in src/cli.ts","found":"+ if (arg === '--verbose') verbose = true;","met":true},{"asked":"document it in README.md","found":"+ --verbose  print every step","met":true}],"verdict":"done","verified":"src/cli.ts parses --verbose and README.md documents it; npm test passed on all drafts.","missing":[]}
+{"thought":"The route exists but the check fails.","parts":[{"asked":"GET /users/:id in src/api.ts","found":"+ router.get('/users/:id', getUser);","met":true}],"verdict":"not_done","verified":"src/api.ts adds GET /users/:id, but the typecheck fails on all drafts together.","missing":["Fix the type error in src/api.ts: User has no field name (see the typecheck output)."]}
+{"thought":"The list has one of the three sizes.","parts":[{"asked":"list each size with its price in README.md","found":"+ - Small: 5","met":false}],"verdict":"not_done","verified":"README.md lists only the small size.","missing":["Add the medium and large sizes with their prices to the list in README.md."]}`;
 
 const REPLY_RESERVE = 1024;
 
@@ -294,7 +301,7 @@ function firstFailure(output: string): string {
 }
 
 export function guardVerification(
-  d: VerifyDecision,
+  d: Omit<VerifyDecision, "parts"> & { parts?: VerifyDecision["parts"] },
   ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string; failedCommands?: { line: string; output: string }[]; preexistingFailures?: { line: string; output: string }[] },
 ): Omit<Verification, "thinking"> {
   // A check that failed only the way it failed before the run is not this request's to fix (run 16, old-test-pins-value).
@@ -313,8 +320,18 @@ export function guardVerification(
     : [...ctx.checks.flatMap((c) => (c.failedBefore === "before" ? failureLines(c.output) : (c.oldFailures ?? []))), ...(ctx.preexistingFailures ?? []).flatMap((c) => failureLines(c.output))];
   const removals = [...unaskedRemovals(missing, ctx.userMessages), ...(ctx.userMessages ? unaskedFixes(missing, [...ctx.userMessages, ctx.request ?? ""]) : []), ...aboutOldFailures(missing, oldLines)];
   missing = missing.filter((m) => !removals.includes(m));
+  // Run 19, new-module-used and readme-section: the verdict was "done" for a program that printed the wrong value and
+  // for a list with one of its entries. The model lists each part of the request with the line that shows it; a part
+  // it marks as not met is missing work whatever its verdict says. Parts it does mark met are not second-guessed here.
+  const unmet = (d.parts ?? [])
+    .filter((p) => !p.met && p.asked.trim().length >= 5)
+    .map((p) => `Not as asked: ${p.asked.replace(/\s+/g, " ").trim().slice(0, 200)}${p.found.trim() ? ` (the drafts have: ${p.found.replace(/\s+/g, " ").trim().slice(0, 160)})` : " (nothing in the drafts shows it)"}.`);
+  const unmetKept = unmet.filter((m) => !aboutOldFailures([m], oldLines).length && !(ctx.userMessages ? unaskedFixes([m.replace(/^Not as asked: /, "")], [...ctx.userMessages, ctx.request ?? ""]).length : 0));
+  // "not_done" that names nothing to do, with unmet parts: the parts are what is left.
+  if (d.verdict === "not_done" && missing.length === 0) missing = unmetKept.slice(0, 6);
   const forced: string[] = [
     ...draftProblemsOf(ctx.drafts ?? ""),
+    ...(d.verdict === "done" ? unmetKept : []),
     ...failed.map((c) =>
       c.newFailures?.length
         ? `Make the "${checkName(c.name)}" check pass again where the drafts broke it: ${c.newFailures.slice(0, 3).join(" | ").slice(0, 300)}. Leave these alone, they failed before this request too: ${(c.oldFailures ?? []).slice(0, 3).join(" | ").slice(0, 200)}.`
@@ -327,7 +344,7 @@ export function guardVerification(
   const evidence = checkEvidence(ctx.checks);
   const summary = d.verified.trim();
   if (forced.length) {
-    const adjusted = d.verdict === "done" ? `It said done, but ${failed.length ? "a check failed" : caused.length ? "a command fails because of the drafts" : unfinished.length ? "a task did not finish" : rejected.length ? "a task's review did not accept its drafts" : "a draft cannot load"}, so it is not.` : undefined;
+    const adjusted = d.verdict === "done" ? `It said done, but ${d.verdict === "done" && unmetKept.length && !failed.length ? "it marked a part of your request as not met" : failed.length ? "a check failed" : caused.length ? "a command fails because of the drafts" : unfinished.length ? "a task did not finish" : rejected.length ? "a task's review did not accept its drafts" : "a draft cannot load"}, so it is not.` : undefined;
     missing = [...forced, ...missing.filter((m) => !forced.includes(m))].slice(0, 6);
     return { verified: false, evidence, summary, missing, thought: d.thought, adjusted };
   }
