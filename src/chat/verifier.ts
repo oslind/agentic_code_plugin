@@ -18,12 +18,12 @@ import { commandEventData } from "../worker/worker";
 import { draftsForReview, leftoverRename, renameLeftovers, renamesEverywhere } from "../coordinator/review";
 import { filesMentioning } from "../context/outline";
 import { conventionsText } from "../skills/catalog";
-import { AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
+import { aboutOldFailures, AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
 import { FailedCommand, failedCommandsOf } from "./synthesis";
-import { asksToFixFailures, failedBefore, splitFailures, withAssertNotes } from "../checks/failures";
+import { asksToFixFailures, failedBefore, failureLines, splitFailures, withAssertNotes } from "../checks/failures";
 import { runScope, userMessagesOf, userRequestOf } from "./scope";
 import { promises as fs } from "fs";
 import * as path from "path";
@@ -603,7 +603,20 @@ export class Verifier {
         text: `I left out ${invented.size} fix-up task(s) for files that do not exist in the project and that you did not ask for: ${result.plan.tasks.filter((t) => invented.has(t.id)).flatMap((t) => t.fileScope).join(", ")}.`,
       });
     }
-    const offTarget = new Set([...invented, ...offTargetTasks(result.plan.tasks, v.missing).map((t) => t.id)]);
+    // Run 19, rename-everywhere: "Still left" named only index.js, but the one fix-up task planned was "Fix average
+    // test" on src/stats.js, for the failure that was there before the request. A task that names such a failure and
+    // touches no file the missing work names is left out, unless fixing a failure is what the user asked for.
+    const oldLines = asksToFixFailures(userRequest) ? [] : (v.checks ?? []).flatMap((c) => (c.failedBefore === "before" ? failureLines(c.output) : (c.oldFailures ?? [])));
+    const left = v.missing.join("\n").toLowerCase();
+    const oldWork = result.plan.tasks.filter((t) => aboutOldFailures([`${t.title}\n${t.instructions}`], oldLines).length > 0 && !t.fileScope.some((f) => left.includes(f.toLowerCase())));
+    if (oldWork.length) {
+      await this.s.append(conversationId, {
+        author: "system",
+        runId,
+        text: `I left out ${oldWork.length} fix-up task(s) for a failure that was there before your request and that you did not ask to fix: ${oldWork.map((t) => `"${t.title}"`).join(", ")}.`,
+      });
+    }
+    const offTarget = new Set([...invented, ...oldWork.map((t) => t.id), ...offTargetTasks(result.plan.tasks, v.missing).map((t) => t.id)]);
     if (offTarget.size) this.host.log("info", `Fix-up plan: left out ${offTarget.size} task(s) whose files the missing work does not name.`);
     if (result.plan.tasks.every((t) => offTarget.has(t.id))) return [];
     const planned = mergeSameFileTasks(result.plan.tasks.filter((t) => !offTarget.has(t.id)).map((t) => ({ ...t, dependsOn: t.dependsOn.filter((d) => !offTarget.has(d)) })));

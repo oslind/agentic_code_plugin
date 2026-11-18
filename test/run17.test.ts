@@ -110,3 +110,12 @@ describe("a failure from before the request is not left to fix (run 18, rename-t
     expect(asked.missing).toEqual(decision.missing);
   });
 });
+
+describe("a fix-up task that only chases an old failure (run 19, rename-everywhere)", () => {
+  it("is recognised from its title and instructions", () => {
+    const old = ["FAIL average of three: Expected values to be strictly equal:"];
+    const task = "Fix average test\n1. Update src/stats.js to correctly calculate the average of three numbers as (a + b + c) / 3. 2. Run npm test to ensure the 'average of three' test passes";
+    expect(aboutOldFailures([task], old)).toHaveLength(1);
+    expect(aboutOldFailures(["Update index.js import\nRename toCelsius in src/index.js and keep console.log as it was."], old)).toEqual([]);
+  });
+});
