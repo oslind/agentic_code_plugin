@@ -350,6 +350,19 @@ What was learned, and the fix for each (those after 60ffde4 are not run live):
 - A program that runs without crashing was enough for "verified". What it prints with and without the drafts is now shown to verification and added to the evidence.
 - The model's own "Still left" named a failure the checks had marked as there before the request. Such items are dropped by rule; when they are all it named, the request counts as done and the old failure is named.
 
+## Run 19: all 51 on 709fa59, 47 passed, 432.1 min
+
+2026-11-18. Every scenario that failed in run 18 passed (typo-please-correct, rename-then-run-tests, question-then-answer, parallel-changes, old-test-pins-value).
+Gates: 152 allowed, 6 held test changes accepted, 3 denials (command-denied, by design), no file changed on disk before review.
+No claim of a change that did not exist. Two replies said "complete" for work that was not what was asked (new-module-used, readme-section).
+
+| Scenario | What happened | State |
+|---|---|---|
+| rename-everywhere | The rename was complete. "Still left" named only an index.js review item, but the fix-up planner made "Fix average test" on src/stats.js and fixed the old bug, unasked. | Fixed after the run: such a fix-up task is left out. Not run live. |
+| new-module-used | format.js exports the function itself, index.js reads `.formatTemp` from it and prints `formatTemp(212)` on its own line. The program output was in the evidence, and verification still said done. | Open: verification does not compare the output with the specifics of the request. |
+| readme-section | The Modes section lists only night mode, with no default mode and no temperatures; verified and called complete. | Open: same cause. |
+| new-module-used-twice | A later write_file rewrote index.js without the require ("label is not defined"); a later task changed src/stats.js. The reply honestly said it was not done. | Open. |
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
