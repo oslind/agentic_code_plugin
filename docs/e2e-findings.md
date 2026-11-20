@@ -363,6 +363,22 @@ No claim of a change that did not exist. Two replies said "complete" for work th
 | readme-section | The Modes section lists only night mode, with no default mode and no temperatures; verified and called complete. | Open: same cause. |
 | new-module-used-twice | A later write_file rewrote index.js without the require ("label is not defined"); a later task changed src/stats.js. The reply honestly said it was not done. | Open. |
 
+## Run 20: all 51 on 7b5cbe5, 45 passed, 494.4 min
+
+2026-11-20, the first run with the "parts" list in verification. new-module-used, readme-section and new-module-used-twice passed again (the reason for the list). Five scenarios that passed in run 19 failed.
+Gates: 179 allowed, 6 held test changes accepted, 2 denials (command-denied, by design), no file changed on disk before review. One false completion (fix-and-add-test).
+
+| Scenario | What happened | State |
+|---|---|---|
+| fix-and-add-test | A fix-up removed both copies of a duplicated test. The verdict was "done" with a part quoting the test line, which was no longer in the drafts. | Fixed: a line quoted as added must be in the drafts (`notInDrafts`). |
+| rename-then-run-tests | The convert.js task failed its check ("toCelsius is not a function", no file named), so the tasks after it never started. Later the part "run the tests" was marked not met because of the old average failure. | Fixed: the failure is left to the unfinished task whose file still uses the name (`missingNames`); a part unmet only for failures from before the request is not missing work. |
+| rename-everywhere | Three verdicts were "done" with every part met; each was overruled by "its review did not accept its drafts" (the review wanted another task's file; a fix-up then had nothing to draft). | Fixed: with every part shown and nothing else wrong, a review that did not accept is told to the user and sends nobody back. |
+| small-context-change | A JSDoc-only request: the worker added a second `average` function; fix-ups fought over stats.js until the time limit. The parts list was right. | Open (model error). |
+| stop-then-continue | The median for an even length was wrong in both the code and the new test; "Still left" alternated between fixing the code and fixing the test. | Open. |
+| typo-please-correct | "Please provide the specific misspelled word…" without reading the file, and without a question mark, so the scenario ended there. | Open (passed in run 19). |
+
+None of these fixes are run live.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.
