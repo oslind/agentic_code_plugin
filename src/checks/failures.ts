@@ -82,3 +82,13 @@ export function pinsOldValue(output: string): boolean {
   if (/\b(TypeError|ReferenceError|SyntaxError|RangeError)\b|is not a function|is not defined|Cannot find module|Cannot read propert/.test(plain)) return false;
   return /Expected values to be|\S+ !==? \S+|\bexpected\b.*\b(to (be|equal)|got|but)\b|AssertionError/i.test(plain);
 }
+
+/** Names a failure says are missing: "x is not a function", "x is not defined", a missing export or member. */
+export function missingNames(output: string): string[] {
+  const plain = toPlainText(output);
+  const found = [
+    ...plain.matchAll(/([A-Za-z_$][\w$]*) is not (?:a function|defined|a constructor)/g),
+    ...plain.matchAll(/(?:no exported member|export named|has no attribute|cannot import name) ['"`]?([A-Za-z_$][\w$]*)/g),
+  ].map((m) => m[1]!);
+  return [...new Set(found)].filter((n) => n.length >= 3).slice(0, 5);
+}

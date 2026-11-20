@@ -7,7 +7,8 @@ import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
 import { draftsForReview, ReviewSkip, ReviewVerdict } from "./review";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
-import { asksToFixFailures, failedBefore, pinsOldValue, splitFailures, withAssertNotes } from "../checks/failures";
+import { asksToFixFailures, failedBefore, missingNames, pinsOldValue, splitFailures, withAssertNotes } from "../checks/failures";
+import { escapeRegExp } from "../context/outline";
 import { detectChecks } from "../checks/detect";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
@@ -348,7 +349,27 @@ export class Orchestrator {
         // Only when the failure or the sub-agent's own report names a file of such a task: a check that fails on
         // this task's own files still gets its fix rounds.
         const said = `${failed.map((c) => c.output).join("\n")}\n${result.summary}`;
-        const waiting = (await this.unfinishedSiblings(task)).filter((t) => t.fileScope.some((f) => mentionsFile(said, f)));
+        const siblings = await this.unfinishedSiblings(task);
+        let waiting = siblings.filter((t) => t.fileScope.some((f) => mentionsFile(said, f)));
+        // Run 20, rename-then-run-tests: the convert.js task renamed the function and its check failed with "toCelsius
+        // is not a function" and no file name in the output, so it was not seen as waiting for the test.js task; it
+        // failed, and the tasks after it never started. A name the failure says is missing, found in a file of a task
+        // that still has to finish, is that task's to change.
+        if (!waiting.length && siblings.length) {
+          const names = missingNames(failed.map((c) => c.output).join("\n"));
+          if (names.length) {
+            const uses = await Promise.all(
+              siblings.map(async (t) => {
+                for (const f of t.fileScope.filter((g) => !/[*?[{]/.test(g))) {
+                  const text = await overlay.readFile(f).catch(() => undefined);
+                  if (typeof text === "string" && names.some((n) => new RegExp(`(?<![\\w$])${escapeRegExp(n)}(?![\\w$])`).test(text))) return true;
+                }
+                return false;
+              }),
+            );
+            waiting = siblings.filter((_, i) => uses[i]);
+          }
+        }
         if (waiting.length) {
           await this.log("checks_deferred", `Checks failed (${failed.map((c) => c.name).join(", ")}) while ${waiting.map((t) => `"${t.title}"`).join(", ")} still has to finish; left to verification on all drafts together`, task.id, { waiting: waiting.map((t) => t.id) });
           break;

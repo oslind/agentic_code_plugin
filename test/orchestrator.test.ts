@@ -263,6 +263,18 @@ describe("Orchestrator without git", () => {
     expect(log.some((e) => e.type === "checks_deferred" && e.taskId === "a")).toBe(true);
   });
 
+  it("leaves a 'name is not a function' failure to the unfinished task whose file still uses the name (run 20)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "function toCelsius() {}\n");
+    await writeFile(path.join(repo, "b.txt"), "toCelsius(32)\n");
+    // Fails while b.txt still calls the old name; the output names no file.
+    const checks: CheckConfig[] = [{ name: "test", command: node("const fs=require('fs');const b=fs.readFileSync('b.txt','utf8');if(b.startsWith('toCelsius')&&fs.readFileSync('a.txt','utf8').includes('fahrenheit')){console.log('FAIL freezing point: toCelsius is not a function');process.exit(1)}") }];
+    const runId = await setup([task("a", ["a.txt"]), task("b", ["b.txt"], ["a"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "function fahrenheitToCelsius() {}\n"), finish], b: [write("b.txt", "fahrenheitToCelsius(32)\n"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).toEqual(expect.arrayContaining(["a", "b"]));
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_deferred" && e.taskId === "a")).toBe(true);
+  });
+
   it("fails a task when checks keep failing, and blocks its dependents", async () => {
     const checks: CheckConfig[] = [{ name: "test", command: node("process.exit(1)") }];
     const runId = await setup([task("a", ["a.txt"]), task("b", ["b.txt"], ["a"])]);

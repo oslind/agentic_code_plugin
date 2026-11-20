@@ -294,6 +294,22 @@ export function aboutOldFailures(missing: string[], oldLines: string[]): string[
   return missing.filter((m) => names.some((n) => m.toLowerCase().includes(n)));
 }
 
+/**
+ * The lines a part's "found" quotes as added ("+ …") that are not in the drafts. Compared without whitespace; "..."
+ * splits a quote into pieces. Nothing is reported when the drafts were cut for length, or the quote has no "+" line.
+ */
+export function notInDrafts(found: string, drafts: string): string[] {
+  if (!drafts.trim() || drafts.includes("[… cut")) return [];
+  const squeeze = (t: string) => t.replace(/\s+/g, "");
+  const have = squeeze(drafts.split("\n").filter((l) => !/^-(?!-)/.test(l.trim())).map((l) => l.replace(/^\s*\+\s?/, "")).join("\n"));
+  return found
+    .split(/\n|\.{3}|…/)
+    .map((piece) => piece.trim())
+    .filter((piece) => /^\+(?!\+)/.test(piece))
+    .map((piece) => piece.replace(/^\+\s*/, "").replace(/^[{}();,\s]+|[{}();,\s]+$/g, ""))
+    .filter((piece) => squeeze(piece).length >= 8 && !have.includes(squeeze(piece)));
+}
+
 /** ": <first failure line>" of a command's output, for a missing-work item. */
 function firstFailure(output: string): string {
   const line = failureLines(output)[0];
@@ -323,9 +339,22 @@ export function guardVerification(
   // Run 19, new-module-used and readme-section: the verdict was "done" for a program that printed the wrong value and
   // for a list with one of its entries. The model lists each part of the request with the line that shows it; a part
   // it marks as not met is missing work whatever its verdict says. Parts it does mark met are not second-guessed here.
-  const unmet = (d.parts ?? [])
-    .filter((p) => !p.met && p.asked.trim().length >= 5)
-    .map((p) => `Not as asked: ${p.asked.replace(/\s+/g, " ").trim().slice(0, 200)}${p.found.trim() ? ` (the drafts have: ${p.found.replace(/\s+/g, " ").trim().slice(0, 160)})` : " (nothing in the drafts shows it)"}.`);
+  const parts = (d.parts ?? []).filter((p) => p.asked.trim().length >= 5);
+  const one = (t: string, n: number) => t.replace(/\s+/g, " ").trim().slice(0, n);
+  // Run 20, fix-and-add-test: a fix-up had removed the new test, and the verdict was "done" with the part's "found"
+  // quoting "+  'average of empty array': …", a line from an earlier round that was no longer in the drafts. A line
+  // quoted as added ("+ …") must be in the drafts; a part whose quote is not there is not met.
+  const misquoted = parts.filter((p) => p.met && notInDrafts(p.found, ctx.drafts ?? "").length > 0);
+  // Run 20, rename-then-run-tests: "run the tests to check nothing broke" was marked not met with "4 passed, 1 failed",
+  // and the one failure was there before the request. With no new failure by rule, a part that is unmet only because
+  // of failing tests is not missing work.
+  const noNewFailure = oldLines.length > 0 && failed.length === 0 && caused.length === 0;
+  const unmet = [
+    ...parts
+      .filter((p) => !p.met && !(noNewFailure && /\bfail/i.test(p.found)))
+      .map((p) => `Not as asked: ${one(p.asked, 200)}${p.found.trim() ? ` (the drafts have: ${one(p.found, 160)})` : " (nothing in the drafts shows it)"}.`),
+    ...misquoted.map((p) => `Not as asked: ${one(p.asked, 200)} (the line quoted for it is not in the drafts: ${one(notInDrafts(p.found, ctx.drafts ?? "")[0]!, 120)}).`),
+  ];
   const unmetKept = unmet.filter((m) => !aboutOldFailures([m], oldLines).length && !(ctx.userMessages ? unaskedFixes([m.replace(/^Not as asked: /, "")], [...ctx.userMessages, ctx.request ?? ""]).length : 0));
   // "not_done" that names nothing to do, with unmet parts: the parts are what is left.
   if (d.verdict === "not_done" && missing.length === 0) missing = unmetKept.slice(0, 6);
@@ -339,10 +368,18 @@ export function guardVerification(
     ),
     ...caused.map((c) => `Make \`${c.line.slice(0, 120)}\` pass again: it fails with the drafts and not without them${firstFailure(c.output)}.`),
     ...unfinished.map((t) => `Finish "${t.title}", which did not complete${t.unfinished ? `: ${t.unfinished.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
-    ...rejected.map((t) => `Finish "${t.title}": its review did not accept its drafts${t.notAccepted ? `: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 200)}` : "."}`),
   ];
+  // Run 20, rename-everywhere: three verdicts were "done" with every part met and shown in the drafts, and each was
+  // overruled because a task's review had not accepted its drafts (it wanted another task's file changed; a fix-up
+  // then had nothing left to draft). With every part of the request shown and nothing else wrong, a review that
+  // did not accept is told to the user and no longer sends sub-agents back.
+  // "not_done" that named only failures from before the request is "done" by rule (see below).
+  const saysDone = d.verdict === "done" || (missing.length === 0 && removals.length > 0 && removals.every((m) => aboutOldFailures([m], oldLines).length > 0));
+  const shown = saysDone && parts.length > 0 && unmetKept.length === 0 && parts.every((p) => p.met || (noNewFailure && /\bfail/i.test(p.found)));
+  const reviewNote = rejected.length && shown && forced.length === 0 ? ` A review did not accept the drafts of ${rejected.map((t) => `"${one(t.title, 80)}"`).join(", ")}, but every part of your request is shown in the drafts, so nothing was sent back.` : "";
+  if (!reviewNote) forced.push(...rejected.map((t) => `Finish "${t.title}": its review did not accept its drafts${t.notAccepted ? `: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 200)}` : "."}`));
   const evidence = checkEvidence(ctx.checks);
-  const summary = d.verified.trim();
+  const summary = `${d.verified.trim()}${reviewNote}`;
   if (forced.length) {
     const adjusted = d.verdict === "done" ? `It said done, but ${d.verdict === "done" && unmetKept.length && !failed.length ? "it marked a part of your request as not met" : failed.length ? "a check failed" : caused.length ? "a command fails because of the drafts" : unfinished.length ? "a task did not finish" : rejected.length ? "a task's review did not accept its drafts" : "a draft cannot load"}, so it is not.` : undefined;
     missing = [...forced, ...missing.filter((m) => !forced.includes(m))].slice(0, 6);
