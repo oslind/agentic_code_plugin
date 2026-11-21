@@ -11,14 +11,25 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
     startLine: z.number().int().min(1).optional(),
     endLine: z.number().int().min(1).optional(),
   }),
+  z.object({
+    tool: z.literal("read_files"),
+    paths: z.array(z.string()).min(1).max(20).describe("Several files to read in one call, each shown from its first line"),
+  }),
   z.object({ tool: z.literal("list_files"), glob: z.string() }),
   z.object({ tool: z.literal("search"), query: z.string().min(1), glob: z.string().optional() }),
   z.object({ tool: z.literal("write_file"), path: z.string(), content: z.string() }),
   z.object({
     tool: z.literal("replace_in_file"),
     path: z.string(),
-    search: z.string().min(1).describe("Exact text to find; must occur exactly once"),
+    search: z.string().min(1).describe("Exact text to find; must occur exactly once unless all is true"),
     replace: z.string(),
+    all: z.boolean().optional().describe("true: replace every occurrence (for a rename)"),
+  }),
+  z.object({
+    tool: z.literal("insert_lines"),
+    path: z.string(),
+    line: z.number().int().min(1).describe("Insert before this line number; 1 = the very top of the file"),
+    text: z.string().min(1).describe("The lines to insert"),
   }),
   z.object({ tool: z.literal("run_check"), name: z.string().describe("Name of a configured check, e.g. test or lint") }),
   z.object({
@@ -48,4 +59,4 @@ export const workerTurnSchema = z.object({
 
 export type WorkerTurn = z.infer<typeof workerTurnSchema>;
 
-export const WRITE_TOOLS = new Set<ToolCall["tool"]>(["write_file", "replace_in_file"]);
+export const WRITE_TOOLS = new Set<ToolCall["tool"]>(["write_file", "replace_in_file", "insert_lines"]);

@@ -37,8 +37,8 @@ With Ollama, the model is unloaded at the end (`keep_alive: 0`) so it does not h
 | `AGENTIC_E2E_ONLY` | all | Comma-separated scenario names. |
 | `AGENTIC_E2E_PARALLEL` | `1` | Sub-agents at once. One GPU serves one request at a time anyway. |
 | `AGENTIC_E2E_STALL_MIN` | `3` | Fail as stalled when no model call runs and the chat has not changed for this many minutes. |
-| `AGENTIC_E2E_SILENCE_MIN` | `5` | Fail when one model request sends nothing back (not even thinking) for this many minutes. The first live run had a request hang for 27 minutes. |
-| `AGENTIC_E2E_TIMEOUT_MIN` | `30` | Fail a scenario that takes longer than this. |
+| `AGENTIC_E2E_SILENCE_MIN` | `10` | Fail when one model request sends nothing back (not even thinking) for this many minutes. The first live run had a request hang for 27 minutes; raised from 5 after run 16, where a slow request on the 8 GB GPU could go quiet for up to 6. |
+| `AGENTIC_E2E_TIMEOUT_MIN` | `60` | Fail a scenario that takes longer than this. Raised from 30 after run 16: two sub-agents on one 8 GB GPU can need 30-40 minutes for parallel-changes, which is the hardware, not the plugin. |
 | `AGENTIC_E2E_RECORD` | off | `1`: a passing scenario's model calls become its recording in `e2e/recordings/`. |
 | `AGENTIC_E2E_KEEP_LOADED` | off | `1`: leave the model loaded afterwards. |
 | `AGENTIC_E2E_NO_LOG` | off | `1`: do not add a line to the offload log. |
@@ -52,9 +52,70 @@ printf 'FROM qwen3:8b\nPARAMETER num_ctx 16384\n' > /tmp/Modelfile.e2e && ollama
 AGENTIC_E2E_MODEL=qwen3-8b-16k npm run e2e
 ```
 
+## How the autopilot answers approvals
+
+The autopilot stands in for a user who reads each card, not one who allows everything:
+
+- **Commands and checks:** allowed, unless it is one a careful user refuses in a test project: anything that installs or downloads (`npm install`, `pip install`, `npx`, `curl`), deletes folders (`rm -r`), needs `sudo`, changes git state or the machine. Those are denied, and the sub-agent has to manage without.
+- **Drafts of files that decide what commands run** (package.json, build files, CI): allowed only when the scenario lists the file in `mayChange`, which it does when the request is about that file. Otherwise denied.
+- **Changes to existing tests, snapshots, fixtures and test settings:** these always wait for review, whatever the switches say. At the end they are accepted like the other drafts, unless the scenario sets `mayChangeTests: false` (the request gives no reason to touch a test); then they are rejected and the scenario fails.
+- **`deny: true`** still denies every card.
+
+Before the drafts are accepted at the end, the harness checks that no existing test-like file and no such sensitive file changed on disk; one that did was written past its gate, and the scenario fails. Every gate that fired is recorded with its answer in `ScenarioRun.gates`, at the top of each `transcript.md`, in `summary.json`, and as a count per scenario in the run's summary lines. test/e2eGates.test.ts drives a run with a fake model through each gate.
+
 ## Replays
 
 `AGENTIC_E2E_RECORD=1` saves the model calls of each passing live scenario to `e2e/recordings/<scenario>.jsonl`. `npm run e2e:replay` then plays those replies back in order, with no model, in seconds. That checks the controller still handles what the real model actually said (odd formatting, an unexpected action) after a code change. Prompts that changed since the recording are listed as drift; if the flow changed enough that the run asks for more replies than were recorded, the scenario fails and needs a new recording. Scenarios without a recording are skipped.
+
+## Benchmark: agentic chat vs one conversation
+
+`npm run bench` runs the same tasks two ways, with the same model, project copy and time limit, and scores both with hidden checks the agents never see:
+
+- **single**: one plain conversation. The extension's own sub-agent loop gets the user's request as its only task and may change any file. It has the same tools (read, search, write, run commands) but no coordinator, planner, review or verification.
+- **agentic**: the full chat, as in the scenarios above. The autopilot allows everything and accepts the drafts at the end.
+
+```bash
+AGENTIC_E2E_MODEL=qwen3-8b-16k npm run bench
+# a few tasks, once each:
+AGENTIC_E2E_MODEL=qwen3-8b-16k AGENTIC_BENCH_ONLY=fix-bug,find-throwing-50 AGENTIC_BENCH_REPEATS=1 npm run bench
+```
+
+The tasks (`e2e/bench/tasks.ts`):
+
+- **Fixed tasks on the thermostat project:** fix-bug, three-changes, config-module, document-all and explain-bug (a question).
+- **Edit ladder:** a generated shop project with 20 pricing modules, and a request with 1, 3, 6 or 10 changes in different files (`edit-K-of-20`). The same 3 changes are also asked of a project with 100 modules (`edit-3-of-100`).
+- **Research ladder:** "which modules throw on a negative quantity?" over 5, 20, 50 or 100 modules (`find-throwing-N`). The modules are written so that a text search alone can't tell; the code has to be read.
+
+Each attempt gets:
+
+- **A score:** the share of the task's checks that pass, so partial credit counts. For the research ladder, this is the share of modules classified right.
+- **Collateral damage:** existing files changed that the request did not name, or files deleted.
+- **A false "done":** a change task that scored below 1 while the answer did not admit any shortfall.
+- **Cost:** minutes, model calls, prompt and completion tokens, and the largest prompt (how full the context got).
+
+`test/bench.test.ts` proves every check passes on a correct solution and fails on the untouched project, and that the research answer key matches what the code really does.
+
+Results go to `e2e/results/<time>-bench/`:
+
+- `attempts.jsonl`, written after every attempt;
+- `scoreboard.md`, with totals, per-task rows and both ladders;
+- `summary.json`;
+- one folder per attempt, holding the transcript, or for single mode its events and answer.
+
+To score a finished run's answers again after a check was fixed, without a model: `AGENTIC_BENCH_RESCORE=e2e/results/<run>-bench npm run bench:rescore`. Only questions are scored again (from the saved answer, kept up to 4000 characters); change tasks keep their score. It writes `scoreboard-rescored.md` with a list of the scores that changed.
+
+The modes take turns on every task, so a slow hour of the GPU affects both alike.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AGENTIC_BENCH_ONLY` | all | Comma-separated task names. |
+| `AGENTIC_BENCH_MODES` | `single,agentic` | Which ways to run. |
+| `AGENTIC_BENCH_REPEATS` | `3` | Attempts per task and mode. An 8B model varies a lot between runs. |
+| `AGENTIC_BENCH_TIMEOUT_MIN` | `30` | Time limit per attempt, the same for both modes. A stopped attempt is scored on what it left. |
+| `AGENTIC_BENCH_SINGLE_TURNS` | `60` | Steps the single conversation may take. Each agentic sub-agent has 30. |
+| `AGENTIC_BENCH_RESUME` | none | A results folder: continue an interrupted benchmark there, skipping attempts already saved. |
+
+The model settings (`AGENTIC_E2E_MODEL`, `AGENTIC_E2E_CONTEXT` and the others) are the same as for the scenarios.
 
 ## Scenarios
 
@@ -67,5 +128,7 @@ All in `e2e/scenarios.ts`, on a small thermostat project in plain Node (its `nod
 | `command-use` | Act | `node test.js` is actually run, the answer names the failing `average` test, and no file is changed. |
 | `verify-fix` | Act, Edit files and Run commands on, `node test.js` approved | The bug is fixed so `node test.js` passes, the coordinator ran the checks on the drafts, and the Finished bar says whether it was verified. |
 | `draft-for-review` | Act, Edit files off | `docs/usage.md` waits as a pending draft, and no sub-agent asks the user to review it instead of finishing. |
+
+Since the second session there are also: `project-skill-trusted`, `project-skill-untrusted`, `long-conversation` (coordinator compaction with a 1,500-token history), `small-context-change` (a 6k context so sub-agents summarize their steps), `cut-off-answer` (a 1,500-token reply cap), `parallel-changes`, `dependent-changes`, `stop-then-continue` (Stop pressed 20 s into the run), `command-denied`, `missing-script`, `question-then-answer`, `no-json-mode` (structured output off) and `research-not-change`. Scenarios can set their own model settings (`model`), history budget, approval answers (`deny`), and a Stop (`stopAfterMs`). The harness mirrors the extension's defaults: built-in skills, conversation and sub-agent compaction, auto-retries and the standard oversight level.
 
 To add one: give it a small project, a prompt that once went wrong, and checks on the outcome (files, commands, the answer's facts), not on wording.

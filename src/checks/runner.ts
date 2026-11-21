@@ -24,6 +24,13 @@ export function isolatedArgv(wrapper: readonly string[], command: string, folder
   return wrapper.map((a) => a.split("${command}").join(command).split("${folder}").join(folder).split("${project}").join(project));
 }
 
+/** A check's result in a few words, for the chat and prompts. */
+export function checkStatus(c: Pick<CheckResult, "passed" | "skipped" | "timedOut" | "notFound" | "failedBefore">): string {
+  if (c.notFound) return "could not run (command not found)";
+  if (c.skipped) return "skipped (not approved)";
+  return c.passed ? "passed" : c.timedOut ? "timed out" : c.failedBefore === "before" ? "failed, the same way as before the changes" : "failed";
+}
+
 /** A check the user configured, such as `npm test`. Workers can only run these by name. */
 export interface CheckConfig {
   name: string;
@@ -42,10 +49,28 @@ export interface CheckResult {
   /** The exit code, when the command ran to the end. */
   code?: number | null;
   timedOut?: boolean;
+  /** The command's program does not exist here (ENOENT), so it never ran. */
+  notFound?: boolean;
+  /**
+   * Set by verification for a failed check that also ran on the project without the run's drafts: "before" when
+   * it failed there the same way (not this request's to fix), "new" when the drafts caused at least part of it.
+   */
+  failedBefore?: "before" | "new";
+  /** For a "new" failure that also has old ones: the failure lines the drafts added, and those that were there before. */
+  newFailures?: string[];
+  oldFailures?: string[];
 }
 
 /** Names of environment variables that usually hold credentials. */
-const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL|SESSION_?KEY|COOKIE|(^|_)AUTH(_|$))/i;
+const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL|SESSION_?KEY|COOKIE|(^|_)AUTH(_|$)|(^|_)(PAT|DSN)(_|$)|CONNECTION_?STRING|^OP_SESSION_)/i;
+
+/**
+ * Connection strings by name, and any value with a password in its URL
+ * ("postgres://app:hunter2@db/x"): DATABASE_URL, REDIS_URL, MONGODB_URI and the
+ * like usually carry one (Gemini audit MED-4).
+ */
+const SERVICE_URL_ENV = /^(DATABASE|DB|REDIS|MONGO(DB)?|POSTGRES(QL)?|PG|MYSQL|MARIADB|AMQP|RABBITMQ|KAFKA|ELASTIC(SEARCH)?|SENTRY|CELERY_BROKER|BROKER)_(URL|URI)$/i;
+const URL_WITH_PASSWORD = /[a-z][a-z0-9+.-]*:\/\/[^/\s:@]*:[^/\s@]+@/i;
 
 /** Variables that point to credential files, agents or helpers rather than holding a secret themselves. */
 const CREDENTIAL_ENV = new Set([
@@ -67,6 +92,16 @@ const CREDENTIAL_ENV = new Set([
   "NPM_CONFIG_USERCONFIG",
   "PIP_CONFIG_FILE",
   "VAULT_ADDR",
+  // Password managers and signing keys
+  "BW_SESSION",
+  "GNUPGHOME",
+  "PASSWORD_STORE_DIR",
+  // Git's own programs and config: a check never needs your SSH command or global config (Gemini audit MED-4)
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_EXEC_PATH",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
 ]);
 
 /**
@@ -74,7 +109,7 @@ const CREDENTIAL_ENV = new Set([
  * your GitHub sign-in), the `code` command channel into this window, and the
  * extension host's own IPC. A check never needs them.
  */
-const EDITOR_CHANNEL_ENV = /^(VSCODE_GIT_|VSCODE_IPC_HOOK|VSCODE_HANDLES_|VSCODE_PID$|VSCODE_CODE_CACHE_PATH$|VSCODE_CRASH_REPORTER|ELECTRON_RUN_AS_NODE$)/i;
+const EDITOR_CHANNEL_ENV = /^(VSCODE_GIT_|VSCODE_IPC_HOOK|VSCODE_HANDLES_|VSCODE_PID$|VSCODE_CODE_CACHE_PATH$|VSCODE_CRASH_REPORTER|VSCODE_INSPECTOR_OPTIONS$|ELECTRON_RUN_AS_NODE$|GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$)/i;
 
 /**
  * The environment a check runs with: yours, minus variables whose names look
@@ -85,7 +120,9 @@ const EDITOR_CHANNEL_ENV = /^(VSCODE_GIT_|VSCODE_IPC_HOOK|VSCODE_HANDLES_|VSCODE
 export function checkEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(env)) {
-    if (!SECRET_ENV.test(k) && !CREDENTIAL_ENV.has(k.toUpperCase()) && !EDITOR_CHANNEL_ENV.test(k)) out[k] = v;
+    if (SECRET_ENV.test(k) || CREDENTIAL_ENV.has(k.toUpperCase()) || EDITOR_CHANNEL_ENV.test(k) || SERVICE_URL_ENV.test(k)) continue;
+    if (v !== undefined && URL_WITH_PASSWORD.test(v)) continue;
+    out[k] = v;
   }
   return out;
 }
@@ -150,6 +187,9 @@ export async function runCheck(check: CheckConfig, cwd: string, signal?: AbortSi
         ? `Command not found: ${isolation ? `${isolation[0]} (from agentic.commands.isolation)` : check.command.trim().split(/\s+/)[0]}`
         : e.message;
     view?.end({ code: null, stopped, error: stopped ? undefined : output, durationMs: Date.now() - started });
+    // A program that does not exist here never ran: it is reported as not run, never as a failure that the
+    // sub-agents could fix (run 13, python-project: "python -m pytest" in a Node project gated five attempts).
+    if (!stopped && e.code === "ENOENT") return { name: check.name, passed: true, skipped: true, notFound: true, output: `Could not run: ${output}`, durationMs: Date.now() - started };
     return { name: check.name, passed: false, output, durationMs: Date.now() - started };
   }
 }

@@ -58,7 +58,7 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
           };
         }
         case "verifying":
-          return agent({ text: "Running the checks on a scratch copy that has my changes. Your files are not touched.", tag: "verify" });
+          return agent({ text: "Running the checks on a scratch copy that has my changes.", tag: "verify" });
         case "done":
           return agent({ text: "Task complete.", tag: "done", tone: "success" });
         default:
@@ -298,6 +298,11 @@ export function eventToEntry(event: RunEvent, tasks: Task[]): FeedEntry | undefi
         text: data.given ? `Following ${from} skill "${name}", which the coordinator picked for this task.` : `Loaded ${from} skill "${name}".`,
         tag: `skill ${name}`,
       });
+    }
+    case "prepared": {
+      // The harness read these before the first step (src/worker/prepare.ts), so no model step was spent on them.
+      const files = Array.isArray(data.files) ? data.files.filter((f): f is string => typeof f === "string") : [];
+      return agent({ text: files.length ? `Started with ${files.join(", ")} already read.` : "Started with the project's file list.", tag: "read ahead" });
     }
     case "plan_repair":
       return coordinator(`Plan adjusted: ${short(event.message)}`);

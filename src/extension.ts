@@ -174,7 +174,7 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(readme)).then(undefined, () => undefined);
     await vscode.window.showTextDocument(vscode.Uri.file(readme), { preview: true });
   };
-  const runs = registerRunCommands(context, store, tree, output, views, terminals, skillsFor);
+  const runs = registerRunCommands(context, store, tree, output, views, terminals, skillsFor, () => chat);
 
   const conversations = new ConversationStore(context.globalStorageUri.fsPath, () =>
     vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),

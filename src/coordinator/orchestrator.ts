@@ -1,11 +1,15 @@
 import { SkillCatalog } from "../skills/catalog";
 import { promises as fs } from "fs";
+import { importProblems, isTestPath, moduleStyleOf, moduleStyleProblems, projectTestText } from "../changes/moduleStyle";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { removeScratchFolder, ScratchCopy } from "../changes/scratch";
 import { CommandSink } from "../checks/commandTerminal";
 import { untrustedSection } from "../context/untrusted";
 import { draftsForReview, ReviewSkip, ReviewVerdict } from "./review";
 import { CheckConfig, CheckResult, runAllChecks } from "../checks/runner";
+import { asksToFixFailures, failedBefore, missingNames, pinsOldValue, splitFailures, withAssertNotes } from "../checks/failures";
+import { escapeRegExp } from "../context/outline";
+import { detectChecks } from "../checks/detect";
 import { ProviderError } from "../providers/openaiCompatible";
 import { ModelProvider } from "../providers/types";
 import { readyTasks, TaskStore } from "../state/taskStore";
@@ -14,6 +18,15 @@ import { ToolCall } from "../tools/protocol";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { commandEventData, CoordinatorReply, InboxMessage, Worker } from "../worker/worker";
 
+
+/** True when a text names a file: its path, or its base name as a word (test.js, src/convert.js). */
+export function mentionsFile(text: string, file: string): boolean {
+  if (/[*?[\]{}]/.test(file)) return false;
+  const base = file.split("/").pop()!;
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const word = (x: string) => new RegExp(`(^|[^\\w.-])${esc(x)}(?![\\w-])`).test(text);
+  return (file.includes("/") && word(file)) || new RegExp(`(^|[^\\w./-])${esc(base)}(?![\\w-])`).test(text);
+}
 
 /** Told to a sub-agent that continues from its checkpoint. */
 export const RESUME_NOTE =
@@ -99,8 +112,21 @@ export class Orchestrator {
   private readonly taskControllers = new Map<string, AbortController>();
   private root = "";
 
+  private testCommandFound?: Promise<string | undefined>;
+
+  /** The project's own test command (package.json, pytest, cargo...), found once per run, read from disk only. */
+  private testCommand(): Promise<string | undefined> {
+    this.testCommandFound ??= (async () => {
+      const sandbox = await WorkspaceSandbox.create(this.root);
+      const files = await sandbox.listFiles("**", 2000);
+      const found = await detectChecks(files, (p) => sandbox.readFile(p).catch(() => undefined));
+      return found.find((c) => c.name === "test")?.command;
+    })().catch(() => undefined);
+    return this.testCommandFound;
+  }
+
   constructor(options: OrchestratorOptions) {
-    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, compactSteps: false, linkDirs: ["node_modules"], ...options };
+    this.o = { maxParallel: 2, maxTurns: 40, maxFixRounds: 2, maxAttempts: 3, retryDelayMs: 2000, autoRetries: 0, compactSteps: false, linkDirs: [], ...options };
   }
 
   private log(type: string, message: string, taskId?: string, data?: Record<string, unknown>): Promise<void> {
@@ -182,6 +208,18 @@ export class Orchestrator {
       .filter((t): t is Task => !!t && t.status === "done" && !!t.summary)
       .map((t) => `- [report from sub-agent "${t.title}"] ${t.summary!.replace(/\s+/g, " ").slice(0, 600)}`);
     if (reports.length) parts.push(untrustedSection("The tasks you build on are done. Their reports:", "reports from the tasks you build on", reports.join("\n")));
+    // Run 6: another sub-agent's draft that cannot load was in this one's files, and its tests failed on it.
+    const broken = moduleStyleProblems((run.changes ?? []).filter((c) => c.status === "pending" && c.taskId !== task.id), await moduleStyleOf(this.root));
+    if (broken.length) {
+      const yours = (p: string) => task.fileScope.some((f) => p === f || p.startsWith(`${f.replace(/\/$/, "")}/`));
+      parts.push(
+        untrustedSection(
+          "Drafts of other sub-agents are in your files, not yet accepted, and these cannot load. If a file below is part of your task, fix it. If not, it is not yours to fix: when a test fails only because of it, finish and name it in your summary.",
+          "problems found in other sub-agents' drafts",
+          broken.map((b) => `- ${b}${task.fileScope.length && !yours(b.split(" ")[0] ?? "") ? " (not in your task)" : ""}`).join("\n"),
+        ),
+      );
+    }
     return parts.length ? parts.join("\n\n") : undefined;
   }
 
@@ -191,9 +229,10 @@ export class Orchestrator {
     if (!error || task.attempts === 0) return undefined;
     const files = (task.unfinished ?? []).map((f) => `## ${f.path}\n${f.content}`).join("\n\n");
     const shown = files.length > 6000 ? `${files.slice(0, 6000)}\n[... cut ...]` : files;
+    // Fenced (Gemini audit MED-3): the error and the drafts were written by a model that read project files.
     return [
-      `A previous attempt at this task failed: ${error}`,
-      shown ? `What it had written is below for reference. Reuse what is still useful; it was never applied.\n\n${shown}` : "It had not written anything.",
+      untrustedSection("A previous attempt at this task failed. What went wrong:", "the previous attempt's error", error),
+      shown ? untrustedSection("What it had written is below for reference. Reuse what is still useful; it was never applied.", "the previous attempt's drafts", shown) : "It had not written anything.",
     ].join("\n\n");
   }
 
@@ -233,6 +272,7 @@ export class Orchestrator {
         task,
         context: note,
         checks: this.o.checks,
+        testCommand: this.o.checks.length ? undefined : await this.testCommand(),
         maxTurns: this.o.maxTurns,
         compactSteps: this.o.compactSteps,
         signal,
@@ -241,7 +281,8 @@ export class Orchestrator {
         skills: this.o.skills,
         askUser: this.o.askUser && ((q) => this.o.askUser!(task, q)),
         askCoordinator: this.o.askCoordinator && ((q) => this.o.askCoordinator!(task, q, signal)),
-        reviewResult: this.o.reviewResult && ((summary, skip) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id)), signal, skip)),
+        reviewResult: this.o.reviewResult && (async (summary, skip) => this.o.reviewResult!(task, summary, draftsForReview(overlay.pending(task.id), undefined, await moduleStyleOf(this.root), await projectTestText(overlay), task.instructions, await importProblems(overlay.pending(task.id), (p) => overlay.readFile(p))), signal, skip)),
+        draftsNow: () => overlay.pending(task.id),
         // A question is usually about the drafts ("is this what you wanted?"), so show them first.
         beforeAsk: async () => void (await this.publishDrafts(task, overlay, published)),
         inbox: this.o.inbox && (() => this.o.inbox!(task.id)),
@@ -253,6 +294,19 @@ export class Orchestrator {
 
       const w: Worker = worker;
       let result = await w.run(checkpoint ? RESUME_NOTE : undefined);
+      // The checks on the project without this sub-agent's writes, run once when a check fails: a failure that was
+      // there before is not this task's to fix (run 15, old-test-pins-value: the old "average of three" failure
+      // failed every attempt). Not when it created a file, which a copy cannot leave out.
+      let baseline: CheckResult[] | undefined;
+      const baselineChecks = async (): Promise<CheckResult[]> => {
+        const before = new Map<string, string>();
+        for (const p of overlay.writes.keys()) {
+          const b = overlay.basisOf(p);
+          if (b === null || b === undefined) return [];
+          before.set(p, b);
+        }
+        return runAllChecks(w.checks, () => scratch.sync(before), signal, this.o.approveCommand && ((c) => this.o.approveCommand!(task, c)), this.o.terminal);
+      };
       for (let round = 0; w.checks.length > 0 && overlay.writes.size > 0; round++) {
         await this.setStatus(task, "verifying");
         // A worker saying it is done is not enough: the checks decide. They run on a scratch copy.
@@ -263,15 +317,88 @@ export class Orchestrator {
           const command = w.checks.find((k) => k.name === c.name)?.command;
           if (!c.skipped && command) await this.log("command", command, task.id, { ...commandEventData(command, c), check: c.name });
         }
+        // Run 13, python-project: a sub-agent added a check "python -m pytest" in a Node project; "Command not found:
+        // python" then failed every attempt. A check the sub-agent added whose program does not exist is dropped, not a gate.
+        for (const m of checks.filter((c) => c.notFound)) {
+          const i = w.extraChecks.findIndex((k) => k.name === m.name);
+          if (i >= 0) w.extraChecks.splice(i, 1);
+          await this.log("check_dropped", `${m.name}: ${m.output}`, task.id, { check: m.name, reason: "not_found" });
+        }
         const failed = checks.filter((c) => !c.passed);
         await this.log("checks", failed.length ? "failed" : "passed", task.id, { results: checks.map((c) => ({ name: c.name, passed: c.passed, skipped: c.skipped })) });
         if (failed.length === 0) break;
+        baseline ??= await baselineChecks().catch(() => []);
+        signal.throwIfAborted();
+        const old = failed.filter((c) => {
+          const b = baseline!.find((x) => x.name === c.name);
+          return b && !b.skipped && failedBefore(c.output, b) === "before";
+        });
+        // Not when fixing a failure is the task itself: then the old failure is the work (review of the run 16 fixes).
+        // Run 17, validate-input: decided from the user's own words when the run has them. A fix-up task's instructions
+        // are written by a model and say "fix the failing ...", which made an old failure the task's work, and it then
+        // rewrote the old tests. Runs without the user's words (not started from the chat) fall back to the task.
+        const fixing = asksToFixFailures((await this.o.store.load(this.o.runId)).userRequest ?? task.instructions);
+        if (old.length === failed.length && !fixing) {
+          await this.log("checks_preexisting", `Checks failed (${failed.map((c) => c.name).join(", ")}) only the way they failed before this sub-agent's changes; left to verification`, task.id, { checks: failed.map((c) => c.name) });
+          break;
+        }
+        // Run 11B, rename-everywhere: the convert.js task renamed the function, and npm test then failed on its own
+        // copy because test.js (another task's file) still used the old name. It was retried four times for work it
+        // may not do. While another task of the run that changes the failing file is still to finish, the failure can be a
+        // step in between, so it is left to verification, which runs the checks on all drafts together and sends fix-ups if needed.
+        // Only when the failure or the sub-agent's own report names a file of such a task: a check that fails on
+        // this task's own files still gets its fix rounds.
+        const said = `${failed.map((c) => c.output).join("\n")}\n${result.summary}`;
+        const siblings = await this.unfinishedSiblings(task);
+        let waiting = siblings.filter((t) => t.fileScope.some((f) => mentionsFile(said, f)));
+        // Run 20, rename-then-run-tests: the convert.js task renamed the function and its check failed with "toCelsius
+        // is not a function" and no file name in the output, so it was not seen as waiting for the test.js task; it
+        // failed, and the tasks after it never started. A name the failure says is missing, found in a file of a task
+        // that still has to finish, is that task's to change.
+        if (!waiting.length && siblings.length) {
+          const names = missingNames(failed.map((c) => c.output).join("\n"));
+          if (names.length) {
+            const uses = await Promise.all(
+              siblings.map(async (t) => {
+                for (const f of t.fileScope.filter((g) => !/[*?[{]/.test(g))) {
+                  const text = await overlay.readFile(f).catch(() => undefined);
+                  if (typeof text === "string" && names.some((n) => new RegExp(`(?<![\\w$])${escapeRegExp(n)}(?![\\w$])`).test(text))) return true;
+                }
+                return false;
+              }),
+            );
+            waiting = siblings.filter((_, i) => uses[i]);
+          }
+        }
+        if (waiting.length) {
+          await this.log("checks_deferred", `Checks failed (${failed.map((c) => c.name).join(", ")}) while ${waiting.map((t) => `"${t.title}"`).join(", ")} still has to finish; left to verification on all drafts together`, task.id, { waiting: waiting.map((t) => t.id) });
+          break;
+        }
+        // Run 17, old-test-pins-value: the one task could only change src/thermostat.js, the old test expects the old
+        // value, and the saved check failed every attempt (18 spawns), so the user's change was thrown away each time
+        // and no fix-up could update the test on top of it. After a fix round that was told so, a failure that is only
+        // a comparison of values (no crash) in a task that may not touch tests keeps its draft: verification runs the
+        // checks on all drafts together, reports the failure, and sends a fix-up for the test.
+        const pinned = !fixing && !task.fileScope.some((f) => isTestPath(f) || f.includes("*")) && pinsOldValue(failed.map((c) => c.output).join("\n"));
+        if (pinned && round >= Math.min(1, this.o.maxFixRounds)) {
+          await this.log("checks_pinned", `Checks failed (${failed.map((c) => c.name).join(", ")}) on a comparison of values in a test this sub-agent may not change; the draft is kept and left to verification on all drafts together`, task.id, { checks: failed.map((c) => c.name) });
+          break;
+        }
         if (round >= this.o.maxFixRounds) {
           throw new OrchestratorError(`Checks failed: ${failed.map((c) => c.name).join(", ")}`);
         }
         await this.setStatus(task, "running");
         result = await w.run(
-          `Your work is not done. These checks failed:\n\n${failed.map((c) => `## ${c.name}\n${c.output}`).join("\n\n")}\n\nFix the problems, then finish.`,
+          `Your work is not done. These checks failed:\n\n${failed.map((c) => `## ${c.name}\n${withAssertNotes(c.output)}`).join("\n\n")}\n\nFix the problems, then finish.${
+            // Run 16, old-test-pins-value: the task could only change src/thermostat.js, an old test pinned the value the
+            // user asked to change, and fix rounds undid the user's change to make it pass. Only for a failed comparison
+            // of values: a crash (TypeError, "is not a function") is the sub-agent's own bug and gets no such way out.
+            pinned
+              ? " You may not change test files. Only if a failing test compares against the old value that the user asked to change: do not undo the change to make it pass; keep it, finish, and say which test needs updating. Any other failure is yours to fix."
+              : ""
+          }${
+            baseline?.length && !fixing ? ` Failures that were already there before your changes (${failed.flatMap((c) => splitFailures(c.output, baseline!.find((x) => x.name === c.name) ?? { passed: true, output: "" }).before).slice(0, 4).join(" | ") || "none"}) are not yours to fix.` : ""
+          }`,
         );
       }
 
@@ -307,6 +434,15 @@ export class Orchestrator {
       this.taskControllers.delete(task.id);
       await scratch.remove().catch(() => undefined);
     }
+  }
+
+  /** Other tasks of this run that are not finished yet and change other files than this task. */
+  private async unfinishedSiblings(task: Task): Promise<Task[]> {
+    const run = await this.o.store.load(this.o.runId).catch(() => undefined);
+    const mine = new Set(task.fileScope);
+    return (run?.tasks ?? []).filter(
+      (t) => t.id !== task.id && !["done", "failed", "cancelled"].includes(t.status) && t.fileScope.length > 0 && t.fileScope.some((f) => !mine.has(f)),
+    );
   }
 
   private async saveCheckpoint(taskId: string, turns: number, worker: Worker, overlay: OverlayFiles, earlierTurns: number): Promise<void> {

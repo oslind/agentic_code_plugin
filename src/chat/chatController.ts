@@ -341,6 +341,12 @@ export class ChatController {
     return this.runLoop.resumeRun(runId);
   }
 
+  /** Retries a chat run's failed tasks (or the given ones) through the chat, with its review, budget and verification. */
+  async retryTasks(runId: string, taskIds?: string[]): Promise<void> {
+    await this.ready;
+    return this.runLoop.retryTasks(runId, taskIds);
+  }
+
   /** Whether a run was started from a chat conversation. */
   owns(runId: string): boolean {
     return this.s.runOwner.has(runId);

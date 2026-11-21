@@ -1,4 +1,4 @@
-import { safeFileName } from "./untrusted";
+import { closeOpenFences, DATA_TAG, safeFileName } from "./untrusted";
 
 /**
  * Rough token estimate. Real tokenizers vary by model; for code and English
@@ -54,7 +54,10 @@ export function fitToBudget(sections: ContextSection[], budgetTokens: number): F
       continue;
     }
     const room = budgetTokens - used - (s.wrap ? estimateTokens(s.wrap("")) : 0);
-    const cut = truncateToTokens(s.text, room);
+    // A section whose text holds its own fences (skills, fenced findings) is closed again after the cut.
+    const ownFences = !s.wrap && s.text.includes(`<${DATA_TAG}`);
+    const cutText = truncateToTokens(s.text, ownFences ? room - 40 : room);
+    const cut = cutText && ownFences ? closeOpenFences(cutText) : cutText;
     if (cut) {
       kept.set(s, framed(s, cut));
       used += estimateTokens(framed(s, cut));
@@ -97,4 +100,19 @@ export function fileTree(files: string[]): string {
     prev = parts;
   }
   return lines.join("\n");
+}
+
+/** The file paths of a tree written by fileTree(): two spaces per level, folders end in "/". */
+export function pathsOfTree(tree: string | undefined): string[] {
+  const out: string[] = [];
+  const stack: string[] = [];
+  for (const line of (tree ?? "").split("\n")) {
+    const name = line.trimStart();
+    if (!name) continue;
+    const depth = Math.floor((line.length - name.length) / 2);
+    stack.length = depth;
+    if (name.endsWith("/")) stack.push(name.slice(0, -1));
+    else out.push([...stack, name].join("/"));
+  }
+  return out;
 }

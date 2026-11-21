@@ -21,8 +21,8 @@ const only = (env.AGENTIC_E2E_ONLY ?? "")
 const scenarios = SCENARIOS.filter((s) => !only.length || only.includes(s.name));
 const minutes = (name: string, fallback: number) => (Number(env[name]) || fallback) * 60000;
 const stallMs = minutes("AGENTIC_E2E_STALL_MIN", 3);
-const silenceMs = minutes("AGENTIC_E2E_SILENCE_MIN", 5);
-const timeoutMs = minutes("AGENTIC_E2E_TIMEOUT_MIN", replay ? 2 : 30);
+const silenceMs = minutes("AGENTIC_E2E_SILENCE_MIN", 10);
+const timeoutMs = minutes("AGENTIC_E2E_TIMEOUT_MIN", replay ? 2 : 60);
 
 const E2E_DIR = __dirname;
 const RECORDINGS = path.join(E2E_DIR, "recordings");
@@ -38,7 +38,7 @@ interface Summary {
   time: string;
   mode: "live" | "replay";
   model: string;
-  scenarios: { name: string; passed: boolean; minutes: number; modelCalls: number; failures: string[] }[];
+  scenarios: { name: string; passed: boolean; minutes: number; modelCalls: number; failures: string[]; gates?: string[] }[];
 }
 
 /** One line per run in docs/local-llm/offload-log.md, as Oskar logs every local model job. */
@@ -66,7 +66,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
       time: new Date().toISOString(),
       mode: replay ? "replay" : "live",
       model: live?.model ?? "replay",
-      scenarios: results.map((r) => ({ name: r.name, passed: r.passed, minutes: Math.round(r.durationMs / 6000) / 10, modelCalls: r.modelCalls, failures: r.failures })),
+      scenarios: results.map((r) => ({ name: r.name, passed: r.passed, minutes: Math.round(r.durationMs / 6000) / 10, modelCalls: r.modelCalls, failures: r.failures, gates: r.gates })),
     };
     // Compared with the previous run of the same kind, so a regression stands out.
     const latestFile = path.join(RESULTS, `latest-${summary.mode}.json`);
@@ -77,7 +77,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
     const lines = summary.scenarios.map((s) => {
       const before = previous?.scenarios.find((p) => p.name === s.name);
       const change = !before ? "" : before.passed && !s.passed ? "  REGRESSED" : !before.passed && s.passed ? "  fixed" : "";
-      return `${s.passed ? "PASS" : "FAIL"}  ${s.name.padEnd(20)} ${String(s.minutes).padStart(5)} min  ${String(s.modelCalls).padStart(4)} calls${change}`;
+      return `${s.passed ? "PASS" : "FAIL"}  ${s.name.padEnd(20)} ${String(s.minutes).padStart(5)} min  ${String(s.modelCalls).padStart(4)} calls  ${String(s.gates?.length ?? 0).padStart(2)} gates (${s.gates?.filter((g) => / -> (denied|rejected)/.test(g)).length ?? 0} refused)${change}`;
     });
     await fs.mkdir(runDir, { recursive: true });
     await fs.writeFile(path.join(runDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
@@ -96,7 +96,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
       const recordingFile = path.join(RECORDINGS, `${scenario.name}.jsonl`);
       let provider;
       if (live) {
-        provider = liveProvider(live, log);
+        provider = liveProvider({ ...live, ...scenario.model }, log);
         const ctx = await ollamaContextLength(live.baseUrl, live.model);
         if (ctx && ctx < live.contextWindow) log(`warning: Ollama runs ${live.model} with a ${ctx}-token context, below AGENTIC_E2E_CONTEXT=${live.contextWindow}. Long prompts are cut off; see docs/e2e.md.`);
       } else {
