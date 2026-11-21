@@ -206,3 +206,23 @@ describe("run 20: what the parts list got wrong, each with its rule", () => {
     expect(guardVerification({ verdict: "done", verified: "ok", missing: [], parts: [{ ...renamed, met: false }] }, { checks: [], tasks, drafts: renameDrafts, userMessages: said }).verified).toBe(false);
   });
 });
+
+describe("run 21: a correct quote written on one line is not called missing (readme-section)", () => {
+  const drafts = "## README.md\n+ ## Modes\n+ \n+ - Night mode: 18°C\n+ - Default mode: 21°C\n";
+
+  it("reads a written-out \\n as a line break", () => {
+    expect(notInDrafts("+ ## Modes\\n+ - Night mode: 18°C\\n+ - Default mode: 21°C", drafts)).toEqual([]);
+    expect(notInDrafts("\"+ ## Modes\\n+ - Night mode: 18°C\"", drafts)).toEqual([]);
+    expect(notInDrafts("+ ## Modes\\n+ - Night mode: 19°C", drafts)).toEqual(["- Night mode: 19°C"]);
+  });
+
+  it("accepts lines joined with ' + ' when each one is in the drafts", () => {
+    expect(notInDrafts("+ ## Modes + - Night mode: 18°C + - Default mode: 21°C", drafts)).toEqual([]);
+    expect(notInDrafts("+ ## Modes + - Night mode: 19°C + - Default mode: 21°C", drafts)).toHaveLength(1);
+  });
+
+  it("still turns 'done' into not done for a line that is nowhere in the drafts", () => {
+    const v = guardVerification({ verdict: "done", verified: "ok", missing: [], parts: [{ asked: "Add a Modes section", found: "+ ## Modes\\n+ - Eco mode: 16°C", met: true }] }, { checks: [], tasks: [], drafts, userMessages: ["Add a Modes section to README.md"] });
+    expect(v.verified).toBe(false);
+  });
+});

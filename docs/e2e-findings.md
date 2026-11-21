@@ -379,6 +379,20 @@ Gates: 179 allowed, 6 held test changes accepted, 2 denials (command-denied, by 
 
 None of these fixes are run live.
 
+## Run 21: all 51 on 12f56c2, 47 passed, 433.6 min
+
+2026-11-21. All five failures of run 20 that had fixes passed (small-context-change, stop-then-continue, rename-everywhere, fix-and-add-test, rename-then-run-tests).
+Gates: 160 allowed, 2 denials (command-denied, by design), 7 held test changes (6 accepted, 1 rejected), no file changed on disk before review. One reply said "verified" for work the scenario's check did not accept (new-module-used-twice).
+
+| Scenario | What happened | State |
+|---|---|---|
+| readme-section | The section was right. Three verdicts were "done", and each was overruled because the quote was one line with the text `\n+` between the lines, which the quote check did not read as line breaks. The same false alarm showed up in esm-project and stop-then-continue (lines joined with " + "), which still passed. | Fixed: a written-out `\n` is a line break, and a quote joined with " + " is there when each part is. |
+| new-module-used-twice | Verified, and the program printed the right lines. label.js has `module.exports = label`; the scenario's check called `require('./src/label').label`. The request does not say how to export it. | Scenario check changed to accept either export shape. |
+| validate-input | "no mode" in the request means no argument; the plan wrote it as the string 'no mode', so `targetTemp()` throws. Three rounds kept that reading. A test change to match was held and rejected. The reply started with the not-verified notice and named the failing commands. | Open (model error; passed in runs 19 and 20). |
+| typo-please-correct | Asked which word without reading README.md, in one call, with no question mark. | Open. |
+
+The fix for readme-section is not run live. Run 22 repeats 17 scenarios five times on one commit, to get a pass rate per scenario.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

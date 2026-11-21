@@ -297,17 +297,28 @@ export function aboutOldFailures(missing: string[], oldLines: string[]): string[
 /**
  * The lines a part's "found" quotes as added ("+ …") that are not in the drafts. Compared without whitespace; "..."
  * splits a quote into pieces. Nothing is reported when the drafts were cut for length, or the quote has no "+" line.
+ * Run 21, readme-section: the model wrote three lines as one, with the text "\n+" between them ("+ ## Modes\n+ - Night
+ * mode: 18°C"), or with " + " between them, and a correct quote was called missing three times. So a written-out
+ * "\n" is a line break, and a piece that is not there whole is still there when each part between " + " is.
  */
 export function notInDrafts(found: string, drafts: string): string[] {
   if (!drafts.trim() || drafts.includes("[… cut")) return [];
   const squeeze = (t: string) => t.replace(/\s+/g, "");
+  const strip = (t: string) => t.replace(/^\+\s*/, "").replace(/^[{}();,\s]+|[{}();,\s]+$/g, "");
   const have = squeeze(drafts.split("\n").filter((l) => !/^-(?!-)/.test(l.trim())).map((l) => l.replace(/^\s*\+\s?/, "")).join("\n"));
+  // A quote mark that closes the whole quote is not part of the line.
+  const there = (piece: string) => squeeze(piece).length < 8 || have.includes(squeeze(piece)) || have.includes(squeeze(piece.replace(/["'`]+$/, "")));
+  const inParts = (piece: string) => {
+    const parts = piece.split(/\s+\+\s+/).map(strip).filter((p) => squeeze(p).length >= 8);
+    return parts.length > 1 && parts.every(there);
+  };
   return found
+    .replace(/\\r?\\n|\\n/g, "\n")
     .split(/\n|\.{3}|…/)
-    .map((piece) => piece.trim())
+    .map((piece) => piece.trim().replace(/^["'`]+(?=\+)/, ""))
     .filter((piece) => /^\+(?!\+)/.test(piece))
-    .map((piece) => piece.replace(/^\+\s*/, "").replace(/^[{}();,\s]+|[{}();,\s]+$/g, ""))
-    .filter((piece) => squeeze(piece).length >= 8 && !have.includes(squeeze(piece)));
+    .map(strip)
+    .filter((piece) => !there(piece) && !inParts(piece));
 }
 
 /** ": <first failure line>" of a command's output, for a missing-work item. */

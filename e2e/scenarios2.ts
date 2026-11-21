@@ -556,7 +556,7 @@ export const MORE_SCENARIOS: Scenario[] = [
     prompts: ["Create src/label.js with label(mode) that returns 'Mode: ' followed by the mode ('day' when no mode is given). Print label() as a second line in src/index.js; keep the line it prints now."],
     expect: async (r) => {
       const failures: string[] = [];
-      const before = await r.sh("node", ["-e", "process.exit(require('./src/label').label('night')==='Mode: night'&&require('./src/label').label()==='Mode: day'?0:1)"]);
+      const before = await r.sh("node", ["-e", "const m=require('./src/label');const label=typeof m==='function'?m:m.label;process.exit(label('night')==='Mode: night'&&label()==='Mode: day'?0:1)"]);
       if (before.code !== 0) failures.push("label('night') is not 'Mode: night', or label() is not 'Mode: day'");
       const out = await r.sh("node", ["src/index.js"]);
       if (out.code !== 0) failures.push(`node src/index.js fails: ${out.output.slice(0, 200)}`);
