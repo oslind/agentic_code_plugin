@@ -2594,7 +2594,11 @@ describe("routing follows the model's own structured choice", () => {
     expect(continueChange(claimed, undefined, "Fix it").action).toBe("plan");
     expect(continueChange({ ...claimed, reply: "The 'away' mode was added and returns 16." }, "answer", "Now also add an 'away' mode to targetTemp in src/thermostat.js that returns 16.").action).toBe("plan");
     // A description of the code as it is, or a claim that is denied, is not a claim of a change made now.
-    expect(continueChange({ ...claimed, reply: "No changes were made; the function is not fixed." }, undefined, "Fix it")).toMatchObject({ action: "none" });
+    expect(continueChange({ ...claimed, reply: "No changes were made; the function is not fixed." }, undefined, "Why is it not fixed?")).toMatchObject({ action: "none" });
+    // Run 22: an edit request is not finished by research, even when the reply claims nothing: the change is planned.
+    expect(continueChange({ ...claimed, reply: "No changes were made; the function is not fixed." }, undefined, "Fix it").action).toBe("plan");
+    expect(continueChange({ ...claimed, reply: "The misspelled word is 'controler' on line 3." }, "answer", "Rätta stavfelet i README.md.").action).toBe("plan");
+    expect(continueChange({ ...claimed, reply: "Which of the two words should change?" }, "answer", "Rätta stavfelet i README.md.").action).toBe("none");
     // The first turn gave no goal, but the turn after research says it is a change.
     expect(continueChange({ ...claimed, goal: "change" }, undefined, "Fix it").action).toBe("plan");
   });

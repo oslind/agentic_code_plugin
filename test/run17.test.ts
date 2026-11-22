@@ -226,3 +226,28 @@ describe("run 21: a correct quote written on one line is not called missing (rea
     expect(v.verified).toBe(false);
   });
 });
+
+import { namesFile } from "../src/chat/coordinatorChat";
+
+describe("run 22: an edit request in a named file is not answered with a request for details and no question", () => {
+  const turn = (reply: string, goal: "answer" | "change" | undefined = "answer") => ({ reply, action: "none" as const, request: "", goal, complete: true });
+  const ctx = (userText: string) => ({ userText, afterResearch: false, canResearch: true });
+
+  it("plans the change, so a sub-agent reads the file (typo-please-correct)", () => {
+    const out = routeTurn(turn("Please provide the specific misspelled word you'd like to correct in README.md."), ctx("Please correct the misspelled word in README.md."));
+    expect(out.action).toBe("plan");
+    expect(out.goal).toBe("change");
+    expect(out.request).toContain("Please correct the misspelled word in README.md.");
+    expect(out.overridden).toBeTruthy();
+  });
+
+  it("leaves a real question, a request with no file, and a question from the user alone", () => {
+    expect(routeTurn(turn("Which word do you mean?"), ctx("Please correct the misspelled word in README.md.")).action).toBe("none");
+    expect(routeTurn(turn("Tell me by how much."), ctx("Change how much the night mode lowers the target.")).action).toBe("none");
+    expect(routeTurn(turn("It divides by 2."), ctx("What does src/stats.js do?")).action).toBe("none");
+    expect(namesFile("Rätta stavfelet i README.md.")).toBe(true);
+    expect(namesFile("Fix average() in src/stats.js")).toBe(true);
+    expect(namesFile("Make it 4 degrees instead of 3.")).toBe(false);
+    expect(namesFile("Lower it by 0.5 degrees, e.g. at night.")).toBe(false);
+  });
+});

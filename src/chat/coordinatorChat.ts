@@ -349,6 +349,22 @@ export function routeTurn(turn: CoordinatorTurn, ctx: { userText: string; afterR
     };
   }
 
+  // Run 22, typo-please-correct (3 of 5): "Please correct the misspelled word in README.md." got "Please provide the
+  // specific misspelled word…" in one call, with nothing read and no question mark, so it could not even be answered.
+  // An edit request that names a file, answered with neither a question nor any work, is planned: the sub-agent reads
+  // the file. A real question ("…?") still goes to the user.
+  if (turn.action === "none" && turn.goal !== "change" && !ctx.afterResearch && !turn.reply.includes("?") && asksForEdit(user) && namesFile(user)) {
+    return {
+      ...turn,
+      action: "plan",
+      goal: "change",
+      complete: false,
+      request: `${user}\n\nThe sub-agent finds what this needs by reading the files it names, then makes the change.`.slice(0, 3000),
+      reply: "I'll have a sub-agent read the file and make the change.",
+      overridden: "The reply neither asked you a question nor started the change you asked for in a named file, so a sub-agent reads the file and makes it.",
+    };
+  }
+
   // A change nobody was sent to make has not happened, whatever "complete" says, unless the reply asks the user something first.
   const unstartedChange = turn.action === "none" && turn.goal === "change" && !turn.reply.includes("?");
   // A reply that stops after "…:" (checked by shape, not by words) is unfinished.
@@ -404,6 +420,11 @@ export function claimsChangeMade(text: string): boolean {
     .some((s) => (CLAIM.test(s) && !/\b(?:not|never|no)\b|n't\b/i.test(s)) || (CLAIM_SV.test(s) && !/(?:^|[^\p{L}])(?:inte|aldrig|inget|ingen|inga)(?![\p{L}])/iu.test(s)));
 }
 
+/** Whether a message names a file by its name ("README.md", "src/stats.js"). */
+export function namesFile(text: string): boolean {
+  return /(?:^|[\s"'`(])[\w./\\-]*\w{2}\.[A-Za-z][A-Za-z0-9]{0,5}(?=$|[\s"'`),.:;!?])/.test(text);
+}
+
 /** A message that starts by asking for an edit ("Fix ...", "Now also add ..."), not a question about one. */
 export function asksForEdit(text: string): boolean {
   if (text.includes("?")) return false;
@@ -415,7 +436,11 @@ export function asksForEdit(text: string): boolean {
 export function continueChange(answer: CoordinatorResult, firstGoal: CoordinatorTurn["goal"], userText: string): CoordinatorResult {
   // Research cannot change files, so a reply after research that says a change was made never made it: when the
   // user's message is not a question, the change is planned (run 13: "Fix the spelling mistake in README.md.").
-  const falseClaim = answer.action === "none" && claimsChangeMade(answer.reply) && asksForEdit(userText);
+  // Run 22 (typo-please-correct pass 2, typo-swedish pass 3): the turn after research gave no goal and claimed
+  // nothing itself, so the request ended in a research answer, and that answer said the word "has been corrected".
+  // An edit request is not finished by research, whatever the reply says, unless the reply asks the user something.
+  const editLeft = answer.action === "none" && asksForEdit(userText) && !answer.reply.includes("?");
+  const falseClaim = editLeft || (answer.action === "none" && claimsChangeMade(answer.reply) && asksForEdit(userText));
   if (!falseClaim && ((firstGoal !== "change" && answer.goal !== "change") || answer.action !== "none" || answer.reply.includes("?") || !userText.trim())) return answer;
   if (!userText.trim()) return answer;
   const request = `${userText.trim()}\n\n${answer.reply.trim()}`.slice(0, 3000);

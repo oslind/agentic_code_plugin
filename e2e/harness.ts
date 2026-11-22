@@ -100,6 +100,11 @@ export interface Scenario {
   historyTokens?: number;
   /** Trust the project's own skill files, as a user pressing "Use project skills" would. Default: not trusted. */
   trustProjectSkills?: boolean;
+  /**
+   * What goes wrong here is written down as a note and does not fail the scenario. For requests in Swedish
+   * (Oskar, 2026-11-22: behaviour that differs in Swedish is worth a note, not a failed test).
+   */
+  noteOnly?: boolean;
   /** The scenario's own checks. Returns what went wrong; empty means it passed. */
   expect(run: ScenarioRun): Promise<string[]> | string[];
 }
@@ -128,6 +133,8 @@ export interface ScenarioResult {
   name: string;
   passed: boolean;
   failures: string[];
+  /** What went wrong in a note-only scenario: reported, not counted as a failure. */
+  notes: string[];
   durationMs: number;
   modelCalls: number;
   /** Seconds spent waiting for the model. */
@@ -521,8 +528,9 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
 
   const result: ScenarioResult = {
     name: scenario.name,
-    passed: failures.length === 0,
-    failures,
+    passed: scenario.noteOnly || failures.length === 0,
+    failures: scenario.noteOnly ? [] : failures,
+    notes: scenario.noteOnly ? failures : [],
     durationMs: Date.now() - started,
     modelCalls: provider.calls.length,
     modelSeconds: Math.round(provider.calls.reduce((s, c) => s + c.ms, 0) / 1000),

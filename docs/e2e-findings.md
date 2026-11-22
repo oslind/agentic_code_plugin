@@ -393,6 +393,31 @@ Gates: 160 allowed, 2 denials (command-denied, by design), 7 held test changes (
 
 The fix for readme-section is not run live. Run 22 repeats 17 scenarios five times on one commit, to get a pass rate per scenario.
 
+## Run 22: 17 scenarios five times on 65b7e52, 78 of 85 passed
+
+2026-11-21 15:00 to 2026-11-22 10:51, five passes in a row on one commit (15, 16, 14, 16 and 17 of 17), to get a pass rate per scenario and tell model randomness from regressions.
+Gates over the five passes: 493 allowed, 1 denial (`npx jest`, by design), 30 held test changes accepted, no file changed on disk before review. No "not in the drafts" item in any pass, so the run 21 fix holds.
+
+| Scenario | Passes of 5 |
+|---|---|
+| small-context-change, parallel-changes, stop-then-continue, question-then-answer, rename-everywhere, fix-and-add-test, validate-input, remove-export, readme-section, same-file-parallel, old-test-pins-value, rename-then-run-tests, new-module-esm, new-module-used-twice | 5 |
+| typo-swedish | 4 |
+| new-module-used | 2 |
+| typo-please-correct | 2 |
+
+Four of the seven failures claimed work that was not there:
+
+| Scenario, pass | What happened | State |
+|---|---|---|
+| typo-please-correct, 1 and 3 | One call: "Please provide the specific misspelled word…", nothing read, no question mark. | Fixed: an edit request that names a file, answered with neither a question nor work, is planned (routeTurn). |
+| typo-please-correct, 2; typo-swedish, 3 | The request went to research, the turn after it gave no goal, and the combined answer said the word "has been corrected". Nothing was drafted. The by-rule notice "Nothing in your project was changed" stood above it. | Fixed: an edit request is not finished by research; the change is planned unless the reply asks the user something (continueChange). |
+| new-module-used, 3 | Verified. format.js has `module.exports = function formatTemp`; the check called `.formatTemp`. The request names no export shape. | Scenario check accepts either shape. |
+| new-module-used, 4 | False "Verified": index.js printed "Target: 21 C (21.1 °C is 70 F)", so formatTemp was used on the wrong value. | Open: verification does not hold the program's output against the request's wording. |
+| new-module-used, 1 | "Target: -6.1 °C C (21.1 C is 70 F)"; correctly not verified, ended partial. | Open (model error). |
+
+From 2026-11-22 the Swedish scenarios (swedish-request, typo-swedish) are note-only: what goes wrong is noted and does not fail them. Without typo-swedish the run is 74 of 80.
+None of these fixes are run live.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

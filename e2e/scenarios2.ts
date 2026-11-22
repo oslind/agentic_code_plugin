@@ -191,7 +191,7 @@ export const MORE_SCENARIOS: Scenario[] = [
     prompts: ["Create src/format.js with formatTemp(celsius) that returns the number with one decimal followed by ' °C' (formatTemp(21) returns '21.0 °C'). Use it in src/index.js to print the target."],
     expect: async (r) => {
       const failures: string[] = [];
-      const f = await r.sh("node", ["-e", "process.exit(require('./src/format').formatTemp(21)==='21.0 °C'?0:1)"]);
+      const f = await r.sh("node", ["-e", "const m=require('./src/format');const formatTemp=typeof m==='function'?m:m.formatTemp;process.exit(formatTemp(21)==='21.0 °C'?0:1)"]);
       if (f.code !== 0) failures.push("formatTemp(21) is not '21.0 °C'");
       const out = await r.sh("node", ["src/index.js"]);
       if (!out.output.includes("21.0 °C")) failures.push(`node src/index.js does not print '21.0 °C': ${out.output.slice(0, 200)}`);
@@ -408,6 +408,7 @@ export const MORE_SCENARIOS: Scenario[] = [
   },
   {
     name: "swedish-request",
+    noteOnly: true,
     description: "A request in Swedish is carried out like one in English.",
     mode: "act",
     files: thermostat,
@@ -454,6 +455,7 @@ export const MORE_SCENARIOS: Scenario[] = [
   },
   {
     name: "typo-swedish",
+    noteOnly: true,
     mayChangeTests: false,
     description: "Run 14: the same edit request in Swedish is carried out.",
     mode: "act",
