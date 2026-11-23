@@ -428,6 +428,19 @@ Noted, not counted: typo-swedish ("Rätta stavfelet i README.md.") chose researc
 
 One clean run is inside the noise measured in run 22 (two or three scenarios per full run), so it does not yet show the bar is met.
 
+## Many-file questions on fe83016 (2026-11-23)
+
+find-throwing-5/20/50/100, agentic only, twice each, 162.1 min. No attempt missed a module that throws (17 November: 6-7 of 8 at 20 files, 36-37 of 44 at 100). The 100-file question takes about 39 min.
+
+| Files | Attempt 1 | Attempt 2 |
+|---|---|---|
+| 5 | 2 of 2, 4.5 min | 2 of 2, 1.8 min |
+| 20 | 8 of 8, 18.6 min | 8 of 8, 10 min |
+| 50 | 22 of 22, 29.6 min | 22 of 22, 20.2 min |
+| 100 | 44 of 44, 38.2 min | 44 of 44, 39.1 min |
+
+The scorer first reported 9 false alarms (1 at 5 files, 8 at 100). Each was a line in a second list that says the module does not throw, in words the scorer did not know: "forces qty to non-negative", "uses Math.max(0, qty)", "converts negative quantity to 0 via Math.max()", "TODO to throw but currently does not". The scorer now reads those as "does not throw"; the saved answers have not been rescored yet. The request asked for the list of throwing files only, so the second list is more than was asked for.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

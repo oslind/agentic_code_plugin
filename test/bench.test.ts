@@ -187,3 +187,19 @@ describe("scoreboard", () => {
     expect(board).toMatch(/\| 54 \| 20% \| 90% \|/);
   });
 });
+
+describe("benchmark of 2026-11-23: lines that say a module does not throw, in other words", () => {
+  it("does not count them as named as throwing", () => {
+    const answer = [
+      "The modules that throw:",
+      "- src/mod_001.js",
+      "- src/mod_014.js: throws via assertNonNegative",
+      "",
+      "- src/mod_018.js: forces qty to non-negative",
+      "- src/mod_020.js: TODO to throw but currently does not",
+      "- src/mod_032.js: uses Math.max(0, qty)",
+      "- src/mod_004.js: lineTotal converts negative quantity to 0 via Math.max()",
+    ].join("\n");
+    expect([...modulesSaidToThrow(answer)].sort((a, b) => a - b)).toEqual([0, 13]); // zero-based: mod_001 and mod_014
+  });
+});
