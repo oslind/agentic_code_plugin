@@ -418,6 +418,16 @@ Four of the seven failures claimed work that was not there:
 From 2026-11-22 the Swedish scenarios (swedish-request, typo-swedish) are note-only: what goes wrong is noted and does not fail them. Without typo-swedish the run is 74 of 80.
 None of these fixes are run live.
 
+## Run 23: all 51 on 83d9e4e, 50 of 50 counted passed, 393.4 min
+
+2026-11-23, the first full run with no counted failure and no false or over-claiming completion (no not-verified notice, no "not in the drafts" item).
+Gates: 156 allowed, 1 denial (command-denied, by design), 7 held test changes accepted, no file changed on disk before review.
+typo-please-correct went to research, then to a plan, and was verified in 3.1 min. The first-turn rule for edit requests in a named file did not fire in any scenario.
+
+Noted, not counted: typo-swedish ("Rätta stavfelet i README.md.") chose research, answered "none" after round 1, and ended in a research answer that claims the correction, with nothing drafted. The logs do not show why the rule that plans an edit request after research held back (a reply with a question mark is the likely reason). That decision is now logged.
+
+One clean run is inside the noise measured in run 22 (two or three scenarios per full run), so it does not yet show the bar is met.
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

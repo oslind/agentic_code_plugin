@@ -44,9 +44,12 @@ interface Summary {
 /** One line per run in docs/local-llm/offload-log.md, as Oskar logs every local model job. */
 async function appendOffloadLog(summary: Summary, unload: string): Promise<void> {
   const file = path.join(E2E_DIR, "..", "docs", "local-llm", "offload-log.md");
-  const passed = summary.scenarios.filter((s) => s.passed).length;
+  // A note-only scenario with notes is neither a pass nor a failure: it is counted on its own.
+  const noted = summary.scenarios.filter((s) => s.passed && s.notes?.length).length;
+  const counted = summary.scenarios.length - noted;
+  const passed = summary.scenarios.filter((s) => s.passed).length - noted;
   const total = summary.scenarios.reduce((n, s) => n + s.minutes, 0);
-  const line = `| ${summary.time.slice(0, 16).replace("T", " ")} | ${summary.model} | e2e: ${summary.scenarios.map((s) => s.name).join(", ")} | ${passed}/${summary.scenarios.length} passed, ${total.toFixed(1)} min, ${unload} |\n`;
+  const line = `| ${summary.time.slice(0, 16).replace("T", " ")} | ${summary.model} | e2e: ${summary.scenarios.map((s) => s.name).join(", ")} | ${passed}/${counted} passed${noted ? `, ${noted} noted` : ""}, ${total.toFixed(1)} min, ${unload} |\n`;
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.appendFile(file, line);
 }

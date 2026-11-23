@@ -285,7 +285,11 @@ export class RunLoop {
         );
         // The user asked for a change and research was the first step: answering now would leave it undone.
         // qwen3:8b researched a bug fix, then answered "I've fixed it" with nothing changed.
+        const chosen = answer.action;
         answer = continueChange(answer, turn.goal, text);
+        // Run 23, typo-swedish: the logs could not tell a plan the model chose from one made by this rule, or why the rule held back.
+        if (answer.action !== chosen) this.host.log("info", `The request asks for a change and research cannot make one, so "${chosen}" after research became "${answer.action}".`);
+        else if (chosen === "none" && asksForEdit(text)) this.host.log("info", `The request asks for a change, and the reply after research ${answer.reply.includes("?") ? "asks the user a question" : "was left as an answer"}; no plan was made.`);
         if (answer.action === "plan" || answer.action === "research") {
           await this.s.append(c.id, { author: "coordinator", text: answer.reply, thought: answer.thought || undefined, thinking: clip(answer.thinking) });
         }
