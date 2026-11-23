@@ -439,7 +439,7 @@ find-throwing-5/20/50/100, agentic only, twice each, 162.1 min. No attempt misse
 | 50 | 22 of 22, 29.6 min | 22 of 22, 20.2 min |
 | 100 | 44 of 44, 38.2 min | 44 of 44, 39.1 min |
 
-The scorer first reported 9 false alarms (1 at 5 files, 8 at 100). Each was a line in a second list that says the module does not throw, in words the scorer did not know: "forces qty to non-negative", "uses Math.max(0, qty)", "converts negative quantity to 0 via Math.max()", "TODO to throw but currently does not". The scorer now reads those as "does not throw"; the saved answers have not been rescored yet. The request asked for the list of throwing files only, so the second list is more than was asked for.
+The scorer first reported 9 false alarms (1 at 5 files, 8 at 100). Each was a line in a second list that says the module does not throw, in words the scorer did not know: "forces qty to non-negative", "uses Math.max(0, qty)", "converts negative quantity to 0 via Math.max()", "TODO to throw but currently does not". The scorer now reads those as "does not throw", and the saved answers rescored on 4d25319 give 100% in all eight attempts with no false alarm. The request asked for the list of throwing files only, so the second list is more than was asked for.
 
 ## Still open
 
