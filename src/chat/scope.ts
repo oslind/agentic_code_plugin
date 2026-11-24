@@ -34,6 +34,20 @@ export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | un
 }
 
 
+/**
+ * What research found for one request, before its plan was made: the answers combined from research reports, and
+ * the researchers' own reports, oldest first. Untrusted, like learnedSoFar. Reports that come after the plan are
+ * from sub-agents that changed files: verification gets those with their tasks.
+ */
+export function researchFindings(scope: ChatEntry[], maxChars = 2000): string | undefined {
+  const plan = scope.findIndex((e) => e.kind === "plan");
+  const before = plan < 0 ? scope : scope.slice(0, plan);
+  const lines = before
+    .filter((e) => (e.kind === "report" && e.author !== "coordinator" && e.author !== "user") || (e.author === "coordinator" && e.tag === "from research"))
+    .map((e) => `- ${e.text.replace(/\s+/g, " ").slice(0, 800)}`);
+  return lines.join("\n").slice(0, maxChars) || undefined;
+}
+
 const isPrompt = (e: ChatEntry) => e.author === "user" && e.kind !== "direct";
 
 /**

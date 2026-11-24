@@ -24,7 +24,7 @@ import { ChatSession } from "./session";
 import { clip } from "./helpers";
 import { FailedCommand, failedCommandsOf } from "./synthesis";
 import { asksToFixFailures, failedBefore, failureLines, splitFailures, withAssertNotes } from "../checks/failures";
-import { runScope, userMessagesOf, userRequestOf } from "./scope";
+import { researchFindings, runScope, userMessagesOf, userRequestOf } from "./scope";
 import { promises as fs } from "fs";
 import * as path from "path";
 import { normalizeWorkspacePath } from "../tools/paths";
@@ -250,6 +250,7 @@ export class Verifier {
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
+      findings: researchFindings(runScope(c.entries, runId)),
       conventions: conventionsText(await this.host.skills?.(workspaceRoot).catch(() => undefined)),
       ...fixIsTheRequest(await this.compareWithProject(conversationId, workspaceRoot, runId, withEntryPoints(failedCommandsOf(runScope(c.entries, runId)), await this.entryPoints(workspaceRoot, run.changes ?? [], newest)), checks, signal), said),
     };

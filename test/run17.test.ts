@@ -282,3 +282,28 @@ describe("run 24: a file the user said not to change cannot be drafted (impossib
     expect(isKept("src/stats.json", ["src/stats.js"])).toBe(false);
   });
 });
+
+import { researchFindings } from "../src/chat/scope";
+import { buildVerifyMessages } from "../src/coordinator/verify";
+
+describe("run 24: verification sees what research found (readme-section)", () => {
+  const entry = (e: Partial<ChatEntry>): ChatEntry => ({ id: String(Math.random()), time: "", author: "coordinator", text: "", ...e });
+  const scope = [
+    entry({ author: "user", text: "Add a section called 'Modes' to README.md that lists each mode with its target temperature." }),
+    entry({ author: "agent", kind: "report", agentName: "r1", text: "Default: 21°C, Night mode: 18°C (src/thermostat.js)" }),
+    entry({ kind: "plan", text: "1. Add the Modes section" }),
+    entry({ author: "agent", kind: "report", agentName: "w1", text: "Added a Modes section with night mode." }),
+  ];
+
+  it("takes the reports from before the plan only", () => {
+    expect(researchFindings(scope)).toBe("- Default: 21°C, Night mode: 18°C (src/thermostat.js)");
+    expect(researchFindings(scope.slice(0, 1))).toBeUndefined();
+  });
+
+  it("shows them to the verifier, fenced", () => {
+    const messages = buildVerifyMessages({ userMessages: [scope[0]!.text], request: "Add Modes", tasks: [], drafts: "## README.md\n+ ## Modes\n+ - Night mode: 18°C", checks: [], round: 0, findings: researchFindings(scope) }, 16384);
+    const user = messages[1]!.content;
+    expect(user).toContain("Default: 21°C, Night mode: 18°C");
+    expect(user).toMatch(/<untrusted_data source="findings of the read-only sub-agents"/);
+  });
+});

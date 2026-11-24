@@ -449,7 +449,7 @@ Gates: 155 allowed, 4 denials (command-denied, by design), 6 held test changes a
 | Scenario | What happened | State |
 |---|---|---|
 | impossible-constraint | "…but do not change src/stats.js or test.js." A fix-up task ("…make the smallest fix without changing src/stats.js") drafted a change to stats.js, and the draft was accepted. The reply said not verified. First failure since run 10. | Fixed: files the user's own message says not to change (`filesNotToChange`) cannot be drafted; the write is refused by the tool policy, whatever the task says. |
-| readme-section | False "Verified": the Modes section lists only night mode at 18°C. One research report had both values, the other said "No other modes". Same error as run 19; 5 of 5 in run 22. | Open (model error in writing and in verification). |
+| readme-section | False "Verified": the Modes section lists only night mode at 18°C. One research report had both values, the other said "No other modes". Same error as run 19; 5 of 5 in run 22. | Verification now gets what research found before the plan (`researchFindings`), fenced, and is told to count what the findings name against what the drafts cover. A prompt change, not run live. |
 | long-conversation | With a 600-token history budget the summary (about 142 tokens) lost the default of 21, and the reply said "no specific default value was provided" without rereading the code. First failure since run 3. | Open. |
 | question-then-answer | After "Make it 4 degrees instead of 3." the test task kept writing 16 where 17 is right; its review did not accept it, and the reply started with the not-verified notice. Same kind as runs 14 and 15; 5 of 5 in run 22. | Open (model error; honest reply). |
 

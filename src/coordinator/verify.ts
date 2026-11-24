@@ -93,6 +93,12 @@ export interface VerifyContext {
   programOutputs?: { line: string; before?: string; now: string }[];
   /** The project's file tree. Untrusted (file names). Run 8: verification named test files that do not exist. */
   fileTree?: string;
+  /**
+   * What read-only sub-agents reported about the project for this request, before the work was planned
+   * (learnedSoFar). Untrusted. Run 24, readme-section: research found "Default: 21°C, Night mode: 18°C", the
+   * section listed only night mode, and verification, which never saw the findings, called it done.
+   */
+  findings?: string;
   /** The project's trusted conventions (AGENTS.md, .clinerules), already fenced by conventionsText(). */
   conventions?: string;
 }
@@ -224,6 +230,12 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
       `Checked by rule: program ${i + 1} runs without crashing on all drafts together, and what it prints ${p.before === undefined ? "is below" : "changed with the drafts"}. Not crashing does not make it right: compare what it prints now with what the user asked for. Output that is not what the user asked for (a wrong value, a doubled unit, a line that is missing) is missing work.\n${dataBlock(`program ${i + 1} and what it printed`, `$ ${commandLine(p)}\n${p.before === undefined ? "" : `Without the drafts:\n${fit(p.before, 250) ?? "(nothing)"}\n`}With the drafts:\n${fit(p.now, 250) ?? "(nothing)"}`)}`,
     );
   });
+  const findings = fit(ctx.findings, 500);
+  if (findings) {
+    evidence.push(
+      `What read-only sub-agents found in the project for this request. When the user asked for each, every or all of something, count the ones the findings name and the ones the drafts cover: one that the findings name and the drafts leave out is missing work, and its part is not met.\n${dataBlock("findings of the read-only sub-agents", findings)}`,
+    );
+  }
   const tree = fit(ctx.fileTree, 1200);
   if (tree) evidence.push(`The project's files. Name only these files (or files in the drafts) in missing; never guess a path:\n${dataBlock("the project's file tree", tree)}`);
   parts.push(`The evidence:\n${DATA_RULE}\n${evidence.join("\n")}`);
