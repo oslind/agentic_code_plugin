@@ -1,3 +1,4 @@
+import { checkCitations, citationFeedback } from "../context/citations";
 import { TaskStore } from "../state/taskStore";
 import { unaskedFixes } from "../coordinator/verify";
 import { WorkspaceSandbox } from "../tools/sandbox";
@@ -305,6 +306,20 @@ export class Oversight {
         return { accept: false, feedback, outcome: "sent_back" };
       }
       return unreviewed("not_accepted", { byRule: true, why: "the report claims a change research cannot make" });
+    }
+    // A researcher's quoted source lines are looked up in the files. Lines that are not there are sent back by rule,
+    // once; what is still not found after that is said in the answer (sourcesNote), never dropped silently.
+    if (research && !final && round < limit) {
+      const root = (await this.conversations.load(conversationId)).workspaceRoot;
+      const files = await WorkspaceSandbox.create(root).catch(() => undefined);
+      const cited = files ? await checkCitations(summary, (p) => files.readFile(p).catch(() => undefined)) : undefined;
+      if (cited?.missing.length) {
+        this.reviewRounds.set(key, round + 1);
+        const feedback = citationFeedback(cited.missing);
+        await this.tasks.log({ runId, taskId: task.id, type: "coordinator_review", message: "revise", data: { feedback, research, byRule: true, sources: { found: cited.found.length, missing: cited.missing.length } } });
+        this.host.log("info", `"${task.title}" quoted ${cited.missing.length} source line(s) that are not in the files named; sent back by rule.`);
+        return { accept: false, feedback, outcome: "sent_back" };
+      }
     }
     this.checkingOn.set(key, task.title);
     this.s.changed();

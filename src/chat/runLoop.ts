@@ -1,3 +1,4 @@
+import { checkCitations, sourcesNote } from "../context/citations";
 import { SkillCatalog } from "../skills/catalog";
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
@@ -644,6 +645,10 @@ export class RunLoop {
         reports.push({ title: t.title, status: t.status.replace("_", " "), text: t.summary ?? (t.error ? `No report: ${t.error}` : "") });
       }
     }
+    // The lines of code the reports quote as sources, looked up in the files: said under the answer by rule.
+    const projectFiles = await WorkspaceSandbox.create(c.workspaceRoot).catch(() => undefined);
+    const sources = projectFiles ? sourcesNote(await Promise.all(reports.map((r) => checkCitations(r.text, (p) => projectFiles.readFile(p).catch(() => undefined))))) : undefined;
+    if (sources) this.host.log("info", sources);
     // How much of a many-file question was read, counted from the logs: the answer must say so (benchmark pass 1).
     // A file counts as checked only when a researcher opened it and a report says something about it: a file read
     // but never reported on is as unknown to the answer as one never opened (check 2026-11-09: mod_042 was in no report).
@@ -746,7 +751,7 @@ export class RunLoop {
       kind: "answer",
       tag: "from research",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
-      text: `${gap ? `${gap}\n\n` : ""}${result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text}`,
+      text: `${gap ? `${gap}\n\n` : ""}${result.cutOff ? `${result.text}\n\n… (cut off here)` : result.text}${sources ? `\n\n${sources}` : ""}`,
       thought: draft?.thought,
       thinking: clip(result.thinking ?? draft?.thinking),
     });
