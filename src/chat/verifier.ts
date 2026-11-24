@@ -105,7 +105,7 @@ export class Verifier {
   /** Does the combined answer cover the question? Undefined when the check itself failed; the answer is then sent as it is. */
   async checkResearchAnswer(workspaceRoot: string, question: string, answer: string, signal: AbortSignal): Promise<AnswerCheck | undefined> {
     try {
-      const res = await checkAnswer(this.s.coordinatorProvider(workspaceRoot), question, answer, { signal });
+      const res = await checkAnswer(this.s.verifierProvider(workspaceRoot), question, answer, { signal });
       this.host.log("info", `Checked the research answer: ${res.answered ? "it answers the question" : res.missing.length ? `still open: ${res.missing.join(" | ")}` : "not confirmed, nothing named (manual review required)"}.`);
       return res;
     } catch (err) {
@@ -259,7 +259,7 @@ export class Verifier {
     let v: Verification;
     try {
       // Counted against the run's model-call budget, like every other coordinator call about its sub-agents.
-      v = await verifyRun(this.s.coordinatorProvider(workspaceRoot, runId), ctx, { signal });
+      v = await verifyRun(this.s.verifierProvider(workspaceRoot, runId), ctx, { signal });
     } catch (err) {
       if (signal.aborted) throw err;
       this.host.log("warn", `The coordinator could not verify the run: ${(err as Error).message}`);

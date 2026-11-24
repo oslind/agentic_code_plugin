@@ -461,6 +461,7 @@ Oskar's decision: nothing a model writes counts as evidence; what the extension 
 
 - 9230a91: the final check is shown what the extension recorded of a task that drafted files (files with line counts, commands with results) and not its report. A report is shown only for a task that drafted nothing, as a claim.
 - 537bef0: researchers give each finding as `path:line: the line of code`; the quoted lines are looked up in the files, lines that are not there are sent back once by rule, and the answer ends with how many were found.
+- A separate verification model can be set (`agentic.verification.model`, user settings only, same server); empty means the working model verifies. It gives the final verdict and checks research answers. Several attempts per task were ruled out: the extension must not take hardware just because it can.
 - The user's worded rules are enforced where the tools run, from the user's own message only: "do not change X", "only change X" (writes to other files refused) and "no new dependencies" (commands that add a package refused).
 
 ## Still open

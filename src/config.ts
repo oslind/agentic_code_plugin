@@ -29,6 +29,7 @@ import {
   USER_ONLY_DELEGATION_KEYS,
   USER_ONLY_MODEL_KEYS,
   workspaceOverrides,
+  verificationModelFrom,
 } from "./userSettings";
 
 export { PERMISSION_KEYS } from "./userSettings";
@@ -68,13 +69,19 @@ export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
   };
 }
 
+/** The separate verification model from the user's settings, or undefined when none is set. */
+export function readVerificationModel(): { model: string; contextWindow?: number } | undefined {
+  return verificationModelFrom(vscode.workspace.getConfiguration("agentic.verification"));
+}
+
 /**
  * A provider for the current settings. Logs when the server forces a weaker
  * structured output mode, and warns when the server has gone silent.
  */
-export function createProvider(scope: vscode.Uri | undefined, log: { warn(message: string): void; info?(message: string): void }): OpenAICompatibleProvider {
+export function createProvider(scope: vscode.Uri | undefined, log: { warn(message: string): void; info?(message: string): void }, override?: { model: string; contextWindow?: number }): OpenAICompatibleProvider {
+  const config = readModelConfig(scope);
   return new OpenAICompatibleProvider(
-    readModelConfig(scope),
+    override ? { ...config, model: override.model, contextWindow: override.contextWindow ?? config.contextWindow, source: "agentic.verification.model from your user settings" } : config,
     fetch,
     (from, to, error) => log.warn(`The model server rejected structured output "${from}" (${error}). Using "${to}" instead; replies are still checked against the schema.`),
     (e) => {
@@ -190,6 +197,7 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.scratch", scope), USER_ONLY_SCRATCH_KEYS).map((k) => `agentic.scratch.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.commands", scope), USER_ONLY_COMMAND_KEYS).map((k) => `agentic.commands.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.skills", scope), USER_ONLY_SKILL_KEYS).map((k) => `agentic.skills.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.verification", scope), ["model", "contextWindow"]).map((k) => `agentic.verification.${k}`),
   ];
 }
 

@@ -194,6 +194,18 @@
           "default": "json_schema",
           "description": "How to ask the server for JSON. If the server rejects a mode (for example Ollama's \"failed to load model vocabulary required for format\"), the extension falls back to json_object and then none by itself. Replies are always checked against the schema and retried, so none still works."
         },
+        "agentic.verification.model": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "A separate model that verifies the sub-agents' work before a request counts as done, and checks research answers, on the same server as `agentic.model.name`. A model of another family catches mistakes the working model is blind to. Empty: the working model verifies its own work. On a small GPU the server swaps models once per request. Read from your user settings only."
+        },
+        "agentic.verification.contextWindow": {
+          "type": "number",
+          "default": 0,
+          "scope": "machine",
+          "description": "Context window of the verification model in tokens. 0: the same as agentic.model.contextWindow. Read from your user settings only."
+        },
         "agentic.checks": {
           "type": "array",
           "default": [],

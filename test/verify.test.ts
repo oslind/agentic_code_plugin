@@ -16,7 +16,7 @@ import {
 import { buildPlannerMessages } from "../src/coordinator/planner";
 import { buildRunSummaryMessages, failedCommandsOf } from "../src/chat/synthesis";
 import { ModelProvider } from "../src/providers/types";
-import { oversightLimitsFrom } from "../src/userSettings";
+import { oversightLimitsFrom, verificationModelFrom } from "../src/userSettings";
 
 const pass = (name: string): CheckResult => ({ name, passed: true, output: "ok", durationMs: 1 });
 const fail = (name: string, output = "1 failing"): CheckResult => ({ name, passed: false, code: 1, output, durationMs: 1 });
@@ -75,6 +75,16 @@ describe("verification rules", () => {
   it("builds the evidence line from facts only", () => {
     expect(checkEvidence([])).toMatch(/No checks are set up/);
     expect(checkEvidence([pass("test"), fail("lint"), skip("types")])).toMatch(/all drafts together.*test passed, lint failed, types skipped \(not approved\)/);
+  });
+
+  it("reads the separate verification model from user settings only, and falls back to the working model", () => {
+    const section = (v: Record<string, { globalValue?: unknown; workspaceValue?: unknown }>) => ({ inspect: <T>(k: string) => v[k] as { globalValue?: T } | undefined });
+    expect(verificationModelFrom(section({}))).toBeUndefined();
+    expect(verificationModelFrom(section({ model: { globalValue: "  " } }))).toBeUndefined();
+    expect(verificationModelFrom(section({ model: { workspaceValue: "evil:latest" } }))).toBeUndefined();
+    expect(verificationModelFrom(section({ model: { globalValue: " gemma3:4b " } }))).toEqual({ model: "gemma3:4b" });
+    expect(verificationModelFrom(section({ model: { globalValue: "gemma3:4b" }, contextWindow: { globalValue: 8192, workspaceValue: 99 } }))).toEqual({ model: "gemma3:4b", contextWindow: 8192 });
+    expect(verificationModelFrom(section({ model: { globalValue: "gemma3:4b" }, contextWindow: { globalValue: 0 } }))).toEqual({ model: "gemma3:4b" });
   });
 
   it("reads verification from the oversight level in user settings only", () => {

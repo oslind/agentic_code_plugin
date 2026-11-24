@@ -259,3 +259,14 @@ export function commandIsolationFrom(section: InspectableSection): string[] | un
   if (!argv.length || !argv[0]!.trim() || !argv.some((a) => a.includes("${command}"))) return undefined;
   return argv;
 }
+
+/**
+ * The separate verification model, from the user's own settings only: which model judges the work is not for a
+ * project's settings file to decide. Undefined when none is set: the working model then verifies.
+ */
+export function verificationModelFrom(section: InspectableSection): { model: string; contextWindow?: number } | undefined {
+  const model = userValue<string>(section, "model", "", (v): v is string => typeof v === "string").trim();
+  if (!model) return undefined;
+  const window = userValue<number>(section, "contextWindow", 0, (v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0);
+  return { model, ...(window >= 1024 ? { contextWindow: Math.floor(window) } : {}) };
+}

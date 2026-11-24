@@ -17,6 +17,11 @@ import { SkillsView } from "../skills/service";
 export interface ChatHost {
   /** A provider built from the current settings, scoped to the conversation's folder. */
   provider(workspaceRoot?: string): ModelProvider;
+  /**
+   * The separate model that verifies the work and checks research answers, when the user configured one
+   * (agentic.verification.model). Undefined or unset: the working model does it.
+   */
+  verifierProvider?(workspaceRoot?: string): ModelProvider | undefined;
   /** Short description of the model in use, shown in the chat. */
   modelLabel(workspaceRoot?: string): string;
   /** The workspace folder a new conversation's agents are confined to. */

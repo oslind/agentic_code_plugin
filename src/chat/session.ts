@@ -83,6 +83,15 @@ export class ChatSession {
     return runId ? this.budget.wrap(provider, runId) : provider;
   }
 
+  /**
+   * The model that verifies: the separate verification model when the user set one, or else the working model.
+   * Counted and shown like every other coordinator call.
+   */
+  verifierProvider(workspaceRoot: string, runId?: string): ModelProvider {
+    const provider = this.live.wrap(this.host.verifierProvider?.(workspaceRoot) ?? this.host.provider(workspaceRoot), "coordinator");
+    return runId ? this.budget.wrap(provider, runId) : provider;
+  }
+
   /** A sub-agent's model, shown live and counted against its run's budget. */
   agentProvider(provider: ModelProvider, runId: string, taskId: string): ModelProvider {
     return this.budget.wrap(this.live.wrap(provider, `${runId}:${taskId}`), runId);

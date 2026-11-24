@@ -216,6 +216,8 @@ describe("eventToEntry", () => {
 
 describe("ChatController", () => {
   interface SetupOptions {
+    /** A separate verification model, as agentic.verification.model sets one. */
+    verifier?: ModelProvider;
     detected?: DetectedCheck[];
     saved?: CheckConfig[];
     permissions?: Partial<AutoApprove>;
@@ -250,6 +252,7 @@ describe("ChatController", () => {
     const cancelled: string[] = [];
     const host: ChatHost = {
       provider: () => provider,
+      verifierProvider: () => opts.verifier,
       modelLabel: () => "test at http://localhost",
       pickWorkspace: async () => opts.workspace ?? "/ws",
       fileTree: async () => "src/\n  index.ts",
@@ -738,6 +741,22 @@ describe("ChatController", () => {
         await store.setStatus(runId, t.id, "done");
       }
     };
+
+    it("asks the separate verification model for the verdict when one is set, and the working model for the rest", async () => {
+      const ws = path.join(dir, "ws-verifier");
+      await fs.mkdir(ws, { recursive: true });
+      const verifier = scripted([verdict("done", "Both files are drafted.")]);
+      const { controller, provider } = setup([...planReplies(), finalReply], "act", { workspace: ws, saved: [], verify: true, verifyRounds: 2, during: finishAll, verifier });
+      await controller.send("add users");
+      // The verdict came from the verification model, which saw the drafts and the recorded facts, not the reports.
+      expect(verifier.requests).toHaveLength(1);
+      const asked = verifier.requests[0]!.messages.map((m) => m.content).join("\n");
+      expect(asked).toMatch(/Files it drafted: src\//);
+      expect(asked).not.toMatch(/Did Add model\./);
+      // The working model planned and wrote the final reply, and was never asked to verify.
+      expect(provider.requests.some((r) => r.messages.some((m) => /"verdict"/.test(m.content) && /The evidence:/.test(m.content)))).toBe(false);
+      expect((await controller.state()).done).toMatchObject({ status: "finished" });
+    });
 
     it("sends sub-agents back for what verification found missing, then verifies again", async () => {
       const ws = path.join(dir, "ws");
