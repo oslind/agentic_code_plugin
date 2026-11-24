@@ -343,3 +343,37 @@ describe("verification is shown what the plugin recorded, not what a sub-agent s
     expect(without).toContain("Nothing needed changing: it is already there.");
   });
 });
+
+import { addsPackage, forbidsNewPackages, onlyFilesToChange, userRulesOf } from "../src/context/userRules";
+
+describe("more of the user's worded rules are enforced where the tools run", () => {
+  it("reads 'only change X' from the user's words", () => {
+    expect(onlyFilesToChange("Fix the average. Only change src/stats.js.")).toEqual(["src/stats.js"]);
+    expect(onlyFilesToChange("Change nothing but src/stats.js and test.js, please.").sort()).toEqual(["src/stats.js", "test.js"]);
+    expect(onlyFilesToChange("Ändra bara src/stats.js.")).toEqual(["src/stats.js"]);
+    expect(onlyFilesToChange("Only change what is needed in the code.")).toEqual([]);
+    expect(onlyFilesToChange("Change src/stats.js so the tests pass.")).toEqual([]);
+    expect(onlyFilesToChange("The only failing test is in test.js; update src/stats.js.")).toEqual([]);
+  });
+
+  it("refuses a write to any other file", () => {
+    const ctx = { fileScope: ["**"], allowedChecks: [], ...userRulesOf("Fix the average. Only change src/stats.js.") };
+    expect(checkToolCall({ tool: "write_file", path: "src/stats.js", content: "x" }, ctx).verdict).toBe("allow");
+    const denied = checkToolCall({ tool: "write_file", path: "test.js", content: "x" }, ctx);
+    expect(denied.verdict === "deny" && denied.reason).toMatch(/change only src\/stats\.js, and 'test\.js' is not one of them/);
+  });
+
+  it("reads 'no new dependencies' and refuses a command that adds a package, not one that installs what is listed", () => {
+    expect(forbidsNewPackages("Add date formatting, but don't add any dependencies.")).toBe(true);
+    expect(forbidsNewPackages("Parse the CSV without adding a new library.")).toBe(true);
+    expect(forbidsNewPackages("No new packages, please.")).toBe(true);
+    expect(forbidsNewPackages("Lägg till datumformatering, men inga nya beroenden.")).toBe(true);
+    expect(forbidsNewPackages("Add the missing dependency to package.json.")).toBe(false);
+    expect(forbidsNewPackages("Do not change the package version.")).toBe(false);
+    for (const c of ["npm install lodash", "npm i -D vitest", "cd app && yarn add dayjs", "pip install requests", "python3 -m pip install numpy", "cargo add serde", "go get github.com/x/y", "pnpm add zod"]) expect(addsPackage(c), c).toBe(true);
+    for (const c of ["npm install", "npm ci", "npm test", "pip install -r requirements.txt", "pip install -e .", "node test.js", "npm run build"]) expect(addsPackage(c), c).toBe(false);
+    const ctx = { fileScope: ["**"], allowedChecks: [], ...userRulesOf("Add it, but don't add any dependencies.") };
+    expect(checkToolCall({ tool: "run_command", command: "npm install lodash", reason: "need it" }, ctx).verdict).toBe("deny");
+    expect(checkToolCall({ tool: "run_command", command: "npm test", reason: "tests" }, ctx).verdict).toBe("ask");
+  });
+});

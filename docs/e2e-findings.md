@@ -455,6 +455,14 @@ Gates: 155 allowed, 4 denials (command-denied, by design), 6 held test changes a
 
 Runs 21 to 24 on nearly the same code gave 47, 50 of 50, and 47 of 51: the difference between runs is the model, and the bar (95% and no false completion) is met in some runs and not in others.
 
+## Reliability work after run 24 (2026-11-24, not run live yet)
+
+Oskar's decision: nothing a model writes counts as evidence; what the extension recorded or can look up does. Built so far, each with unit tests:
+
+- 9230a91: the final check is shown what the extension recorded of a task that drafted files (files with line counts, commands with results) and not its report. A report is shown only for a task that drafted nothing, as a claim.
+- 537bef0: researchers give each finding as `path:line: the line of code`; the quoted lines are looked up in the files, lines that are not there are sent back once by rule, and the answer ends with how many were found.
+- The user's worded rules are enforced where the tools run, from the user's own message only: "do not change X", "only change X" (writes to other files refused) and "no new dependencies" (commands that add a package refused).
+
 ## Still open
 
 1. The coordinator answers project questions from memory and invents names instead of researching.

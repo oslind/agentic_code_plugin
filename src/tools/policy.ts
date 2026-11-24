@@ -2,16 +2,22 @@ import { isHeldTestChange } from "../changes/testGuard";
 import { matchesAny, normalizeWorkspacePath } from "./paths";
 import { ToolCall } from "./protocol";
 import { commandLeavesProject } from "./commandGuard";
-import { isKept } from "../context/userRules";
+import { addsPackage, isKept } from "../context/userRules";
 
 /** What a sub-agent is told after trying to change a file the user said not to change. */
 export const KEPT_FILE = " It will be refused every time. If the task cannot be done without changing it, call finish and say so plainly: what would have to change in that file, and that the user ruled it out.";
+
+const NO_PACKAGES = (command: string) => `The user said not to add dependencies, and \`${command}\` adds a package. That rule comes from the user and no task can lift it. Use what the project already has, or call finish and say what could not be done without a new package.`;
 
 export interface PolicyContext {
   /** Globs the task may write, from its plan entry. */
   fileScope: string[];
   /** Files the user's own message says not to change (userRules.ts). A write to one is refused, whatever the task says. */
   keep?: string[];
+  /** The only files the user's own message allows to be changed. Empty or unset: no such limit. */
+  only?: string[];
+  /** The user's own message rules out new dependencies: a command that adds a package is refused. */
+  noNewPackages?: boolean;
   /** Names of checks configured by the user. Other commands (run_command) always go to the user or the "Run commands" switch. */
   allowedChecks: string[];
   /** Commands of the allowed checks by name, so a known check can be requested again without asking. */
@@ -293,6 +299,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "request_check": {
       const outside = commandLeavesProject(call.command);
       if (outside) return { verdict: "deny", reason: `The command \`${call.command}\` is not allowed. ${outside} Commands run in the project folder.` };
+      if (ctx.noNewPackages && addsPackage(call.command)) return { verdict: "deny", reason: NO_PACKAGES(call.command) };
       // A new command always needs the user's go-ahead; workers cannot run commands on their own.
       return !ctx.followUp && ctx.allowedChecks.includes(call.name) && ctx.knownCommands?.get(call.name) === call.command
         ? { verdict: "allow" }
@@ -301,6 +308,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "run_command": {
       const outside = commandLeavesProject(call.command);
       if (outside) return { verdict: "deny", reason: `The command \`${call.command}\` is not allowed. ${outside} Commands run in the project folder.` };
+      if (ctx.noNewPackages && addsPackage(call.command)) return { verdict: "deny", reason: NO_PACKAGES(call.command) };
       // Every command is shown first; only the user's "Run commands" switch, or the user's own approval, lets it run.
       return { verdict: "ask", reason: `Run \`${call.command}\`${call.reason ? `: ${call.reason}` : ""}` };
     }
@@ -349,6 +357,9 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       if (isProtectedPath(p)) return { verdict: "deny", reason: `'${p}' is protected` };
       if (ctx.keep?.length && isKept(p, ctx.keep)) {
         return { verdict: "deny", reason: `The user said not to change '${p}'. That rule comes from the user and no task can lift it.${KEPT_FILE}` };
+      }
+      if (ctx.only?.length && !isKept(p, ctx.only)) {
+        return { verdict: "deny", reason: `The user said to change only ${ctx.only.join(", ")}, and '${p}' is not one of them. That rule comes from the user and no task can lift it.${KEPT_FILE}` };
       }
       if (!matchesAny(p, ctx.fileScope)) {
         return {

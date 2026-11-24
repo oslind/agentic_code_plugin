@@ -1,3 +1,4 @@
+import { UserRules } from "../context/userRules";
 import { CommandSink } from "../checks/commandTerminal";
 import { ApproveCommand, CheckConfig, CheckResult, runCheck } from "../checks/runner";
 import { toPlainText } from "../checks/terminalText";
@@ -46,8 +47,8 @@ export interface WorkerOptions {
   /** Extra notes for the first message, such as what a failed earlier attempt did. */
   context?: string;
   checks: CheckConfig[];
-  /** Files the user's own message says not to change: writes to them are refused. */
-  keepFiles?: string[];
+  /** Rules read from the user's own message (userRules.ts): files not to change, the only files to change, no new packages. */
+  userRules?: UserRules;
   /**
    * The project's own test command (from detectChecks), for a change task with
    * no saved checks: run once before it may finish, when it has not run
@@ -555,7 +556,9 @@ export class Worker {
       const checks = this.checks;
       const decision = checkToolCall(turn.call, {
         fileScope: task.fileScope,
-        keep: this.opts.keepFiles,
+        keep: this.opts.userRules?.keep,
+        only: this.opts.userRules?.only,
+        noNewPackages: this.opts.userRules?.noNewPackages,
         allowedChecks: this.opts.readOnly ? [] : checks.map((c) => c.name),
         knownCommands: new Map(checks.map((c) => [c.name, c.command])),
         followUp: this.opts.followUp,
