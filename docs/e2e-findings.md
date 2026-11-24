@@ -455,6 +455,21 @@ Gates: 155 allowed, 4 denials (command-denied, by design), 6 held test changes a
 
 Runs 21 to 24 on nearly the same code gave 47, 50 of 50, and 47 of 51: the difference between runs is the model, and the bar (95% and no false completion) is met in some runs and not in others.
 
+## Run 25: the 4 failures of run 24, 5 passes on 2bc57a5, 20 of 20 (2026-11-24)
+
+| scenario | passed | minutes p1-p5 |
+|---|---|---|
+| long-conversation | 5/5 | 13, 19.5, 4.6, 6.1, 8.6 |
+| question-then-answer | 5/5 | 19.2, 39.2, 22.7, 10.4, 10.8 |
+| readme-section | 5/5 | 6.1, 3.6, 4, 3.7, 4.7 |
+| impossible-constraint | 5/5 | 11.5, 23.4, 11.9, 20.5, 26.3 |
+
+- No failures and no false completions. Gates: 81 allowed, 0 denied, 4 held test changes accepted, nothing changed on disk before review.
+- impossible-constraint: no stats.js or test.js was drafted in any pass. The "said not to change" refusal appears in the event log of passes 2-5 (8, 9, 9, 6 lines, which may count a refusal twice) and not in pass 1. Every pass ended with a research answer saying no fix exists under the constraint.
+- readme-section: the final check was shown the researchers' findings in every pass, and both modes (21 and 18 degrees) were listed every time.
+- One wrong detail in a passing run: impossible-constraint pass 3 swapped the numbers in its answer (said the test expects 30 and gets 20; it expects 20 and gets 30). The diagnosis and conclusion were right. Pass 1 said the reports conflict on this.
+- This commit does not have the guards listed in the next section; they are still not run live.
+
 ## Reliability work after run 24 (2026-11-24, not run live yet)
 
 Oskar's decision: nothing a model writes counts as evidence; what the extension recorded or can look up does. Built so far, each with unit tests:
