@@ -59,6 +59,7 @@ The autopilot stands in for a user who reads each card, not one who allows every
 - **Commands and checks:** allowed, unless it is one a careful user refuses in a test project: anything that installs or downloads (`npm install`, `pip install`, `npx`, `curl`), deletes folders (`rm -r`), needs `sudo`, changes git state or the machine. Those are denied, and the sub-agent has to manage without.
 - **Drafts of files that decide what commands run** (package.json, build files, CI): allowed only when the scenario lists the file in `mayChange`, which it does when the request is about that file. Otherwise denied.
 - **Changes to existing tests, snapshots, fixtures and test settings:** these always wait for review, whatever the switches say. At the end they are accepted like the other drafts, unless the scenario sets `mayChangeTests: false` (the request gives no reason to touch a test); then they are rejected and the scenario fails.
+- **A separate verification model:** set `AGENTIC_E2E_VERIFIER` to a second model on the same server, and it gives the verdicts as `agentic.verification.model` would. Its calls are recorded with the others, and it is unloaded at the end too.
 - **Requests in Swedish (`noteOnly: true`):** what goes wrong in swedish-request and typo-swedish is written to the log and to `notes` in summary.json, shown as NOTE in the summary, and does not fail the scenario. Behaviour that differs in Swedish is worth a note, not a failed test.
 - **`deny: true`** still denies every card.
 

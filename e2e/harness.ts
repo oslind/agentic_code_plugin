@@ -124,6 +124,8 @@ export interface HarnessOptions {
   maxParallel: number;
   /** Folder for the transcript, model calls and command log. Not written when unset. */
   outDir?: string;
+  /** A separate verification model (AGENTIC_E2E_VERIFIER), as agentic.verification.model sets one. */
+  verifier?: ModelProvider;
   log?: (message: string) => void;
   /** Looks at the project once the drafts are accepted, even when the run was stopped or timed out (the benchmark scores it there). */
   inspect?: (run: ScenarioRun) => Promise<void>;
@@ -273,7 +275,8 @@ export async function runScenario(scenario: Scenario, model: ModelProvider, opts
   const maxTurns = 30;
   const host: ChatHost = {
     provider: () => provider,
-    modelLabel: () => `${provider.model} (e2e)`,
+    verifierProvider: () => (opts.verifier ? provider.also(opts.verifier) : undefined),
+    modelLabel: () => `${provider.model}${opts.verifier ? ` (verified by ${opts.verifier.model})` : ""} (e2e)`,
     pickWorkspace: async () => root,
     fileTree: async () => {
       const sandbox = await WorkspaceSandbox.create(root);

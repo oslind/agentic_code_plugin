@@ -87,7 +87,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
     await fs.writeFile(latestFile, JSON.stringify(summary, null, 2) + "\n");
     console.log(`\n[e2e] ${summary.mode} run with ${summary.model}\n${lines.join("\n")}\n[e2e] transcripts: ${runDir}\n`);
     if (live) {
-      const unload = env.AGENTIC_E2E_KEEP_LOADED === "1" ? "model left loaded" : await unloadOllama(live.baseUrl, live.model);
+      const unload = env.AGENTIC_E2E_KEEP_LOADED === "1" ? "model left loaded" : [await unloadOllama(live.baseUrl, live.model), ...(env.AGENTIC_E2E_VERIFIER?.trim() ? [await unloadOllama(live.baseUrl, env.AGENTIC_E2E_VERIFIER.trim())] : [])].join(", ");
       log(unload);
       if (env.AGENTIC_E2E_NO_LOG !== "1") await appendOffloadLog(summary, unload);
     }
@@ -108,7 +108,10 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
         provider = new ReplayProvider(recorded);
       }
       log(`${scenario.name}: starting`);
-      const result = await runScenario(scenario, provider, { stallMs, silenceMs, timeoutMs, maxParallel: Number(env.AGENTIC_E2E_PARALLEL) || 1, outDir, log: (m) => log(`${scenario.name}: ${m}`) });
+      // AGENTIC_E2E_VERIFIER: a second model on the same server gives the verdicts, like agentic.verification.model.
+      const verifierName = live ? env.AGENTIC_E2E_VERIFIER?.trim() : undefined;
+      const verifier = live && verifierName ? liveProvider({ ...live, model: verifierName }, log) : undefined;
+      const result = await runScenario(scenario, provider, { stallMs, silenceMs, timeoutMs, maxParallel: Number(env.AGENTIC_E2E_PARALLEL) || 1, outDir, verifier, log: (m) => log(`${scenario.name}: ${m}`) });
       results.push(result);
       await saveRecording(path.join(outDir, "model-calls.jsonl"), result.calls);
       if (provider instanceof ReplayProvider && provider.drift.length) log(`${scenario.name}: ${provider.drift.length} prompt(s) changed since the recording (replies still played in order)`);

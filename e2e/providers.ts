@@ -111,7 +111,15 @@ export class RecordingProvider implements ModelProvider {
     return this.inner.contextWindow;
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  /**
+   * A second model whose calls are recorded and watched together with this one's: the separate verification
+   * model, so its calls show in the transcript and a long verdict is not taken for a stall.
+   */
+  also(other: ModelProvider): ModelProvider {
+    return { model: other.model, contextWindow: other.contextWindow, chat: (request) => this.chat(request, other) };
+  }
+
+  async chat(request: ChatRequest, via: ModelProvider = this.inner): Promise<ChatResponse> {
     const call: RecordedCall = {
       n: this.calls.length + 1,
       role: roleOf(request),
@@ -125,7 +133,7 @@ export class RecordingProvider implements ModelProvider {
     this.lastActivity = started;
     const onProgress = request.onProgress;
     try {
-      call.response = await this.inner.chat({
+      call.response = await via.chat({
         ...request,
         onProgress: (p) => {
           this.lastActivity = Date.now();
