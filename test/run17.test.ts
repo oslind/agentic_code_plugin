@@ -307,3 +307,39 @@ describe("run 24: verification sees what research found (readme-section)", () =>
     expect(user).toMatch(/<untrusted_data source="findings of the read-only sub-agents"/);
   });
 });
+
+import { taskFacts } from "../src/coordinator/verify";
+
+describe("verification is shown what the plugin recorded, not what a sub-agent says it did", () => {
+  const changes = [
+    { path: "test.js", taskId: "t1", original: "a\nb\nc", proposed: "a\nB\nc\nd", status: "pending" },
+    { path: "src/new.js", taskId: "t1", original: null, proposed: "x\ny", status: "pending" },
+    { path: "src/other.js", taskId: "t2", original: "1", proposed: "2", status: "pending" },
+    { path: "src/gone.js", taskId: "t1", original: "1", proposed: "2", status: "rejected" },
+  ];
+  const events = [
+    { type: "command", taskId: "t1", message: "node test.js", data: { command: "node test.js", passed: false, code: 1 } },
+    { type: "command", taskId: "t1", message: "node test.js", data: { command: "node test.js", passed: true, code: 0 } },
+    { type: "command", taskId: "t2", message: "npm test", data: { command: "npm test", passed: false, code: 1 } },
+  ];
+
+  it("builds the facts from the drafts and the event log", () => {
+    expect(taskFacts("t1", changes, events)).toEqual({
+      drafted: ["test.js (2 line(s) added or changed, 1 removed or changed)", "src/new.js (new file, 2 lines)"],
+      commands: ["`node test.js` exit code 0"],
+    });
+    expect(taskFacts("t3", changes, events)).toEqual({ drafted: [], commands: [] });
+  });
+
+  it("leaves the report out for a task that drafted files, and keeps it as a claim for one that drafted nothing", () => {
+    const base = { userMessages: ["Fix it and add a test."], request: "Fix", drafts: "## test.js\n+ d", checks: [], round: 0 };
+    const claim = "I added the test 'average of empty array' and all tests pass.";
+    const withDrafts = buildVerifyMessages({ ...base, tasks: [{ title: "Add test", status: "done", summary: claim, facts: taskFacts("t1", changes, events) }] }, 16384)[1]!.content;
+    expect(withDrafts).not.toContain("average of empty array");
+    expect(withDrafts).toContain("Files it drafted: test.js (2 line(s) added or changed, 1 removed or changed); src/new.js (new file, 2 lines)");
+    expect(withDrafts).toContain("Commands it ran: `node test.js` exit code 0");
+    const without = buildVerifyMessages({ ...base, tasks: [{ title: "Check", status: "done", summary: "Nothing needed changing: it is already there.", facts: taskFacts("t3", changes, events) }] }, 16384)[1]!.content;
+    expect(without).toContain("Checked by rule: this task drafted no file.");
+    expect(without).toContain("Nothing needed changing: it is already there.");
+  });
+});

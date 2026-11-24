@@ -18,7 +18,7 @@ import { commandEventData } from "../worker/worker";
 import { draftsForReview, leftoverRename, renameLeftovers, renamesEverywhere } from "../coordinator/review";
 import { filesMentioning } from "../context/outline";
 import { conventionsText } from "../skills/catalog";
-import { aboutOldFailures, AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
+import { aboutOldFailures, AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, taskFacts, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
@@ -220,7 +220,8 @@ export class Verifier {
     const run = await this.tasks.load(runId);
     // The latest review of each task: one that ended "not accepted" (sent back as often as allowed) holds "done".
     const reviews = new Map<string, string>();
-    for (const e of await this.tasks.readLog(runId).catch(() => [])) {
+    const events = await this.tasks.readLog(runId).catch(() => []);
+    for (const e of events) {
       if (e.type !== "coordinator_review" || !e.taskId) continue;
       if (e.message === "not_accepted") reviews.set(e.taskId, typeof e.data?.feedback === "string" ? e.data.feedback : "");
       else reviews.delete(e.taskId);
@@ -231,6 +232,7 @@ export class Verifier {
         title: t.title,
         status: notStarted ? "did not start" : t.status.replace("_", " "),
         summary: t.summary ?? (t.error ? `No report: ${t.error}` : ""),
+        facts: taskFacts(t.id, run.changes ?? [], events),
         unfinished: latest.has(t.id) && t.status !== "done" ? (notStarted ? "a task it depends on did not finish" : (t.error ?? t.status)) : undefined,
         // Run 8 left this out for tasks that changed nothing (a fix-up for a file that did not exist); such
         // fix-ups are now dropped before they run. Run 10: the only task never wrote its file, its review said

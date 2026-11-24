@@ -59,6 +59,13 @@ export interface VerifyTask {
   status: string;
   /** Its report, or why it has none. Untrusted. */
   summary: string;
+  /**
+   * What the plugin itself recorded of the task's work: the files it drafted with their line counts, and the
+   * commands it ran with how each ended (taskFacts). Paths and command lines are model-chosen, so still fenced.
+   * When set and the task drafted a file, the verifier is shown these and not the report: a report is a claim,
+   * and run 20 was verified from a report that named a test line the drafts no longer had.
+   */
+  facts?: { drafted: string[]; commands: string[] };
   /** Set for a task of the latest round that did not finish, with why. */
   unfinished?: string;
   /** Set for a task of the latest round whose review did not accept its drafts, with the review's feedback. Untrusted. */
@@ -203,7 +210,16 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   const each = Math.max(150, Math.floor(1200 / Math.max(1, ctx.tasks.length)));
   ctx.tasks.forEach((t, i) => {
     const review = t.notAccepted !== undefined ? `\nIts review did NOT accept its drafts: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 300)}` : "";
-    evidence.push(dataBlock(`task ${i + 1} (${t.status}): its title and its sub-agent's report`, `Title: ${t.title.replace(/\s+/g, " ").slice(0, 120)}\nReport: ${fit(t.summary, each) ?? "(no report)"}${review}`));
+    const title = `Title: ${t.title.replace(/\s+/g, " ").slice(0, 120)}`;
+    if (t.facts?.drafted.length) {
+      // Recorded by the plugin, so nothing here is the sub-agent's word for it.
+      const ran = t.facts.commands.length ? `\nCommands it ran: ${t.facts.commands.slice(0, 6).join("; ")}` : "\nCommands it ran: none";
+      evidence.push(dataBlock(`task ${i + 1} (${t.status}): its title, and what the plugin recorded of its work`, `${title}\nFiles it drafted: ${t.facts.drafted.slice(0, 12).join("; ")}${ran}${review}`));
+    } else {
+      // Nothing was drafted, so its own account is all there is: a claim to weigh, never evidence of a change.
+      const none = t.facts ? "\nChecked by rule: this task drafted no file." : "";
+      evidence.push(dataBlock(`task ${i + 1} (${t.status}): its title and its sub-agent's report`, `${title}${none}\nReport: ${fit(t.summary, each) ?? "(no report)"}${review}`));
+    }
   });
   evidence.push(dataBlock("all drafts of the run", fit(ctx.drafts, 3000) ?? "(no drafts: no files were changed)"));
   ctx.checks.forEach((c, i) => {
@@ -331,6 +347,43 @@ export function notInDrafts(found: string, drafts: string): string[] {
     .filter((piece) => /^\+(?!\+)/.test(piece))
     .map(strip)
     .filter((piece) => !there(piece) && !inParts(piece));
+}
+
+/**
+ * What the plugin recorded of one task: each file it drafted with the lines added and removed, and each command
+ * it ran with how it ended. Built from the run's drafts and its event log only, never from a report.
+ */
+export function taskFacts(
+  taskId: string,
+  changes: { path: string; taskId: string; original: string | null; proposed: string; status: string }[],
+  events: { type: string; taskId?: string; message?: string; data?: Record<string, unknown> }[],
+): NonNullable<VerifyTask["facts"]> {
+  const count = (text: string) => (text ? text.split("\n").length : 0);
+  const newest = new Map<string, (typeof changes)[number]>();
+  for (const c of changes) if (c.taskId === taskId && c.status !== "rejected" && c.status !== "reverted") newest.set(c.path, c);
+  const drafted = [...newest.values()].map((c) => {
+    if (c.original === null) return `${c.path} (new file, ${count(c.proposed)} lines)`;
+    const before = new Map<string, number>();
+    for (const l of c.original.split("\n")) before.set(l, (before.get(l) ?? 0) + 1);
+    let added = 0;
+    for (const l of c.proposed.split("\n")) {
+      const n = before.get(l) ?? 0;
+      if (n > 0) before.set(l, n - 1);
+      else added++;
+    }
+    const removed = [...before.values()].reduce((a, b) => a + b, 0);
+    return `${c.path} (${added} line(s) added or changed, ${removed} removed or changed)`;
+  });
+  // The last run of each command line is what counts.
+  const last = new Map<string, string>();
+  for (const e of events) {
+    if (e.type !== "command" || e.taskId !== taskId) continue;
+    const line = String(e.data?.command ?? e.message ?? "").replace(/\s+/g, " ").slice(0, 100);
+    if (!line) continue;
+    const d = e.data ?? {};
+    last.set(line, d.timedOut ? "timed out" : d.passed ? "exit code 0" : typeof d.code === "number" ? `failed, exit code ${d.code}` : "did not run");
+  }
+  return { drafted, commands: [...last].map(([line, how]) => `\`${line}\` ${how}`) };
 }
 
 /** ": <first failure line>" of a command's output, for a missing-work item. */
