@@ -251,3 +251,34 @@ describe("run 22: an edit request in a named file is not answered with a request
     expect(namesFile("Lower it by 0.5 degrees, e.g. at night.")).toBe(false);
   });
 });
+
+import { filesNotToChange, isKept } from "../src/context/userRules";
+import { checkToolCall } from "../src/tools/policy";
+
+describe("run 24: a file the user said not to change cannot be drafted (impossible-constraint)", () => {
+  const said = "Make every test in `node test.js` pass, but do not change src/stats.js or test.js.";
+
+  it("reads the files from the user's own words", () => {
+    expect(filesNotToChange(said).sort()).toEqual(["src/stats.js", "test.js"]);
+    expect(filesNotToChange("Fix average() in src/stats.js. Don't touch the tests in test.js!")).toEqual(["test.js"]);
+    expect(filesNotToChange("Rename toCelsius everywhere without changing README.md")).toEqual(["README.md"]);
+    expect(filesNotToChange("Fixa testerna, men ändra inte src/stats.js.")).toEqual(["src/stats.js"]);
+    // The file a request is about, and a rule about something else, are not kept files.
+    expect(filesNotToChange("Change src/stats.js so the tests pass.")).toEqual([]);
+    expect(filesNotToChange("Add toKelvin to src/convert.js. Do not change the behaviour.")).toEqual([]);
+    expect(filesNotToChange("Update README.md. The API must not change. Then fix src/a.js")).toEqual([]);
+  });
+
+  it("refuses the write, also to a bare name in another folder, and leaves other files alone", () => {
+    const keep = filesNotToChange(said);
+    const ctx = { fileScope: ["**"], allowedChecks: [], keep };
+    const denied = checkToolCall({ tool: "replace_in_file", path: "src/stats.js", search: "a", replace: "b" }, ctx);
+    expect(denied.verdict).toBe("deny");
+    expect(denied.verdict === "deny" && denied.reason).toMatch(/user said not to change 'src\/stats\.js'/);
+    expect(checkToolCall({ tool: "write_file", path: "./test.js", content: "x" }, ctx).verdict).toBe("deny");
+    expect(checkToolCall({ tool: "write_file", path: "src/convert.js", content: "x" }, ctx).verdict).toBe("allow");
+    expect(checkToolCall({ tool: "read_file", path: "src/stats.js" }, ctx).verdict).toBe("allow");
+    expect(isKept("lib/test.js", ["test.js"])).toBe(true);
+    expect(isKept("src/stats.json", ["src/stats.js"])).toBe(false);
+  });
+});

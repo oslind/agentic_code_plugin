@@ -2,10 +2,16 @@ import { isHeldTestChange } from "../changes/testGuard";
 import { matchesAny, normalizeWorkspacePath } from "./paths";
 import { ToolCall } from "./protocol";
 import { commandLeavesProject } from "./commandGuard";
+import { isKept } from "../context/userRules";
+
+/** What a sub-agent is told after trying to change a file the user said not to change. */
+export const KEPT_FILE = " It will be refused every time. If the task cannot be done without changing it, call finish and say so plainly: what would have to change in that file, and that the user ruled it out.";
 
 export interface PolicyContext {
   /** Globs the task may write, from its plan entry. */
   fileScope: string[];
+  /** Files the user's own message says not to change (userRules.ts). A write to one is refused, whatever the task says. */
+  keep?: string[];
   /** Names of checks configured by the user. Other commands (run_command) always go to the user or the "Run commands" switch. */
   allowedChecks: string[];
   /** Commands of the allowed checks by name, so a known check can be requested again without asking. */
@@ -341,6 +347,9 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
       if (isProtectedPath(p)) return { verdict: "deny", reason: `'${p}' is protected` };
+      if (ctx.keep?.length && isKept(p, ctx.keep)) {
+        return { verdict: "deny", reason: `The user said not to change '${p}'. That rule comes from the user and no task can lift it.${KEPT_FILE}` };
+      }
       if (!matchesAny(p, ctx.fileScope)) {
         return {
           verdict: "deny",

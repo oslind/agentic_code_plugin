@@ -1,3 +1,4 @@
+import { filesNotToChange } from "../context/userRules";
 import { SkillCatalog } from "../skills/catalog";
 import { promises as fs } from "fs";
 import { importProblems, isTestPath, moduleStyleOf, moduleStyleProblems, projectTestText } from "../changes/moduleStyle";
@@ -272,6 +273,8 @@ export class Orchestrator {
         task,
         context: note,
         checks: this.o.checks,
+        // From the user's own words only: the plan and the task text are model-written.
+        keepFiles: filesNotToChange((await this.o.store.load(this.o.runId)).userRequest ?? ""),
         testCommand: this.o.checks.length ? undefined : await this.testCommand(),
         maxTurns: this.o.maxTurns,
         compactSteps: this.o.compactSteps,
