@@ -6,6 +6,7 @@ import * as path from "path";
 import { execFile } from "child_process";
 import { MORE_SCENARIOS } from "../e2e/scenarios2";
 import { ScenarioRun } from "../e2e/harness";
+import { userRulesOf } from "../src/context/userRules";
 
 async function runOf(files: Record<string, string>, extra: Partial<ScenarioRun> = {}): Promise<ScenarioRun> {
   const ws = await fs.mkdtemp(path.join(os.tmpdir(), "scen-"));
@@ -89,5 +90,29 @@ describe("run 14 follow-up scenarios", () => {
     expect((await s.expect(await runOf(onlyImported))).join(" ")).toMatch(/does not print 'Mode: day'/);
     const wrongRequire = { ...done, "src/index.js": done["src/index.js"]!.replace("const { label }", "const label") };
     expect((await s.expect(await runOf(wrongRequire))).join(" ")).toMatch(/node src\/index\.js fails/);
+  });
+});
+
+describe("scenarios for the user's worded rules", () => {
+  it("only-this-file needs toKelvin in src/convert.js and every other file as it was", async () => {
+    const s = scenario("only-this-file");
+    const good = edit(s.files, "src/convert.js", "module.exports = { toCelsius };", "const toKelvin = (c) => c + 273.15;\nmodule.exports = { toCelsius, toKelvin };");
+    expect(await s.expect(await runOf(good))).toEqual([]);
+    expect(await s.expect(await runOf(edit(good, "test.js", "const tests", "// more\nconst tests")))).toEqual(["test.js was changed against the user's rule"]);
+    expect(await s.expect(await runOf(s.files))).toHaveLength(1);
+  });
+
+  it("no-new-packages needs a working newId() and an untouched package.json", async () => {
+    const s = scenario("no-new-packages");
+    const good = { ...s.files, "src/id.js": "const { randomUUID } = require('crypto');\nmodule.exports = { newId: () => randomUUID() };\n" };
+    expect(await s.expect(await runOf(good))).toEqual([]);
+    expect(await s.expect(await runOf({ ...good, "package.json": '{"name":"thermostat","dependencies":{"uuid":"^9"}}' }))).toEqual(["package.json was changed"]);
+    expect(await s.expect(await runOf({ ...good, "node_modules/uuid/index.js": "" }))).toEqual(["a node_modules folder appeared"]);
+    expect(await s.expect(await runOf(s.files))).toHaveLength(1);
+  });
+
+  it("their prompts set the rules the tools enforce", () => {
+    expect(userRulesOf(scenario("only-this-file").prompts[0]!)).toEqual({ keep: [], only: ["src/convert.js"], noNewPackages: false });
+    expect(userRulesOf(scenario("no-new-packages").prompts[0]!)).toEqual({ keep: [], only: [], noNewPackages: true });
   });
 });

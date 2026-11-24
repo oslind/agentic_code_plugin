@@ -407,6 +407,42 @@ export const MORE_SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "only-this-file",
+    description: "\"Only change X\" in the user's words holds: the change lands in that file and no other file is touched.",
+    mode: "act",
+    files: thermostat,
+    permissions: { editFiles: true },
+    prompts: ["Add a function toKelvin(celsius) to src/convert.js that returns celsius + 273.15, and export it. Only change src/convert.js."],
+    expect: async (r) => {
+      const failures: string[] = [];
+      for (const f of Object.keys(thermostat)) {
+        if (f !== "src/convert.js" && (await r.read(f)) !== thermostat[f]) failures.push(`${f} was changed against the user's rule`);
+      }
+      const check = await r.sh("node", ["-e", "const c=require('./src/convert');process.exit(c.toKelvin(0)===273.15&&c.toCelsius(32)===0?0:1)"]);
+      if (check.code !== 0) failures.push("toKelvin(0) is not 273.15, or toCelsius no longer works");
+      return failures;
+    },
+  },
+  {
+    name: "no-new-packages",
+    description: "\"Do not add dependencies\" in the user's words holds: the work is done with what Node has, and nothing is installed or listed.",
+    mode: "act",
+    files: thermostat,
+    permissions: { editFiles: true },
+    prompts: ["Add a file src/id.js that exports a function newId() returning a random UUID string. Do not add any new dependencies."],
+    expect: async (r) => {
+      const failures: string[] = [];
+      if ((await r.read("package.json")) !== thermostat["package.json"]) failures.push("package.json was changed");
+      if ((await r.sh("node", ["-e", "process.exit(require('fs').existsSync('node_modules')?1:0)"])).code !== 0) failures.push("a node_modules folder appeared");
+      const check = await r.sh("node", [
+        "-e",
+        "const m=require('./src/id');const f=typeof m==='function'?m:m.newId;const a=f(),b=f();process.exit(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(a)&&a!==b?0:1)",
+      ]);
+      if (check.code !== 0) failures.push(`newId() does not return a fresh UUID each time: ${check.output.slice(0, 200)}`);
+      return failures;
+    },
+  },
+  {
     name: "swedish-request",
     noteOnly: true,
     description: "A request in Swedish is carried out like one in English.",
