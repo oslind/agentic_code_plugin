@@ -1,3 +1,4 @@
+import { escapeRegExp } from "../context/outline";
 import { checkCitations, sourcesNote } from "../context/citations";
 import { SkillCatalog } from "../skills/catalog";
 import { planRequest } from "../coordinator/planner";
@@ -802,7 +803,7 @@ export class RunLoop {
           title: t.title,
           status: outcome.blocked.includes(t.id) ? "did not start" : t.status.replace("_", " "),
           text: t.summary ?? (t.error ? `No report: ${t.error}` : ""),
-          files: [...new Set(changes.filter((ch) => ch.taskId === t.id).map((ch) => ch.path))],
+          files: [...new Set(changes.filter((ch) => ch.taskId === t.id && ch.status !== "rejected").map((ch) => ch.path))],
         })),
         drafts: { pending: of("pending"), accepted: of("accepted"), rejected: of("rejected") },
         failedCommands: failedCommandsOf(runScope(c.entries, run.id)),
@@ -826,7 +827,7 @@ export class RunLoop {
       tag: "final reply",
       ...(result.cutOff ? { tone: "warning" as const, cutOff: true } : {}),
       runId: run.id,
-      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withNotVerifiedNotice(withNoChangeNotice(withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))), changes), verification),
+      text: result.cutOff ? `${result.text}\n\n… (cut off here)` : withNotVerifiedNotice(withRejectedNotice(withNoChangeNotice(withDeniedNotice(withoutModelWarnings(result.text), [...this.s.deniedFor(run.id)].filter((d) => question.includes(d))), changes), changes), verification),
       thinking: clip(result.thinking),
     });
     return result.cutOff;
@@ -1019,6 +1020,21 @@ export class RunLoop {
 export function withNoChangeNotice(text: string, changes: { status: string }[]): string {
   if (changes.some((c) => c.status !== "rejected") || !claimsChangeMade(text)) return text;
   return `Nothing in your project was changed in this run: no sub-agent left a draft${changes.length ? " you kept" : ""}, so where the reply below says something was changed, that did not happen.\n\n${text}`;
+}
+
+/**
+ * A final reply that names a file whose only draft the user rejected, without saying it was rejected, starts with
+ * that fact, by rule. Run 27, validate-input: the test.js draft was rejected at review, and the reply still said
+ * "test.js: Adds passing test for 'day' mode".
+ */
+export function withRejectedNotice(text: string, changes: { path: string; status: string }[]): string {
+  const kept = new Set(changes.filter((c) => c.status !== "rejected").map((c) => c.path));
+  const rejected = [...new Set(changes.filter((c) => c.status === "rejected" && !kept.has(c.path)).map((c) => c.path))];
+  if (/\breject/i.test(text)) return text;
+  const named = rejected.filter((p) => new RegExp(`(?<![\\w./-])${escapeRegExp(p)}(?![\\w-])|(?<![\\w./-])${escapeRegExp(p.split("/").pop()!)}(?![\\w-])`).test(text));
+  if (!named.length) return text;
+  const list = named.map((p) => `\`${p}\``).join(", ");
+  return `You rejected the draft of ${list}, so ${named.length === 1 ? "it is" : "they are"} not in your project: where the reply below describes ${named.length === 1 ? "that change" : "those changes"}, ${named.length === 1 ? "it was" : "they were"} not made.\n\n${text}`;
 }
 
 /**

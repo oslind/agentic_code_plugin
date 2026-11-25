@@ -26,3 +26,22 @@ describe("withNotVerifiedNotice (run 17, validate-input)", () => {
     expect(withNotVerifiedNotice(reply, undefined)).toBe(reply);
   });
 });
+
+import { withRejectedNotice } from "../src/chat/runLoop";
+
+describe("withRejectedNotice (run 27, validate-input)", () => {
+  const changes = [
+    { path: "src/thermostat.js", status: "accepted" },
+    { path: "test.js", status: "rejected" },
+  ];
+  it("starts the reply with the fact when it describes a rejected draft", () => {
+    const reply = "targetTemp now throws for unknown modes.\n- test.js: Adds passing test for 'day' mode";
+    expect(withRejectedNotice(reply, changes)).toMatch(/^You rejected the draft of `test\.js`, so it is not in your project/);
+  });
+  it("leaves a reply alone that says it was rejected, or does not name it, or when a later draft was kept", () => {
+    expect(withRejectedNotice("The test.js draft was rejected.", changes)).toBe("The test.js draft was rejected.");
+    expect(withRejectedNotice("targetTemp now throws.", changes)).toBe("targetTemp now throws.");
+    expect(withRejectedNotice("- test.js: adds a test", [...changes, { path: "test.js", status: "accepted" }])).toBe("- test.js: adds a test");
+    expect(withRejectedNotice("- src/test.json changed", changes)).toBe("- src/test.json changed");
+  });
+});
