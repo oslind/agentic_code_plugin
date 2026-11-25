@@ -1346,6 +1346,26 @@ describe("ChatController", () => {
     expect(entries.at(-1)!.text).toMatch(/What the sub-agents did:\n✓ Add model/);
   });
 
+  it("run 26: plans an edit request to a named file when the turn after research fails", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    const { controller, started } = setup(
+      [
+        JSON.stringify({ reply: "I'll have the sub-agents find the mode definitions.", action: "research", request: "src/thermostat.js", goal: "answer", complete: false }),
+        JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "Night mode is 18, the default is 21." } }),
+        "not json",
+        "not json",
+        "not json",
+        plan,
+      ],
+      "act",
+    );
+    await controller.send("Add a section called 'Modes' to README.md that lists each mode with its target temperature.");
+    expect(started).toHaveLength(1);
+    const entries = (await controller.state()).current!.entries;
+    expect(entries.some((e) => e.kind === "plan")).toBe(true);
+    expect(entries.some((e) => /answered by research/.test(e.text))).toBe(false);
+  });
+
   describe("digging deeper after a first research round (Oskar's log)", () => {
     const report = (summary: string) => JSON.stringify({ thought: "Done.", call: { tool: "finish", summary } });
     const firstRound = [

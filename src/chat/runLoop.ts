@@ -9,7 +9,7 @@ import { ConversationStore } from "./conversationStore";
 import { untrustedSection } from "../context/untrusted";
 import { CutOff, describeCutOff, failedCommandsOf, ResearchReport, summarizeRun, synthesizeFindings, withDeniedNotice, withoutModelWarnings } from "./synthesis";
 import { compactConversation, compactionNote, planCompaction } from "./compaction";
-import { asksForEdit, claimsChangeMade, continueChange, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
+import { asksForEdit, claimsChangeMade, continueChange, namesFile, coordinatorHistoryBudget, coordinatorTurn, CoordinatorResult, isReadOnlyPlan, isGoAhead, researchQuestions, researchRoundLimit } from "./coordinatorChat";
 import { WorkspaceSandbox } from "../tools/sandbox";
 import { Worker } from "../worker/worker";
 import { AnswerCheck, Verification, verifyRoundLimit } from "../coordinator/verify";
@@ -393,6 +393,14 @@ export class RunLoop {
       } else if (turn.action === "none" && turn.goal !== "change" && ((await askedFiles()) || tooMany)) {
         // A question about many files is never answered from memory: the files are read first.
         await doResearch({ ...turn, action: "research", questions: [] });
+      }
+      // Run 26, readme-section pass 3: "Add a section called 'Modes' to README.md …" was researched twice (goal
+      // "answer" both times), no turn after the last round turned it into a plan, and the request ended as a research
+      // answer with nothing drafted. An edit request that names a file is not finished by research: plan it, unless
+      // the coordinator's last reply asks the user something.
+      if (researchRuns.length && !planned && !abort.signal.aborted && asksForEdit(text) && namesFile(text) && !draft?.reply.includes("?")) {
+        this.host.log("info", "The request asks for a change to a named file and research changed nothing, so the change is planned now.");
+        await makePlan({ ...turn, action: "plan", goal: "change", request: `${(userRequest ?? text).trim()}${draft?.reply ? `\n\n${draft.reply.trim()}` : ""}`.slice(0, 3000) }, true);
       }
       if (researchRuns.length && !planned) {
         // Before the answer goes out, the coordinator checks that it answers the question, and sends
