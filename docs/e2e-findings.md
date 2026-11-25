@@ -479,7 +479,7 @@ First live run of the guards listed under "Reliability work after run 24", plus 
 - only-this-file p3, **false "verified"**: `module.exports = { toCelsius }` became a single default export of toKelvin, so toCelsius was gone for index.js and test.js. No other file was touched; the rule was not tested by the model.
 - Citations: many quoted lines that are in the files were counted as not found: two citations on one report line, a full stop after the code, an explanation after it. Researchers then argued with the check in their next turn. Real misses were wrong line content and prose given as code.
 - Facts: "Files it drafted" was in every final verification prompt. Tasks whose file a later fix-up redrafted were shown as "drafted no file", next to reports that said they drafted it.
-- Rules: impossible-constraint refused writes to the kept files (p2 1, p3 4) and no kept file was drafted. only-this-file and no-new-packages never tried a forbidden step, so those rules were not exercised.
+- Rules: impossible-constraint refused writes to the kept files (p2 1, p3 5) and no kept file was drafted. only-this-file and no-new-packages never tried a forbidden step, so those rules were not exercised.
 
 Fixes (not run live): citations are read one per `path:line:` even several on a line, and a whole line of the file followed by punctuation or words counts as found (src/context/citations.ts); a draft a later task built on still counts for the task that drafted it first (taskFacts reads combinedWith); a draft of an existing JavaScript file that drops an export the user's words do not name is a draft problem, which verification cannot call done (lostExports in src/changes/moduleStyle.ts).
 
