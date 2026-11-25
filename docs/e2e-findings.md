@@ -470,6 +470,19 @@ Runs 21 to 24 on nearly the same code gave 47, 50 of 50, and 47 of 51: the diffe
 - One wrong detail in a passing run: impossible-constraint pass 3 swapped the numbers in its answer (said the test expects 30 and gets 20; it expects 20 and gets 30). The diagnosis and conclusion were right. Pass 1 said the reports conflict on this.
 - This commit does not have the guards listed in the next section; they are still not run live.
 
+## Run 26: 11 guard scenarios x3 on c90a308, 30 of 33 (2026-11-25)
+
+First live run of the guards listed under "Reliability work after run 24", plus two new scenarios (only-this-file, no-new-packages). Pass 1 11/11, pass 2 10/11, pass 3 9/11.
+
+- new-module-used p2: ended partial and said so (format.js export style, a fix-up not accepted). Honest; it has failed this way before (runs 21, 22).
+- readme-section p3: the edit request ended as a research answer and nothing was drafted, though the answer said "I'll add the 'Modes' section". The citation check had flagged `src/thermostat.js:4` as not found, and the answer left out the 21 degree default.
+- only-this-file p3, **false "verified"**: `module.exports = { toCelsius }` became a single default export of toKelvin, so toCelsius was gone for index.js and test.js. No other file was touched; the rule was not tested by the model.
+- Citations: many quoted lines that are in the files were counted as not found: two citations on one report line, a full stop after the code, an explanation after it. Researchers then argued with the check in their next turn. Real misses were wrong line content and prose given as code.
+- Facts: "Files it drafted" was in every final verification prompt. Tasks whose file a later fix-up redrafted were shown as "drafted no file", next to reports that said they drafted it.
+- Rules: impossible-constraint refused writes to the kept files (p2 1, p3 4) and no kept file was drafted. only-this-file and no-new-packages never tried a forbidden step, so those rules were not exercised.
+
+Fixes (not run live): citations are read one per `path:line:` even several on a line, and a whole line of the file followed by punctuation or words counts as found (src/context/citations.ts); a draft a later task built on still counts for the task that drafted it first (taskFacts reads combinedWith); a draft of an existing JavaScript file that drops an export the user's words do not name is a draft problem, which verification cannot call done (lostExports in src/changes/moduleStyle.ts).
+
 ## Reliability work after run 24 (2026-11-24, not run live yet)
 
 Oskar's decision: nothing a model writes counts as evidence; what the extension recorded or can look up does. Built so far, each with unit tests:

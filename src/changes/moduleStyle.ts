@@ -198,6 +198,35 @@ export async function importProblems(changes: { path: string; proposed: string }
   return problems;
 }
 
+/** The names a JavaScript module exports, as far as they can be read from its text. */
+export function exportedNames(text: string): string[] {
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const names = new Set<string>();
+  for (const m of code.matchAll(/\b(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=/g)) names.add(m[1]!);
+  for (const m of code.matchAll(/^\s*export\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)) names.add(m[1]!);
+  for (const m of code.matchAll(/^\s*export\s*\{([^{}]*)\}/gm)) for (const p of m[1]!.split(",")) names.add(p.trim().split(/\s+as\s+/).pop()!.trim());
+  for (const m of [...code.matchAll(/\bmodule\.exports\s*=\s*\{([^{}]*)\}/g), ...code.matchAll(/\bObject\.assign\s*\(\s*(?:module\.)?exports\s*,\s*\{([^{}]*)\}/g)]) {
+    for (const p of m[1]!.split(",")) names.add(p.split(":")[0]!.trim().replace(/\(.*$/s, "").replace(/^async\s+/, ""));
+  }
+  return [...names].filter((n) => /^[A-Za-z_$][\w$]*$/.test(n) && n !== "default");
+}
+
+/**
+ * Names a draft of an existing JavaScript file no longer exports, when the user's words do not name them. Run 26,
+ * only-this-file: "Add toKelvin to src/convert.js and export it" became module.exports = toKelvin, so toCelsius was
+ * gone for index.js and test.js, and verification called it done.
+ */
+export function lostExports(changes: { path: string; original: string | null; proposed: string }[], userWords: string): string[] {
+  const problems: string[] = [];
+  for (const c of changes) {
+    if (c.original === null || !/\.(c|m)?js$/i.test(c.path)) continue;
+    const lost = exportedNames(c.original).filter((n) => exportsProperty(c.proposed, n) === false && !new RegExp(`(?<![\\w$])${n.replace(/\$/g, "\\$")}(?![\\w$])`).test(userWords));
+    if (!lost.length) continue;
+    problems.push(`${c.path} no longer exports ${lost.join(", ")}, which it exported before and the request does not ask to remove, so any file that takes ${lost.length === 1 ? "it" : "them"} from ${c.path} now gets undefined. Keep the old exports and add the new one next to them.`);
+  }
+  return problems;
+}
+
 /** The problem lines inside a draftsForReview() text, if any. */
 export function draftProblemsOf(drafts: string): string[] {
   const at = drafts.lastIndexOf(DRAFT_PROBLEMS_HEADING);

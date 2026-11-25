@@ -377,3 +377,26 @@ describe("more of the user's worded rules are enforced where the tools run", () 
     expect(checkToolCall({ tool: "run_command", command: "npm test", reason: "tests" }, ctx).verdict).toBe("ask");
   });
 });
+
+import { exportedNames, lostExports } from "../src/changes/moduleStyle";
+
+describe("run 26: guards that read what the plugin recorded", () => {
+  it("counts a draft a later task built on for the task that drafted it first", () => {
+    const changes = [{ path: "src/format.js", taskId: "fix", combinedWith: ["t1"], original: null, proposed: "a\nb", status: "pending" }];
+    expect(taskFacts("t1", changes, []).drafted).toEqual(["src/format.js (new file, 2 lines, the same draft as a later task's, which built on it)"]);
+    expect(taskFacts("fix", changes, []).drafted).toEqual(["src/format.js (new file, 2 lines)"]);
+  });
+
+  it("notices a draft that drops an export the request did not ask to remove", () => {
+    const original = "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\n\nmodule.exports = { toCelsius };\n";
+    expect(exportedNames(original)).toEqual(["toCelsius"]);
+    expect(exportedNames("export function a() {}\nexport const b = 1;\nexports.c = 2;\nexport { d as e };\nmodule.exports = { f, g: h };")).toEqual(["c", "a", "b", "e", "f", "g"]);
+    const dropped = { path: "src/convert.js", original, proposed: original.replace("module.exports = { toCelsius };", "module.exports = function toKelvin(c) { return c + 273.15; };") };
+    const kept = { ...dropped, proposed: original.replace("{ toCelsius }", "{ toCelsius, toKelvin }") };
+    const ask = "Add a function toKelvin(celsius) to src/convert.js that returns celsius + 273.15, and export it. Only change src/convert.js.";
+    expect(lostExports([dropped], ask)).toEqual([expect.stringMatching(/^src\/convert\.js no longer exports toCelsius, which it exported before/)]);
+    expect(lostExports([kept], ask)).toEqual([]);
+    expect(lostExports([dropped], "Remove toCelsius from the exports.")).toEqual([]);
+    expect(lostExports([{ ...dropped, original: null }], ask)).toEqual([]);
+  });
+});

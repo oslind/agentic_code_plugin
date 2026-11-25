@@ -44,3 +44,22 @@ describe("sources of research findings are looked up by code", () => {
     expect(sourcesNote([await checkCitations("The default is 21.", read)])).toBeUndefined();
   });
 });
+
+describe("run 26: real lines quoted in the ways researchers wrote them are found", () => {
+  it("reads two citations on one line, and accepts a full stop or an explanation after the code", async () => {
+    const report = [
+      "Default and modes: src/thermostat.js:1: const DEFAULT_TARGET = 21; src/thermostat.js:2: function targetTemp(mode) {",
+      "src/thermostat.js:1: const DEFAULT_TARGET = 21;.",
+      "src/stats.js:4: return sum / 2; (the average function likely divides by the wrong count)",
+      "test.js:15: Custom test runner using Node.js assert module.",
+      "src/stats.js:4: return sum / 2 + 1;",
+    ].join("\n");
+    expect(citationsIn(report).slice(0, 2)).toEqual([
+      { path: "src/thermostat.js", line: 1, quote: "const DEFAULT_TARGET = 21;" },
+      { path: "src/thermostat.js", line: 2, quote: "function targetTemp(mode) {" },
+    ]);
+    const check = await checkCitations(report, async (p) => (p === "test.js" ? "const assert = require('assert');\n" : files[p]));
+    expect(check.found).toHaveLength(4);
+    expect(check.missing.map((c) => c.quote)).toEqual(["Custom test runner using Node.js assert module.", "return sum / 2 + 1;"]);
+  });
+});

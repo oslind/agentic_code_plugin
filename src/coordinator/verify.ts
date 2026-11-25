@@ -355,14 +355,18 @@ export function notInDrafts(found: string, drafts: string): string[] {
  */
 export function taskFacts(
   taskId: string,
-  changes: { path: string; taskId: string; original: string | null; proposed: string; status: string }[],
+  changes: { path: string; taskId: string; original: string | null; proposed: string; status: string; combinedWith?: string[] }[],
   events: { type: string; taskId?: string; message?: string; data?: Record<string, unknown> }[],
 ): NonNullable<VerifyTask["facts"]> {
   const count = (text: string) => (text ? text.split("\n").length : 0);
   const newest = new Map<string, (typeof changes)[number]>();
-  for (const c of changes) if (c.taskId === taskId && c.status !== "rejected" && c.status !== "reverted") newest.set(c.path, c);
+  // A later task that drafts the same file replaces the record and keeps this task in combinedWith (run 26: a
+  // task whose file a fix-up redrafted was shown as "drafted no file", next to a report that said it had).
+  const mine = (c: (typeof changes)[number]) => c.taskId === taskId || (c.combinedWith ?? []).includes(taskId);
+  for (const c of changes) if (mine(c) && c.status !== "rejected" && c.status !== "reverted") newest.set(c.path, c);
   const drafted = [...newest.values()].map((c) => {
-    if (c.original === null) return `${c.path} (new file, ${count(c.proposed)} lines)`;
+    const later = c.taskId !== taskId ? ", the same draft as a later task's, which built on it" : "";
+    if (c.original === null) return `${c.path} (new file, ${count(c.proposed)} lines${later})`;
     const before = new Map<string, number>();
     for (const l of c.original.split("\n")) before.set(l, (before.get(l) ?? 0) + 1);
     let added = 0;
@@ -372,7 +376,7 @@ export function taskFacts(
       else added++;
     }
     const removed = [...before.values()].reduce((a, b) => a + b, 0);
-    return `${c.path} (${added} line(s) added or changed, ${removed} removed or changed)`;
+    return `${c.path} (${added} line(s) added or changed, ${removed} removed or changed${later})`;
   });
   // The last run of each command line is what counts.
   const last = new Map<string, string>();

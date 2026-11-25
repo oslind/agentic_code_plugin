@@ -29,10 +29,20 @@ function quoteOf(rest: string): string {
   return (ticks[0] ?? rest).trim().replace(/^["'“”]+|["'“”]+$/g, "").trim();
 }
 
-/** Every `path:line: code` (also "path (line 9): code") in a report, one per line of the report. */
+/** Where a citation starts: a file name followed by ":9" or " (line 9)". */
+const START = /(?:^|[\s(`"'*>-])`?(?:[\w.-]+[\\/])*[\w-]+(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,5}`?(?::|\s*,?\s*\(?\s*lines?\s+)\d{1,6}/g;
+
+/** A line of a report cut where each citation starts, so two citations on one line are read as two (run 26). */
+function pieces(line: string): string[] {
+  const starts = [...line.matchAll(START)].map((m) => m.index!);
+  if (starts.length < 2) return [line];
+  return starts.map((at, i) => line.slice(at, starts[i + 1]).trim());
+}
+
+/** Every `path:line: code` (also "path (line 9): code") in a report, also several on one line. */
 export function citationsIn(report: string): Citation[] {
   const out: Citation[] = [];
-  for (const raw of report.split("\n")) {
+  for (const raw of report.split("\n").flatMap((l) => pieces(l.trim()))) {
     const m = CITED.exec(raw.trim());
     if (!m) continue;
     const quote = quoteOf(m[3]!);
@@ -48,14 +58,36 @@ export function citationsIn(report: string): Citation[] {
  * finding: small models count lines badly, and the code being in the file is what matters.
  */
 export async function checkCitations(report: string, read: (path: string) => Promise<string | undefined>): Promise<CitationCheck> {
-  const files = new Map<string, string | undefined>();
+  const files = new Map<string, Source | undefined>();
   const result: CitationCheck = { found: [], missing: [] };
   for (const c of citationsIn(report)) {
-    if (!files.has(c.path)) files.set(c.path, await read(c.path).then((t) => (t === undefined ? undefined : squeeze(t)), () => undefined));
-    const text = files.get(c.path);
-    (text !== undefined && text.includes(squeeze(c.quote)) ? result.found : result.missing).push(c);
+    if (!files.has(c.path)) files.set(c.path, await read(c.path).then(sourceOf, () => undefined));
+    const file = files.get(c.path);
+    (file !== undefined && quoted(file, c.quote) ? result.found : result.missing).push(c);
   }
   return result;
+}
+
+interface Source {
+  /** The whole file without white space. */
+  all: string;
+  /** Each line of it without white space. */
+  lines: string[];
+}
+
+const sourceOf = (t: string | undefined): Source | undefined => (t === undefined ? undefined : { all: squeeze(t), lines: t.split("\n").map(squeeze) });
+
+/**
+ * Whether a quote is code from the file: part of the file, or a whole line of it with words added after it (a
+ * full stop, "(the average is wrong)"). Run 26: `const DEFAULT_TARGET = 21;.` and `return sum / 2; (the average
+ * function …)` were real lines reported as not found, and the researchers argued with the check.
+ */
+function quoted(file: Source, quote: string): boolean {
+  const q = squeeze(quote);
+  if (file.all.includes(q)) return true;
+  const trimmed = q.replace(/[.,:;!?]+$/, "");
+  if (trimmed.length >= 6 && file.all.includes(trimmed)) return true;
+  return file.lines.some((l) => l.length >= 6 && q.startsWith(l));
 }
 
 const show = (c: Citation) => `${c.path}:${c.line}: ${c.quote.replace(/\s+/g, " ").slice(0, 100)}`;
