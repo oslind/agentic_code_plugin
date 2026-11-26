@@ -441,3 +441,22 @@ describe("run 28: a not_done verdict with every part met and only an old failure
     expect(v.verified).toBe(false);
   });
 });
+
+import { droppedImports } from "../src/changes/moduleStyle";
+
+describe("run 29: a draft that drops an import it still uses names the line to put back", () => {
+  const original = "const { targetTemp } = require('./thermostat');\nconst { toCelsius } = require('./convert');\n\nconsole.log(`Target: ${targetTemp(process.argv[2])} C (${toCelsius(70).toFixed(1)} C is 70 F)`);\n";
+  it("finds targetTemp used and no longer imported", () => {
+    const proposed = "const { fahrenheitToCelsius } = require('./convert');\n\nconsole.log(`Target: ${targetTemp(process.argv[2])} C (${fahrenheitToCelsius(70).toFixed(1)} C is 70 F)`);\n";
+    expect(droppedImports([{ path: "src/index.js", original, proposed }])).toEqual([
+      "src/index.js still uses targetTemp but no longer imports it, so it throws \"targetTemp is not defined\". The original file had: const { targetTemp } = require('./thermostat'); Put that back (with any rename the request asks for).",
+    ]);
+  });
+  it("leaves a correct rename, a removed use, an ES import and a parameter alone", () => {
+    const renamed = original.replace(/toCelsius/g, "fahrenheitToCelsius");
+    expect(droppedImports([{ path: "src/index.js", original, proposed: renamed }])).toEqual([]);
+    expect(droppedImports([{ path: "src/index.js", original, proposed: "const { toCelsius } = require('./convert');\nconsole.log(toCelsius(70));\n" }])).toEqual([]);
+    expect(droppedImports([{ path: "a.mjs", original: "import { x } from './x.js';\nx();\n", proposed: "import { x as x } from './y.js';\nx();\n" }])).toEqual([]);
+    expect(droppedImports([{ path: "a.js", original: "const x = require('./x');\nx();\n", proposed: "function run(x) { x(); }\n" }])).toEqual([]);
+  });
+});

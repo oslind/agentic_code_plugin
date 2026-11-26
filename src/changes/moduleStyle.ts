@@ -250,6 +250,48 @@ export function changedExportShape(changes: { path: string; original: string | n
   return problems;
 }
 
+/**
+ * Names a draft of an existing JavaScript file still uses after it dropped the line that brought them in. Run 29,
+ * rename-everywhere: renaming toCelsius in src/index.js lost `const { targetTemp } = require('./thermostat');`,
+ * the program crashed with "targetTemp is not defined", and two fix-up rounds worked on the rename and the exports
+ * instead of that line. The problem names the line to put back.
+ */
+export function droppedImports(changes: { path: string; original: string | null; proposed: string }[]): string[] {
+  const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const problems: string[] = [];
+  for (const c of changes) {
+    if (c.original === null || !/\.(c|m)?js$/i.test(c.path)) continue;
+    const before = strip(c.original);
+    const now = strip(c.proposed);
+    const lines = before.split("\n");
+    const imported: { name: string; line: string }[] = [];
+    for (const line of lines) {
+      const req = /^\s*(?:const|let|var)\s*(?:\{([^{}]*)\}|([A-Za-z_$][\w$]*))\s*=\s*require\(/.exec(line);
+      const imp = /^\s*import\s+(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\{([^{}]*)\})?\s*from\s/.exec(line);
+      const names = req
+        ? req[1] !== undefined
+          ? req[1].split(",").map((p) => (p.includes(":") ? p.split(":")[1]! : p).trim())
+          : [req[2]!]
+        : imp
+          ? [imp[1] ?? "", ...(imp[2] ?? "").split(",").map((p) => p.trim().split(/\s+as\s+/).pop()!.trim())]
+          : [];
+      for (const n of names) if (/^[A-Za-z_$][\w$]*$/.test(n)) imported.push({ name: n, line: line.trim() });
+    }
+    const lost = imported.filter(({ name }) => {
+      const n = name.replace(/\$/g, "\\$");
+      const used = new RegExp(`(?<![\\w$.])${n}(?![\\w$])`).test(now);
+      const bound =
+        new RegExp(`\\b(?:const|let|var|function\\*?|class)\\s+${n}(?![\\w$])`).test(now) ||
+        new RegExp(`(?:const|let|var)\\s*\\{[^{}]*(?<![\\w$])${n}(?![\\w$])[^{}]*\\}\\s*=`).test(now) ||
+        new RegExp(`^\\s*import\\b[^\\n]*(?<![\\w$])${n}(?![\\w$])`, "m").test(now) ||
+        new RegExp(`\\(\\s*[^)]*(?<![\\w$])${n}(?![\\w$])[^)]*\\)\\s*(?:=>|\\{)`).test(now);
+      return used && !bound;
+    });
+    for (const l of lost) problems.push(`${c.path} still uses ${l.name} but no longer imports it, so it throws "${l.name} is not defined". The original file had: ${l.line} Put that back (with any rename the request asks for).`);
+  }
+  return problems;
+}
+
 /** The problem lines inside a draftsForReview() text, if any. */
 export function draftProblemsOf(drafts: string): string[] {
   const at = drafts.lastIndexOf(DRAFT_PROBLEMS_HEADING);

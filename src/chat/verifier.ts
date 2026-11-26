@@ -1,7 +1,7 @@
 import { toPlainText } from "../checks/terminalText";
 import { planRequest } from "../coordinator/planner";
 import { RunOutcome } from "../coordinator/orchestrator";
-import { changedExportShape, importProblems, isTestPath, lostExports, moduleStyleOf, projectTestText } from "../changes/moduleStyle";
+import { changedExportShape, droppedImports, importProblems, isTestPath, lostExports, moduleStyleOf, projectTestText } from "../changes/moduleStyle";
 import { escapeRegExp } from "../context/outline";
 import { OverlayFiles, pendingBase } from "../changes/overlay";
 import { WorkspaceSandbox } from "../tools/sandbox";
@@ -267,7 +267,7 @@ export class Verifier {
       userMessages: userMessagesOf(runScope(c.entries, runId)),
       request: run.request,
       tasks,
-      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? []), said, [...(await this.renameLeftovers(workspaceRoot, run.changes ?? [], said, newest)), ...(await this.importProblems(workspaceRoot, run.changes ?? [], newest)), ...lostExports([...newest.values()], said), ...changedExportShape([...newest.values()], said)]),
+      drafts: draftsForReview([...newest.values()], undefined, await moduleStyleOf(workspaceRoot), await this.testText(workspaceRoot, run.changes ?? []), said, [...(await this.renameLeftovers(workspaceRoot, run.changes ?? [], said, newest)), ...(await this.importProblems(workspaceRoot, run.changes ?? [], newest)), ...lostExports([...newest.values()], said), ...changedExportShape([...newest.values()], said), ...droppedImports([...newest.values()])]),
       checks: results,
       round,
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),

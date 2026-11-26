@@ -483,6 +483,8 @@ Pass 1 13/15, pass 2 15/15, pass 3 12/15. One false "verified" (only-this-file p
 ## Between runs 28 and 29 (2026-11-26, not run live)
 
 - Run 28 pass 1, only-this-file: "export it" became `module.exports = toKelvin; module.exports.toCelsius = toCelsius`, so `require(...).toKelvin` was undefined and verification called it done. A draft that turns a module exporting an object of names into a single export, when the user's words do not ask for that, is now a draft problem (changedExportShape).
+- Run 29 (in progress) rename-everywhere: renaming in src/index.js lost `const { targetTemp } = require('./thermostat');`; verification named the crash, but both fix-up rounds worked on the rename and exports (one switched convert.js to a default export and back) and the line stayed missing. A draft that still uses a name it no longer imports is now a draft problem naming the original line to put back (droppedImports).
+- Run 29 python-project: a sub-agent's `python3 -m unittest tests/test_calc.py` (a path as a module name) failed with and without the drafts in different words, was counted as caused by the drafts, and overrode a done verdict while the saved check passed. A failure whose output says the command line itself is wrong (unrecognized argument, usage, a path as a module, not installed) is no longer blamed on the drafts (misusedCommand).
 - Oskar asked that the coordinator run the complete test suite when the software was modified. When no checks are saved and something was drafted, verification now runs the project's own test command (found like suggested checks) with and without the drafts, next to the changed program. The approval is asked once per run.
 
 ## Run 27: all 53 on c90a308, 50 passed, 431.3 min (2026-11-25)
