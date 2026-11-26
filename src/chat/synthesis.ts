@@ -210,6 +210,8 @@ export interface FailedCommand {
   line: string;
   by?: string;
   output: string;
+  /** Its output on the project without the run's drafts, when verification ran it there. */
+  before?: string;
 }
 
 /**

@@ -10,6 +10,7 @@ import { TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
 import { CheckConfig, CheckResult, checkStatus, runAllChecks } from "../checks/runner";
 import { detectChecks } from "../checks/detect";
+import { Cause, diagnose, diagnosisNote } from "../coordinator/diagnose";
 import { isCheckAutoApproved } from "../tools/policy";
 import { COMMAND_RISK } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
@@ -286,6 +287,12 @@ export class Verifier {
     }
     // By rule, not from the model: the final reply then has the real output in front of it.
     v = { ...v, evidence: `${v.evidence}${printedEvidence(ctx.programOutputs)}` };
+    // What the drafts broke, with the output with and without them: the diagnosis before a fix-up works from this.
+    const broken = [
+      ...(ctx.failedCommands ?? []).map((f) => ({ line: f.line, output: f.output, before: f.before })),
+      ...results.filter((r) => !r.passed && !r.skipped && r.failedBefore === "new").map((r) => ({ line: checks.find((k) => k.name === r.name)?.command ?? r.name, output: r.output })),
+    ];
+    if (!v.verified && broken.length) v = { ...v, broken };
     signal.throwIfAborted();
     this.host.log("info", `Verification ${round + 1}: ${v.verified ? "verified" : "not verified"}.${v.adjusted ? ` ${v.adjusted}` : ""}`);
     const left = v.missing.length ? `\n\nStill left:\n${v.missing.map((m) => `- ${m}`).join("\n")}` : "";
@@ -560,7 +567,7 @@ export class Verifier {
         const tail = withAssertNotes(output.trim()).split("\n").slice(-8).join("\n");
         // A Node crash prints its error above the stack trace, which the last 8 lines leave out (run 16, new-module-used).
         const thrown = /^\s*(?:Uncaught\s+)?\w*Error\b.*$/m.exec(output)?.[0]?.trim();
-        let shown = { ...f, output: thrown && !tail.includes(thrown) ? `${thrown}\n…\n${tail}` : tail };
+        let shown: FailedCommand = { ...f, output: thrown && !tail.includes(thrown) ? `${thrown}\n…\n${tail}` : tail, ...(b && !b.skipped ? { before: b.passed ? "" : b.output } : {}) };
         if (verdict === "new" && b && !b.passed) {
           // Both kinds in one output: said by rule which failure is new, so the old one is not blamed on the drafts.
           const split = splitFailures(output, b);
@@ -602,6 +609,38 @@ export class Verifier {
     return true;
   }
 
+  /**
+   * When the drafts broke a command or check, one investigator call reads its output with and without the drafts
+   * and the diff of every draft, and names the changed line that causes it (quote checked by code). Returns the note
+   * for the fix-up planner, or "" when there is nothing broken or no cause was found.
+   */
+  private async diagnoseBroken(conversationId: string, workspaceRoot: string, runId: string, v: Verification, userRequest: string | undefined, signal: AbortSignal): Promise<string> {
+    if (!v.broken?.length || this.s.budget.exhausted(runId)) return "";
+    const run = await this.tasks.load(runId);
+    const newest = new Map<string, PendingChange>();
+    for (const ch of run.changes ?? []) if (ch.status !== "rejected" && ch.status !== "reverted") newest.set(ch.path, ch);
+    const files = [...newest.values()].map((c) => ({ path: c.path, original: c.original, proposed: c.proposed }));
+    this.s.busy = "Coordinator is finding out what the drafts broke…";
+    this.s.changed();
+    let causes: Cause[];
+    try {
+      causes = await diagnose(this.s.coordinatorProvider(workspaceRoot, runId), { userWords: userRequest, broken: v.broken, files }, { signal });
+    } catch (err) {
+      if (signal.aborted) throw err;
+      this.host.log("warn", `The diagnosis before the fix-up failed: ${(err as Error).message}`);
+      return "";
+    }
+    this.host.log("info", `Diagnosis before the fix-up: ${causes.length ? causes.map((c) => `${c.path}: ${c.quote.trim().slice(0, 80)}`).join("; ") : "no cause found in the diffs"}.`);
+    if (!causes.length) return "";
+    await this.s.append(conversationId, {
+      author: "coordinator",
+      runId,
+      tag: "diagnosis",
+      text: `I compared the failing output with and without the drafts and read what changed. The cause:\n${causes.map((c) => `- ${c.path}: \`${c.quote.trim().slice(0, 160)}\` ${c.removed ? "was removed" : "was added or changed"}. ${c.why.trim()} Fix: ${c.fix.trim()}`).join("\n")}`,
+    });
+    return diagnosisNote(causes, v.broken);
+  }
+
   /** Plans fix-up tasks for what verification found left, and adds them to the run. Returns the tasks added. */
   async planFixUp(conversationId: string, workspaceRoot: string, runId: string, v: Verification, round: number, signal: AbortSignal): Promise<Task[]> {
     this.s.busy = "Coordinator is planning what is left…";
@@ -616,11 +655,12 @@ export class Verifier {
     });
     // The user's own words are the instruction; the coordinator's model-written request only goes along fenced.
     const userRequest = userRequestOf(run, (await this.conversations.load(conversationId)).entries);
+    const diagnosis = await this.diagnoseBroken(conversationId, workspaceRoot, runId, v, userRequest, signal);
     let result;
     try {
       result = await planRequest(
         this.s.coordinatorProvider(workspaceRoot, runId),
-        { request: fixUpRequest(userRequest, round, v.missing.length), planned: run.request, fileTree, learned: fixUpNotes(v, v.checks ?? [], reports), maxTasks: Math.min(4, Math.max(1, v.missing.length), this.host.delegationLimits().maxTasks), skills: await this.host.skills?.(workspaceRoot).catch(() => undefined) },
+        { request: fixUpRequest(userRequest, round, v.missing.length, !!diagnosis), planned: run.request, fileTree, learned: [diagnosis, fixUpNotes(v, v.checks ?? [], reports)].filter(Boolean).join("\n\n"), maxTasks: Math.min(4, Math.max(1, v.missing.length), this.host.delegationLimits().maxTasks), skills: await this.host.skills?.(workspaceRoot).catch(() => undefined) },
         { signal, onAttempt: (n, err) => n > 0 && this.host.log("warn", `Fix-up plan retry ${n}: ${err}`) },
       );
     } catch (err) {
