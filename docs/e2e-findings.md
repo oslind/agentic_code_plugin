@@ -470,6 +470,16 @@ Runs 21 to 24 on nearly the same code gave 47, 50 of 50, and 47 of 51: the diffe
 - One wrong detail in a passing run: impossible-constraint pass 3 swapped the numbers in its answer (said the test expects 30 and gets 20; it expects 20 and gets 30). The diagnosis and conclusion were right. Pass 1 said the reports conflict on this.
 - This commit does not have the guards listed in the next section; they are still not run live.
 
+## Run 28: 15 scenarios x3 on f03d85e, 40 of 45 (2026-11-25/26)
+
+Pass 1 13/15, pass 2 15/15, pass 3 12/15. One false "verified" (only-this-file p1, export shape; fixed in 4f67d55 before run 29). Gates: 186 allowed, 9 held test changes accepted, 1 rejected, nothing changed on disk before review.
+
+- validate-input p1: "no mode" read as the string 'no mode' again (runs 21 and others). Honest: not verified. Open (model error).
+- remove-export p3 and rename-then-run-tests p3: every part met, the only failure was the old average-of-three test (checked without the drafts), but the verdict was not_done with nothing missing, so manual review. Fixed by rule (f4b9eda): that is done, with the old failure named.
+- typo-please-correct p3: a researcher misread "controler" as "controller"; the reply after research said "no spelling errors. Is there a specific word …?", and the question held back the plan though the user never saw it; later reports found the typo, and the request ended as a research answer. Fixed: an edit request naming a file is planned after research whatever that reply asks, from the user's own words.
+- Citations: found in most reports. Checker misses left: a path without its folder (`thermostat.js:4`) and written-out line breaks glued onto paths (`function./n/nsrc/thermostat.js:4`); both fixed (f4b9eda). Real misses: paraphrases ("line 5: returns sum/2").
+- "no longer exports", "the change is planned now" and the rejected-draft notice did not fire in any pass.
+
 ## Between runs 28 and 29 (2026-11-26, not run live)
 
 - Run 28 pass 1, only-this-file: "export it" became `module.exports = toKelvin; module.exports.toCelsius = toCelsius`, so `require(...).toKelvin` was undefined and verification called it done. A draft that turns a module exporting an object of names into a single export, when the user's words do not ask for that, is now a draft problem (changedExportShape).

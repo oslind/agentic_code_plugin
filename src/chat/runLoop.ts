@@ -397,11 +397,14 @@ export class RunLoop {
       }
       // Run 26, readme-section pass 3: "Add a section called 'Modes' to README.md …" was researched twice (goal
       // "answer" both times), no turn after the last round turned it into a plan, and the request ended as a research
-      // answer with nothing drafted. An edit request that names a file is not finished by research: plan it, unless
-      // the coordinator's last reply asks the user something.
-      if (researchRuns.length && !planned && !abort.signal.aborted && asksForEdit(text) && namesFile(text) && !draft?.reply.includes("?")) {
+      // answer with nothing drafted. An edit request that names a file is not finished by research: plan it.
+      // Run 28, typo-please-correct pass 3: a researcher misread "controler" as "controller", the reply after research
+      // said "no spelling errors. Is there a specific word you were referring to?", and that question held the plan
+      // back. It never reached the user (the answer is written from the reports), and later reports found the typo.
+      // The planner gets the user's own words and what research found, not that reply; the drafts wait for review.
+      if (researchRuns.length && !planned && !abort.signal.aborted && asksForEdit(text) && namesFile(text)) {
         this.host.log("info", "The request asks for a change to a named file and research changed nothing, so the change is planned now.");
-        await makePlan({ ...turn, action: "plan", goal: "change", request: `${(userRequest ?? text).trim()}${draft?.reply ? `\n\n${draft.reply.trim()}` : ""}`.slice(0, 3000) }, true);
+        await makePlan({ ...turn, action: "plan", goal: "change", request: (userRequest ?? text).trim().slice(0, 3000) }, true);
       }
       if (researchRuns.length && !planned) {
         // Before the answer goes out, the coordinator checks that it answers the question, and sends

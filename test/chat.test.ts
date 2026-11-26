@@ -1366,6 +1366,22 @@ describe("ChatController", () => {
     expect(entries.some((e) => /answered by research/.test(e.text))).toBe(false);
   });
 
+  it("run 28: plans an edit request to a named file even when the reply after research asks something the user never sees", async () => {
+    await fs.mkdir(path.join(dir, "ws"), { recursive: true });
+    const { controller, started } = setup(
+      [
+        JSON.stringify({ reply: "I'll check the README.md file for spelling errors.", action: "research", request: "README.md", goal: "answer", complete: false }),
+        JSON.stringify({ thought: "Done.", call: { tool: "finish", summary: "README.md line 3: A small heating controller." } }),
+        JSON.stringify({ reply: "The README.md file does not contain any spelling errors. Is there a specific word you were referring to?", action: "none", request: "", goal: "answer", complete: true }),
+        plan,
+      ],
+      "act",
+    );
+    await controller.send("Please correct the misspelled word in README.md.");
+    expect(started).toHaveLength(1);
+    expect((await controller.state()).current!.entries.some((e) => /answered by research/.test(e.text))).toBe(false);
+  });
+
   describe("digging deeper after a first research round (Oskar's log)", () => {
     const report = (summary: string) => JSON.stringify({ thought: "Done.", call: { tool: "finish", summary } });
     const firstRound = [
