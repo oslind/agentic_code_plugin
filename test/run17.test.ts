@@ -400,3 +400,21 @@ describe("run 26: guards that read what the plugin recorded", () => {
     expect(lostExports([{ ...dropped, original: null }], ask)).toEqual([]);
   });
 });
+
+import { changedExportShape } from "../src/changes/moduleStyle";
+
+describe("run 28: a module of named exports does not become a single export unless asked", () => {
+  const original = "function toCelsius(f) {\n  return ((f - 32) * 5) / 9;\n}\n\nmodule.exports = { toCelsius };\n";
+  const ask = "Add a function toKelvin(celsius) to src/convert.js that returns celsius + 273.15, and export it. Only change src/convert.js.";
+  it("flags module.exports = toKelvin with toCelsius hung on it", () => {
+    const proposed = original.replace("module.exports = { toCelsius };", "function toKelvin(c) { return c + 273.15; }\nmodule.exports = toKelvin;\nmodule.exports.toCelsius = toCelsius;");
+    expect(changedExportShape([{ path: "src/convert.js", original, proposed }], ask)).toEqual([expect.stringMatching(/^src\/convert\.js exported an object of names .* single value \(toKelvin\)/)]);
+  });
+  it("leaves alone a named export, a new file, and a request for a default export", () => {
+    const named = original.replace("{ toCelsius }", "{ toCelsius, toKelvin }");
+    expect(changedExportShape([{ path: "src/convert.js", original, proposed: named }], ask)).toEqual([]);
+    expect(changedExportShape([{ path: "src/convert.js", original: null, proposed: "module.exports = x;" }], ask)).toEqual([]);
+    const single = original.replace("module.exports = { toCelsius };", "module.exports = toCelsius;");
+    expect(changedExportShape([{ path: "src/convert.js", original, proposed: single }], "Make toCelsius the default export of src/convert.js.")).toEqual([]);
+  });
+});

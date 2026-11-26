@@ -227,6 +227,29 @@ export function lostExports(changes: { path: string; original: string | null; pr
   return problems;
 }
 
+/**
+ * A draft that turns a module exporting an object of names into one whose module.exports is a single value, when the
+ * user's words do not ask for that. Run 28, only-this-file: "Add a function toKelvin … and export it" to a file with
+ * module.exports = { toCelsius } became module.exports = toKelvin; module.exports.toCelsius = toCelsius, so
+ * require(...).toKelvin was undefined, and verification called it done.
+ */
+export function changedExportShape(changes: { path: string; original: string | null; proposed: string }[], userWords: string): string[] {
+  if (/\b(?:default\s+export|export\s+default|single\s+(?:function|value|export)|module\.exports\s*=)/i.test(userWords)) return [];
+  const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const objectOf = (t: string) => /\bmodule\.exports\s*=\s*\{/.test(strip(t));
+  const singleOf = (t: string) => /\bmodule\.exports\s*=\s*(?!\{)[^=\s]/.test(strip(t));
+  const problems: string[] = [];
+  for (const c of changes) {
+    if (c.original === null || !/\.(c|m)?js$/i.test(c.path)) continue;
+    if (!objectOf(c.original) || singleOf(c.original) || !singleOf(c.proposed)) continue;
+    const added = exportedNames(c.proposed).filter((n) => !exportedNames(c.original!).includes(n));
+    const single = /\bmodule\.exports\s*=\s*([A-Za-z_$][\w$]*)/.exec(strip(c.proposed))?.[1];
+    const name = single ?? added[0];
+    problems.push(`${c.path} exported an object of names (module.exports = { ... }), and the draft sets module.exports to a single value${name ? ` (${name})` : ""}, which the request does not ask for, so require("${c.path}")${name ? `.${name}` : ""} no longer works the way the module's other exports do. Keep module.exports = { ... } and add the new name to it${name ? `: module.exports = { ..., ${name} }` : ""}.`);
+  }
+  return problems;
+}
+
 /** The problem lines inside a draftsForReview() text, if any. */
 export function draftProblemsOf(drafts: string): string[] {
   const at = drafts.lastIndexOf(DRAFT_PROBLEMS_HEADING);
