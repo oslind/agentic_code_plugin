@@ -470,9 +470,9 @@ Runs 21 to 24 on nearly the same code gave 47, 50 of 50, and 47 of 51: the diffe
 - One wrong detail in a passing run: impossible-constraint pass 3 swapped the numbers in its answer (said the test expects 30 and gets 20; it expects 20 and gets 30). The diagnosis and conclusion were right. Pass 1 said the reports conflict on this.
 - This commit does not have the guards listed in the next section; they are still not run live.
 
-## Run 29: all 53 on 615bd59, 50 passed, about 470 min (2026-11-26)
+## Run 29: all 53 on 615bd59, 50 passed, 468.8 min (2026-11-26)
 
-09:46 to 17:36 CET. No failure claimed to be done. The three failures (rename-everywhere, readme-typo, python-project) are described under "Between runs 28 and 29"; each has a fix after 615bd59, and rename-everywhere is the case that led to the diagnosis before fix-ups (537eca7). Not run live yet: f4b9eda, 08dff0d, 77df7cf, 953a5ec, 537eca7.
+09:46 to 17:36 CET. No failure claimed to be done, no reply over-claimed. Gates: 160 allowed, 2 denied (command-denied), 6 held test changes, all accepted, nothing changed on disk before review. Slowest: rename-everywhere 58.4 min (failed), impossible-constraint 35.6, question-then-answer 30.5. The three failures (rename-everywhere, readme-typo, python-project) are described under "Between runs 28 and 29"; each has a fix after 615bd59, and rename-everywhere is the case that led to the diagnosis before fix-ups (537eca7). Not run live yet: f4b9eda, 08dff0d, 77df7cf, 953a5ec, 537eca7.
 
 ## Run 28: 15 scenarios x3 on f03d85e, 40 of 45 (2026-11-25/26)
 
