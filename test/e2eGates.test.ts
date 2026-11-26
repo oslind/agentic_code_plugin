@@ -75,11 +75,12 @@ const testEdit = { tool: "replace_in_file", path: "test.js", search: "assert.str
 describe("the gates in a run", () => {
   it("holds a change to an existing test although Edit files is on, records it, and rejects it when the request gives no reason", async () => {
     const accepted = await runScenario({ ...base, expect: async (r) => ((await r.read("test.js"))!.includes("17") ? [] : ["the held test change was not accepted at the end"]) }, fakeModel([testEdit]), opts);
-    expect(accepted.gates).toEqual(["held test change: test.js -> accepted"]);
+    // The coordinator also runs the project's own test suite on all drafts, asked about once (2026-11-26).
+    expect(accepted.gates).toEqual(["command: npm test -> allowed", "held test change: test.js -> accepted"]);
     expect(accepted.failures.filter((f) => /test\.js/.test(f))).toEqual([]);
 
     const rejected = await runScenario({ ...base, mayChangeTests: false, expect: async (r) => ((await r.read("test.js")) === thermostat["test.js"] ? [] : ["test.js changed"]) }, fakeModel([testEdit]), opts);
-    expect(rejected.gates).toEqual(["held test change: test.js -> rejected (the request gives no reason to change a test)"]);
+    expect(rejected.gates).toEqual(["command: npm test -> allowed", "held test change: test.js -> rejected (the request gives no reason to change a test)"]);
     expect(rejected.failures.join("\n")).toMatch(/a change to test\.js was drafted \(held for review, and rejected\)/);
     expect(rejected.failures.join("\n")).not.toMatch(/test\.js changed/);
   });

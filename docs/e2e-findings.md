@@ -470,6 +470,11 @@ Runs 21 to 24 on nearly the same code gave 47, 50 of 50, and 47 of 51: the diffe
 - One wrong detail in a passing run: impossible-constraint pass 3 swapped the numbers in its answer (said the test expects 30 and gets 20; it expects 20 and gets 30). The diagnosis and conclusion were right. Pass 1 said the reports conflict on this.
 - This commit does not have the guards listed in the next section; they are still not run live.
 
+## Between runs 28 and 29 (2026-11-26, not run live)
+
+- Run 28 pass 1, only-this-file: "export it" became `module.exports = toKelvin; module.exports.toCelsius = toCelsius`, so `require(...).toKelvin` was undefined and verification called it done. A draft that turns a module exporting an object of names into a single export, when the user's words do not ask for that, is now a draft problem (changedExportShape).
+- Oskar asked that the coordinator run the complete test suite when the software was modified. When no checks are saved and something was drafted, verification now runs the project's own test command (found like suggested checks) with and without the drafts, next to the changed program. The approval is asked once per run.
+
 ## Run 27: all 53 on c90a308, 50 passed, 431.3 min (2026-11-25)
 
 Both new scenarios and both Swedish ones passed. No false completion in the code; one wrong claim in a reply. Gates: 165 allowed, 2 denied (command-denied), 7 held test changes (6 accepted, 1 rejected), nothing changed on disk before review.

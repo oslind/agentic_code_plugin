@@ -9,6 +9,7 @@ import { ScratchCopy } from "../changes/scratch";
 import { TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
 import { CheckConfig, CheckResult, checkStatus, runAllChecks } from "../checks/runner";
+import { detectChecks } from "../checks/detect";
 import { isCheckAutoApproved } from "../tools/policy";
 import { COMMAND_RISK } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
@@ -68,9 +69,14 @@ export function printedEvidence(outputs: { line: string; now: string }[] | undef
 }
 
 /** The sub-agents' failed commands, plus each program the drafts are part of that is not among them (run 16). */
-export function withEntryPoints(failed: FailedCommand[], programs: string[]): FailedCommand[] {
+export function withEntryPoints(failed: FailedCommand[], programs: string[], testCommand?: string): FailedCommand[] {
   // The programs go first: only the first few commands are run again, and the program is the one that shows the request working.
-  return [...programs.filter((line) => !failed.some((f) => f.line.replace(/\s+/g, " ").trim() === line)).map((line) => ({ line, output: "" })), ...failed];
+  // Then the project's own test suite (Oskar, 2026-11-26: the coordinator runs the complete test suite when the software was
+  // modified), so it runs on all drafts together and without them even when no sub-agent ran it and no check is saved.
+  const same = (a: string, b: string) => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+  const extra = [...programs.slice(0, 2), ...(testCommand ? [testCommand] : [])];
+  const added = extra.filter((line, i) => !failed.some((f) => same(f.line, line)) && extra.findIndex((x) => same(x, line)) === i);
+  return [...added.map((line) => ({ line, output: "" })), ...failed];
 }
 
 /** When the user asked to fix a failure, a command that still fails the way it did before is missing work, not an old problem. */
@@ -254,7 +260,7 @@ export class Verifier {
       fileTree: await this.host.fileTree(workspaceRoot, signal).catch(() => undefined),
       findings: researchFindings(runScope(c.entries, runId)),
       conventions: conventionsText(await this.host.skills?.(workspaceRoot).catch(() => undefined)),
-      ...fixIsTheRequest(await this.compareWithProject(conversationId, workspaceRoot, runId, withEntryPoints(failedCommandsOf(runScope(c.entries, runId)), await this.entryPoints(workspaceRoot, run.changes ?? [], newest)), checks, signal), said),
+      ...fixIsTheRequest(await this.compareWithProject(conversationId, workspaceRoot, runId, withEntryPoints(failedCommandsOf(runScope(c.entries, runId)), await this.entryPoints(workspaceRoot, run.changes ?? [], newest), checks.length || !newest.size ? undefined : await this.testCommand(workspaceRoot)), checks, signal), said),
     };
     let v: Verification;
     try {
@@ -386,6 +392,17 @@ export class Verifier {
     }
   }
 
+  /** The project's own test command (package.json, pytest, cargo...), found the way suggested checks are. */
+  private async testCommand(workspaceRoot: string): Promise<string | undefined> {
+    try {
+      const sandbox = await WorkspaceSandbox.create(workspaceRoot);
+      const files = await sandbox.listFiles("**", 2000);
+      return (await detectChecks(files, (p) => sandbox.readFile(p).catch(() => undefined))).find((c) => c.name === "test")?.command;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Names the newest drafts take from project modules that do not export them, read with the drafts in place. */
   private async importProblems(workspaceRoot: string, changes: PendingChange[], drafted: Map<string, PendingChange>): Promise<string[]> {
     try {
@@ -441,6 +458,9 @@ export class Verifier {
     }
   }
 
+  /** Commands the user allowed for the with/without comparison, per run. */
+  private readonly comparedApproved = new Map<string, Set<string>>();
+
   async compareWithProject(
     conversationId: string,
     workspaceRoot: string,
@@ -449,7 +469,7 @@ export class Verifier {
     checks: CheckConfig[],
     signal: AbortSignal,
   ): Promise<Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures" | "programOutputs">> {
-    const own = failed.filter((f) => !checks.some((k) => k.command === f.line)).slice(0, 3);
+    const own = failed.filter((f) => !checks.some((k) => k.command === f.line)).slice(0, 4);
     if (!own.length) return {};
     const root = await this.host.openFolder(workspaceRoot);
     if (!root) return { uncomparedFailures: own };
@@ -461,9 +481,20 @@ export class Verifier {
     const programOutputs: NonNullable<VerifyContext["programOutputs"]> = [];
     // One approval per command covers both runs: without the drafts, and again with all of them.
     const asked = new Map<string, Promise<boolean>>();
+    // An approval holds for the later verification rounds of the same run too: the same command, for the same
+    // comparison, is not asked about again after each fix-up round.
+    const earlier = this.comparedApproved.get(runId) ?? new Set<string>();
+    this.comparedApproved.set(runId, earlier);
     const approve = (check: CheckConfig) => {
+      if (earlier.has(check.command)) return Promise.resolve(true);
       if (!asked.has(check.command)) {
-        asked.set(check.command, this.approveVerifyCheck(conversationId, runId, check, new Set(), "and again with all drafts, to see whether it failed already before the drafts (a failure that was there before is not this request's to fix)"));
+        asked.set(
+          check.command,
+          this.approveVerifyCheck(conversationId, runId, check, new Set(), "and again with all drafts, to see whether it failed already before the drafts (a failure that was there before is not this request's to fix)").then((ok) => {
+            if (ok) earlier.add(check.command);
+            return ok;
+          }),
+        );
       }
       return asked.get(check.command)!;
     };

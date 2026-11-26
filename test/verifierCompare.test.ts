@@ -118,3 +118,25 @@ describe("running the program the drafts are part of (run 16)", () => {
     expect(v.missing[0]).toMatch(/Make `node index\.js` pass again: it fails with the drafts and not without them: TypeError/);
   });
 });
+
+describe("the coordinator runs the project's test suite on all drafts (Oskar, 2026-11-26)", () => {
+  it("adds the test command after the programs, once, and not when a sub-agent's failed run of it is there", () => {
+    expect(withEntryPoints([], ["node index.js"], "npm test").map((f) => f.line)).toEqual(["node index.js", "npm test"]);
+    expect(withEntryPoints([{ line: "npm  test", output: "1 failed" }], [], "npm test")).toEqual([{ line: "npm  test", output: "1 failed" }]);
+    expect(withEntryPoints([], ["node test.js"], "node test.js").map((f) => f.line)).toEqual(["node test.js"]);
+  });
+
+  it("finds a new test failure the drafts cause and leaves an old one alone", async () => {
+    const { verifier, root, runId } = await setup("module.exports = { v: 1 };\n");
+    await fs.writeFile(path.join(root, "test.js"), "const a = require('./a');\nif (a.v !== 1) { console.log('FAIL v is 1'); process.exitCode = 1; }\nconsole.log('FAIL old');\nprocess.exitCode = 1;\n");
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "node test.js" } }));
+    const run = await (verifier as unknown as { tasks: TaskStore }).tasks.load(runId);
+    run.changes = [{ path: "a.js", taskId: "t1", original: "module.exports = { v: 1 };\n", proposed: "module.exports = { v: 2 };\n", status: "pending" }];
+    await (verifier as unknown as { tasks: TaskStore }).tasks.save(run);
+    const found = await (verifier as unknown as { testCommand(r: string): Promise<string | undefined> }).testCommand(root);
+    expect(found).toBe("npm test");
+    const r = await verifier.compareWithProject("c", root, runId, withEntryPoints([], [], "node test.js"), [], new AbortController().signal);
+    expect(r.failedCommands?.map((f) => f.line)).toEqual(["node test.js"]);
+    expect(r.failedCommands?.[0]?.output).toMatch(/new with the drafts: FAIL v is 1/);
+  });
+});
