@@ -42,7 +42,9 @@ function pieces(line: string): string[] {
 /** Every `path:line: code` (also "path (line 9): code") in a report, also several on one line. */
 export function citationsIn(report: string): Citation[] {
   const out: Citation[] = [];
-  for (const raw of report.split("\n").flatMap((l) => pieces(l.trim()))) {
+  // Run 28: line breaks written out ("\\n", "/n/n") glued words onto paths: `function./n/nsrc/thermostat.js:4`.
+  const text = report.replace(/\\n/g, "\n").replace(/(?:\/n){2,}/g, "\n").replace(/(?<=\p{L})\.\/n(?=\p{L})/gu, ".\n");
+  for (const raw of text.split("\n").flatMap((l) => pieces(l.trim()))) {
     const m = CITED.exec(raw.trim());
     if (!m) continue;
     const quote = quoteOf(m[3]!);
@@ -57,11 +59,23 @@ export function citationsIn(report: string): Citation[] {
  * Looks each cited line up in its file, compared without white space. The line number is not held against a
  * finding: small models count lines badly, and the code being in the file is what matters.
  */
-export async function checkCitations(report: string, read: (path: string) => Promise<string | undefined>): Promise<CitationCheck> {
+export async function checkCitations(report: string, read: (path: string) => Promise<string | undefined>, list?: () => Promise<string[]>): Promise<CitationCheck> {
   const files = new Map<string, Source | undefined>();
   const result: CitationCheck = { found: [], missing: [] };
+  let all: string[] | undefined;
   for (const c of citationsIn(report)) {
-    if (!files.has(c.path)) files.set(c.path, await read(c.path).then(sourceOf, () => undefined));
+    if (!files.has(c.path)) {
+      let text = await read(c.path).catch(() => undefined);
+      // Run 28: `thermostat.js:4` for src/thermostat.js. A path not in the project is looked up by its end, when
+      // exactly one file of the project ends that way.
+      if (text === undefined && list) {
+        all ??= await list().catch(() => []);
+        const end = `/${c.path.replace(/^\/+/, "")}`;
+        const matches = all.filter((f) => `/${f}`.endsWith(end));
+        if (matches.length === 1) text = await read(matches[0]!).catch(() => undefined);
+      }
+      files.set(c.path, sourceOf(text));
+    }
     const file = files.get(c.path);
     (file !== undefined && quoted(file, c.quote) ? result.found : result.missing).push(c);
   }

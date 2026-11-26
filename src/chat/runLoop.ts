@@ -656,7 +656,7 @@ export class RunLoop {
     }
     // The lines of code the reports quote as sources, looked up in the files: said under the answer by rule.
     const projectFiles = await WorkspaceSandbox.create(c.workspaceRoot).catch(() => undefined);
-    const sources = projectFiles ? sourcesNote(await Promise.all(reports.map((r) => checkCitations(r.text, (p) => projectFiles.readFile(p).catch(() => undefined))))) : undefined;
+    const sources = projectFiles ? sourcesNote(await Promise.all(reports.map((r) => checkCitations(r.text, (p) => projectFiles.readFile(p).catch(() => undefined), () => projectFiles.listFiles("**", 2000))))) : undefined;
     if (sources) this.host.log("info", sources);
     // How much of a many-file question was read, counted from the logs: the answer must say so (benchmark pass 1).
     // A file counts as checked only when a researcher opened it and a report says something about it: a file read

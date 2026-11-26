@@ -418,3 +418,26 @@ describe("run 28: a module of named exports does not become a single export unle
     expect(changedExportShape([{ path: "src/convert.js", original, proposed: single }], "Make toCelsius the default export of src/convert.js.")).toEqual([]);
   });
 });
+
+import { guardVerification } from "../src/coordinator/verify";
+
+describe("run 28: a not_done verdict with every part met and only an old failure left is done", () => {
+  const old = { line: "npm test", output: "ok   default target is 21\nFAIL average of three: Expected values to be strictly equal:\n\n30 !== 20\n" };
+  const parts = [{ asked: "Remove DEFAULT_TARGET from the exports of src/thermostat.js", found: "+ module.exports = { targetTemp };", met: true }];
+  const drafts = "## src/thermostat.js\n- module.exports = { targetTemp, DEFAULT_TARGET };\n+ module.exports = { targetTemp };";
+  const base = { checks: [], tasks: [], drafts, userMessages: ["Remove DEFAULT_TARGET from the exports of src/thermostat.js; nothing outside the file uses it. The behaviour must stay the same."] };
+  it("calls it done and names the old failure", () => {
+    const v = guardVerification({ verdict: "not_done", verified: "It removes DEFAULT_TARGET, but npm test failed in 'average of three'.", missing: [], parts }, { ...base, preexistingFailures: [old] });
+    expect(v.verified).toBe(true);
+    expect(v.adjusted).toMatch(/the only failure \(`npm test`\) failed the same way before your request/);
+  });
+  it("still sends it to manual review without a known old failure, or with a new one", () => {
+    expect(guardVerification({ verdict: "not_done", verified: "Not sure.", missing: [], parts }, base).manualReview).toBe(true);
+    const v = guardVerification({ verdict: "not_done", verified: "x", missing: [], parts }, { ...base, preexistingFailures: [old], failedCommands: [{ line: "node src/index.js", output: "TypeError" }] });
+    expect(v.verified).toBe(false);
+  });
+  it("does not override a part marked not met", () => {
+    const v = guardVerification({ verdict: "not_done", verified: "x", missing: [], parts: [{ ...parts[0]!, met: false, found: "module.exports = { targetTemp, DEFAULT_TARGET };" }] }, { ...base, preexistingFailures: [old] });
+    expect(v.verified).toBe(false);
+  });
+});

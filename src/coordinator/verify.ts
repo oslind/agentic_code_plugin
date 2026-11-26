@@ -471,6 +471,15 @@ export function guardVerification(
   if (onlyOld) {
     return { verified: true, evidence, summary, missing: [], thought: d.thought, adjusted: `It said not done, but all it named (${removals.join("; ").slice(0, 200)}) failed the same way before your request, so that is not missing work. It is still failing, and was not touched.` };
   }
+  // Run 28, remove-export and rename-then-run-tests (pass 3): every part of the request was marked met and shown in the
+  // drafts, the only failing command failed the same way before the request (checked by running it without the
+  // drafts), and nothing else was wrong, yet the verdict was "not_done" with nothing missing, so the work went to
+  // manual review. With a failure from before as the only thing left, by rule that is done, and the old failure is named.
+  const onlyOldLeft = d.verdict === "not_done" && missing.length === 0 && noNewFailure && parts.length > 0 && unmetKept.length === 0 && parts.every((p) => p.met || /\bfail/i.test(p.found));
+  if (onlyOldLeft) {
+    const old = [...new Set([...(ctx.preexistingFailures ?? []).map((c) => `\`${c.line.slice(0, 80)}\``), ...ctx.checks.filter((c) => c.failedBefore === "before").map((c) => `"${checkName(c.name)}"`)])].join(", ");
+    return { verified: true, evidence, summary, missing: [], thought: d.thought, adjusted: `It said not done, but every part of your request is shown in the drafts, and the only failure${old ? ` (${old})` : ""} failed the same way before your request, so that is not missing work. It is still failing, and was not touched.` };
+  }
   if (d.verdict === "not_done" && missing.length === 0) {
     const why = removals.length ? "only asked to remove or fix things outside your request" : "named nothing that is missing";
     return { verified: false, evidence, summary, missing: [], thought: d.thought, manualReview: true, adjusted: `It said not done but ${why}, so the work stays unverified and needs your review.` };

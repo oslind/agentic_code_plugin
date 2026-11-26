@@ -64,3 +64,17 @@ describe("run 26: real lines quoted in the ways researchers wrote them are found
     expect(check.missing.map((c) => c.quote)).toEqual(["Custom test runner using Node.js assert module.", "return sum / 2 + 1;"]);
   });
 });
+
+describe("run 28: citations with a short path or written-out line breaks", () => {
+  it("finds a file named without its folder when one file ends that way, and splits written-out line breaks", async () => {
+    const list = async () => Object.keys(files);
+    const report = "thermostat.js:2: function targetTemp(mode) {\nThe default is function./n/nsrc/thermostat.js:1: const DEFAULT_TARGET = 21;\nSee DEFAULT./nsrc/stats.js:4: return sum / 2;\n";
+    expect(citationsIn(report).map((c) => c.path)).toEqual(["thermostat.js", "src/thermostat.js", "src/stats.js"]);
+    const check = await checkCitations(report, read, list);
+    expect(check.missing).toEqual([]);
+    expect(check.found).toHaveLength(3);
+    // Without the list, or when two files end that way, a short path is not guessed.
+    expect((await checkCitations("thermostat.js:2: function targetTemp(mode) {", read)).missing).toHaveLength(1);
+    expect((await checkCitations("x.js:1: const DEFAULT_TARGET = 21;", read, async () => ["a/x.js", "b/x.js"])).missing).toHaveLength(1);
+  });
+});

@@ -312,7 +312,7 @@ export class Oversight {
     if (research && !final && round < limit) {
       const root = (await this.conversations.load(conversationId)).workspaceRoot;
       const files = await WorkspaceSandbox.create(root).catch(() => undefined);
-      const cited = files ? await checkCitations(summary, (p) => files.readFile(p).catch(() => undefined)) : undefined;
+      const cited = files ? await checkCitations(summary, (p) => files.readFile(p).catch(() => undefined), () => files.listFiles("**", 2000)) : undefined;
       if (cited?.missing.length) {
         this.reviewRounds.set(key, round + 1);
         const feedback = citationFeedback(cited.missing);
