@@ -140,3 +140,15 @@ describe("the coordinator runs the project's test suite on all drafts (Oskar, 20
     expect(r.failedCommands?.[0]?.output).toMatch(/new with the drafts: FAIL v is 1/);
   });
 });
+
+import { misusedCommand } from "../src/chat/verifier";
+
+describe("run 29: a command that cannot work as written is not blamed on the drafts", () => {
+  it("knows a wrong command line from a real failure", () => {
+    expect(misusedCommand("ImportError: Failed to import test module: tests/test_calc\nModuleNotFoundError: No module named 'tests/test_calc'\nFAILED (errors=1)")).toBe(true);
+    expect(misusedCommand("usage: python3 -m unittest [-h]\npython3 -m unittest: error: unrecognized arguments: -x")).toBe(true);
+    expect(misusedCommand("bash: pytest: command not found")).toBe(true);
+    expect(misusedCommand("ModuleNotFoundError: No module named 'calc'")).toBe(false);
+    expect(misusedCommand("FAIL freezing point: fahrenheitToCelsius is not a function")).toBe(false);
+  });
+});

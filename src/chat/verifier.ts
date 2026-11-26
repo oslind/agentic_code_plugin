@@ -68,6 +68,19 @@ export function printedEvidence(outputs: { line: string; now: string }[] | undef
     .join("");
 }
 
+/**
+ * Whether a command's output says the command line itself is wrong: an unknown option, a usage message, a path
+ * given where a module name goes, a program that is not installed. Such a failure is not the drafts' doing.
+ */
+export function misusedCommand(output: string): boolean {
+  const t = toPlainText(output);
+  return (
+    /\berror: unrecognized arguments?\b|\bunknown (?:option|flag|argument)\b|\bunrecognized option\b|^usage: /im.test(t) ||
+    /\bNo module named '[^']*[\\/][^']*'/.test(t) ||
+    /\bcommand not found\b|\bis not recognized as an internal or external command\b|No module named (?:pytest|unittest)\b/.test(t)
+  );
+}
+
 /** The sub-agents' failed commands, plus each program the drafts are part of that is not among them (run 16). */
 export function withEntryPoints(failed: FailedCommand[], programs: string[], testCommand?: string): FailedCommand[] {
   // The programs go first: only the first few commands are run again, and the program is the one that shows the request working.
@@ -555,7 +568,11 @@ export class Verifier {
             shown = { ...f, output: `Checked by rule: new with the drafts: ${split.added.slice(0, 4).join(" | ")}. Already failing before the drafts, not this request's to fix: ${split.before.slice(0, 4).join(" | ")}.\n${shown.output}` };
           }
         }
-        (verdict === "before" ? preexisting : verdict === "new" ? caused : uncompared).push(shown);
+        // Run 29, python-project: a sub-agent's `python3 -m unittest tests/test_calc.py` cannot work at all (a path
+        // given as a module name), the saved check passed, and the rule still counted it as caused by the drafts. A
+        // command whose own invocation is wrong says nothing about the drafts.
+        const misused = verdict === "new" && b && !b.skipped && !b.passed && misusedCommand(output);
+        (verdict === "before" ? preexisting : verdict === "new" && !misused ? caused : uncompared).push(shown);
       });
     } catch (err) {
       if (signal.aborted) throw err;

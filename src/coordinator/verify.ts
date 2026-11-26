@@ -392,7 +392,9 @@ export function taskFacts(
 
 /** ": <first failure line>" of a command's output, for a missing-work item. */
 function firstFailure(output: string): string {
-  const line = failureLines(output)[0];
+  // Run 29: the rule's own "new with the drafts: … Already failing before …" line was cut at 160 characters,
+  // leaving "not this request's to fix: ." Only its new part is shown.
+  const line = failureLines(output)[0]?.replace(/^Checked by rule: new with the drafts: (.*?)\. Already failing before the drafts.*$/, "$1");
   return line ? `: ${line.slice(0, 160)}` : "";
 }
 
