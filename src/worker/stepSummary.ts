@@ -1,4 +1,5 @@
 import { estimateTokens, truncateToTokens } from "../context/budget";
+import { escapeRegExp } from "../context/outline";
 import { DATA_REMINDER, DATA_RULE, DATA_TAG, dataBlock, untrustedSection } from "../context/untrusted";
 import { cleanAnswer } from "../chat/synthesis";
 import { ChatMessage, ModelProvider } from "../providers/types";
@@ -36,12 +37,15 @@ const cost = (m: ChatMessage) => estimateTokens(m.content) + 4;
 
 /** The task message without notes from an earlier compaction, and those notes, if any. */
 export function splitTask(content: string): { task: string; notes?: string } {
-  const at = content.indexOf(`\n\n${NOTES_HEADING}`);
+  // The notes are always the last part, in the exact form withNotes() writes. The last heading is taken, and only
+  // when everything after it is that form (Gemini audit LOW-1): the task can quote a file holding the heading's
+  // words, and such text never has a real fence, because neutralize() breaks fences in data.
+  const at = content.lastIndexOf(`\n\n${NOTES_HEADING}`);
   if (at < 0) return { task: content };
   const rest = content.slice(at + 2);
-  // The notes are fenced; take what is inside the fence back out.
-  const m = new RegExp(`<${DATA_TAG}[^>]*>\\n([\\s\\S]*?)\\n</${DATA_TAG}>`).exec(rest);
-  return { task: content.slice(0, at), notes: m?.[1] };
+  const m = new RegExp(`^${escapeRegExp(NOTES_HEADING)}[^\\n]*\\n[^\\n]*\\n<${DATA_TAG} source="your notes on your earlier steps">\\n([\\s\\S]*)\\n</${DATA_TAG}>\\n${escapeRegExp(DATA_REMINDER)}$`).exec(rest);
+  if (!m) return { task: content };
+  return { task: content.slice(0, at), notes: m[1] };
 }
 
 export interface StepCompaction {

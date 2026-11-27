@@ -1,10 +1,11 @@
+import { isHeldTestChange } from "../changes/testGuard";
 import { TaskStore } from "../state/taskStore";
 import { Task } from "../state/types";
 import { CheckConfig } from "../checks/runner";
 import { ToolCall } from "../tools/protocol";
 import { isAutoApproved, isCheckAutoApproved, isChangeAutoAccepted } from "../tools/policy";
 import { acceptChange } from "../changes/review";
-import { commandLeavesProject } from "../tools/commandGuard";
+import { COMMAND_RISK, COMMAND_RISK_PLAIN, commandLeavesProject } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
 import { isUnreviewed } from "../coordinator/review";
 import { AgentMonitor } from "../coordinator/monitor";
@@ -48,9 +49,12 @@ export class Approvals {
       agentName: task.title,
       rememberable: true,
       rememberLabel: "Allow for the rest of this run",
-      text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. It runs in a copy of the project, so your files are not touched, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+      text: `I'd like to run \`${call.command}\`.${call.reason ? ` ${asSentence(call.reason)}` : ""} Nothing runs until you allow it. ${COMMAND_RISK} Turn on "Run commands" to stop being asked.`,
     });
-    if (decision?.kind !== "allow") return false;
+    if (decision?.kind !== "allow") {
+      this.s.deniedFor(runId).add(call.command);
+      return false;
+    }
     if (decision.remember) this.s.allowedFor(runId).add(call.command);
     return true;
   }
@@ -105,7 +109,7 @@ export class Approvals {
           rememberLabel: isCommand ? "Allow, and keep it for this folder" : undefined,
           preview,
           text: isCommand
-            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} Nothing runs until you allow it. It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it.`
+            ? `I'd like to run \`${call.command}\` as check "${call.name}". ${call.reason} Nothing runs until you allow it. ${COMMAND_RISK_PLAIN}`
             : `${reason}. Nothing is written until you allow it.`,
         });
         if (decision?.kind !== "allow") return false;
@@ -123,8 +127,11 @@ export class Approvals {
         const outcome = this.oversight.reviewOutcomes.get(`${runId}:${task.id}`);
         const held = isUnreviewed(outcome) ? changes.filter((ch) => isChangeAutoAccepted(ch.path, auto)).length : 0;
         const written: string[] = [];
+        // Changes to existing test files, snapshots, fixtures and test configs wait for the user even with
+        // auto-approve on. (Not a changeNotes entry: a note there makes the next accept overwrite the file on disk.)
+        const weakening = changes.flatMap((ch) => (isHeldTestChange(ch.path, ch.original) ? [{ path: ch.path }] : []));
         for (const ch of changes) {
-          if (held || !isChangeAutoAccepted(ch.path, auto)) continue;
+          if (held || !isChangeAutoAccepted(ch.path, auto, ch)) continue;
           const res = await acceptChange(this.tasks, runId, ch.path, workspaceRoot, { auto: true });
           if (res.ok) written.push(ch.path);
           else this.s.changeNotes.set(`${runId}:${ch.path}`, res.message);
@@ -138,7 +145,7 @@ export class Approvals {
           agentName: task.title,
           tone: waiting.length ? "warning" : "success",
           text: waiting.length
-            ? `I have ${waiting.length} draft change(s) for you to review under Changes. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}${held ? " My result did not pass the coordinator's review, so they were not written automatically even though an auto-approve switch is on." : ""}`
+            ? `I have ${waiting.length} draft change(s) for you to review under Changes. Nothing is written to your project until you accept.${written.length ? ` ${written.length} other change(s) were accepted and written right away because an auto-approve switch is on.` : ""}${held ? " My result did not pass the coordinator's review, so they were not written automatically even though an auto-approve switch is on." : ""}${weakening.length ? ` ${weakening.length} of them change existing tests, snapshots, fixtures or test settings, so ${weakening.length === 1 ? "it waits" : "they wait"} for you whatever the switches say: ${weakening.map((x) => x.path).join(", ")}.` : ""}`
             : `My ${written.length} change(s) were written to your project, because an auto-approve switch is on.`,
         });
         // Open what waits for review, so the user sees it right away.
@@ -154,9 +161,12 @@ export class Approvals {
           agentName: task.title,
           rememberable: true,
           rememberLabel: "Allow for the rest of this run",
-          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it. Turn on "Run commands" to stop being asked.`,
+          text: `I'd like to run \`${check.command}\` (check "${check.name}") to verify my work. ${COMMAND_RISK_PLAIN} Turn on "Run commands" to stop being asked.`,
         });
-        if (decision?.kind !== "allow") return false;
+        if (decision?.kind !== "allow") {
+          this.s.deniedFor(runId).add(check.command);
+          return false;
+        }
         if (decision.remember) this.s.allowedFor(runId).add(check.command);
         return true;
       },

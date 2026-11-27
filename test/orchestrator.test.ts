@@ -6,7 +6,7 @@ import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acceptChange, changeKind, rejectChange, resolveConflict, revertChange } from "../src/changes/review";
 import { CheckConfig } from "../src/checks/runner";
-import { Orchestrator, OrchestratorOptions } from "../src/coordinator/orchestrator";
+import { mentionsFile, Orchestrator, OrchestratorOptions } from "../src/coordinator/orchestrator";
 import { ProviderError } from "../src/providers/openaiCompatible";
 import { RetryingProvider } from "../src/providers/retrying";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
@@ -187,6 +187,103 @@ describe("Orchestrator without git", () => {
     await make(runId, scripted({ a: [write("a.txt", "ok"), finish] }), { checks }).o.run();
     expect((await changesOf(runId)).map((c) => c.path)).toEqual(["a.txt"]);
     expect(onDisk("artifact.log")).toBeUndefined();
+  });
+
+  it("does not retry a sub-agent for a check failure that was there before its changes (run 15)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    // Always fails on 'average of three'; also fails on 'night' only while a.txt is not "x".
+    const checks: CheckConfig[] = [{ name: "test", command: node("const t=require('fs').readFileSync('a.txt','utf8');console.log('FAIL average of three');if(t!=='x')console.log('FAIL night');process.exit(1)") }];
+    const runId = await setup([task("a", ["a.txt"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).toContain("a");
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_preexisting" && e.taskId === "a")).toBe(true);
+  });
+
+  it("decides whether an old failure is the task's work from the user's words, not a fix-up's instructions (run 17)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const checks: CheckConfig[] = [{ name: "test", command: node("console.log('FAIL average of three');process.exit(1)") }];
+    const fixUp: NewTask = { ...task("a", ["a.txt"]), instructions: "Fix the failing test 'average of three' so the tests pass." };
+    // The user asked for something else: the model-written "fix the failing test" does not make the old failure this task's work.
+    const run = await store.createRun("validate input", repo, undefined, undefined, "Make targetTemp reject unknown modes.");
+    await store.addTasks(run.id, [fixUp]);
+    const outcome = await make(run.id, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).toContain("a");
+    expect((await store.readLog(run.id)).some((e) => e.type === "checks_preexisting" && e.taskId === "a")).toBe(true);
+    // The user asked to fix the failure: then it is the work, and a fix that does not work fails the task.
+    const asked = await store.createRun("fix test", repo, undefined, undefined, "Fix the failing 'average of three' test.");
+    await store.addTasks(asked.id, [fixUp]);
+    const second = await make(asked.id, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(second.done).not.toContain("a");
+    // No user words recorded (a run not started from the chat): the task's instructions decide, as before.
+    const bare = await setup([fixUp]);
+    const third = await make(bare, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(third.done).not.toContain("a");
+  });
+
+  it("keeps a draft whose check fails only as before when the user asked for a fix another task makes (run 31)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const checks: CheckConfig[] = [{ name: "test", command: node("console.log('FAIL average of three');process.exit(1)") }];
+    const run = await store.createRun("fix and test", repo, undefined, undefined, "Fix average() in b.txt, and add a test to a.txt.");
+    await store.addTasks(run.id, [task("a", ["a.txt"]), task("b", ["b.txt"], ["a"])]);
+    const outcome = await make(run.id, scripted({ a: [write("a.txt", "x"), finish, finish], b: [write("b.txt", "y"), finish, finish] }), { checks, maxFixRounds: 1 }).o.run();
+    expect(outcome.done).toContain("a");
+    expect((await changesOf(run.id)).find((c) => c.path === "a.txt")?.proposed).toBe("x");
+    expect((await store.readLog(run.id)).some((e) => e.type === "checks_preexisting" && e.taskId === "a" && e.data?.afterFixRounds === 1)).toBe(true);
+  });
+
+  it("keeps a draft whose only failure is a test that pins the old value, after one fix round (run 17)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const pin = "const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL night is 3 lower\\nExpected values to be strictly equal:\\n17 !== 18');process.exit(1)}";
+    const runId = await setup([task("a", ["a.txt"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish, finish] }), { checks: [{ name: "test", command: node(pin) }], maxFixRounds: 2 }).o.run();
+    expect(outcome.done).toContain("a");
+    expect((await changesOf(runId))[0]?.proposed).toBe("x");
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_pinned" && e.taskId === "a")).toBe(true);
+    // The check ran twice: the first failure got its fix round, with the note; the second kept the draft.
+    expect(log.filter((e) => e.type === "checks").map((e) => e.message)).toEqual(["failed", "failed"]);
+  });
+
+  it("gives no such way out for a crash, or for a task that may change the test", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const crash = "const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('TypeError: targetTemp is not a function');process.exit(1)}";
+    const first = await setup([task("a", ["a.txt"])]);
+    expect((await make(first, scripted({ a: [write("a.txt", "x"), finish, finish, finish] }), { checks: [{ name: "test", command: node(crash) }], maxFixRounds: 2 }).o.run()).failed).toEqual(["a"]);
+    const pin = "const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL night\\n17 !== 18');process.exit(1)}";
+    const second = await setup([task("a", ["a.txt", "test.js"])]);
+    expect((await make(second, scripted({ a: [write("a.txt", "x"), finish, finish, finish] }), { checks: [{ name: "test", command: node(pin) }], maxFixRounds: 2 }).o.run()).failed).toEqual(["a"]);
+  });
+
+  it("still retries a sub-agent whose changes add a failure", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const checks: CheckConfig[] = [{ name: "test", command: node("const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL new');process.exit(1)}") }];
+    const runId = await setup([task("a", ["a.txt"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).not.toContain("a");
+  });
+
+  it("leaves a failing check to verification while another task that changes the failing file is unfinished", async () => {
+    // e2e run 11B, rename-everywhere: the rename in one file failed npm test until another task updated test.js.
+    const checks: CheckConfig[] = [{ name: "test", command: node("console.log('FAIL: b.txt still uses the old name'); process.exit(1)") }];
+    const runId = await setup([task("a", ["a.txt"]), task("b", ["b.txt"], ["a"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "x"), finish], b: [write("b.txt", "y"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    // b's own check fails with nothing left to wait for, so it fails as before; a was not retried for b's file.
+    expect(outcome.done).toContain("a");
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_deferred" && e.taskId === "a")).toBe(true);
+  });
+
+  it("leaves a 'name is not a function' failure to the unfinished task whose file still uses the name (run 20)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "function toCelsius() {}\n");
+    await writeFile(path.join(repo, "b.txt"), "toCelsius(32)\n");
+    // Fails while b.txt still calls the old name; the output names no file.
+    const checks: CheckConfig[] = [{ name: "test", command: node("const fs=require('fs');const b=fs.readFileSync('b.txt','utf8');if(b.startsWith('toCelsius')&&fs.readFileSync('a.txt','utf8').includes('fahrenheit')){console.log('FAIL freezing point: toCelsius is not a function');process.exit(1)}") }];
+    const runId = await setup([task("a", ["a.txt"]), task("b", ["b.txt"], ["a"])]);
+    const outcome = await make(runId, scripted({ a: [write("a.txt", "function fahrenheitToCelsius() {}\n"), finish], b: [write("b.txt", "fahrenheitToCelsius(32)\n"), finish] }), { checks, maxFixRounds: 0 }).o.run();
+    expect(outcome.done).toEqual(expect.arrayContaining(["a", "b"]));
+    const log = await store.readLog(runId);
+    expect(log.some((e) => e.type === "checks_deferred" && e.taskId === "a")).toBe(true);
   });
 
   it("fails a task when checks keep failing, and blocks its dependents", async () => {
@@ -813,5 +910,14 @@ describe("the coordinator reviewing a result", () => {
     const { o } = make(runId, scripted({ a: [finish] }), { reviewResult: async () => (n++, { accept: true }) });
     expect((await o.run()).done).toEqual(["a"]);
     expect(n).toBe(1);
+  });
+});
+
+describe("mentionsFile", () => {
+  it("finds a file by path or base name, not inside another name", () => {
+    expect(mentionsFile("Test failures in test.js need the new name.", "test.js")).toBe(true);
+    expect(mentionsFile("at Object.<anonymous> (/tmp/x/src/convert.js:3:9)", "src/convert.js")).toBe(true);
+    expect(mentionsFile("see mytest.js", "test.js")).toBe(false);
+    expect(mentionsFile("anything", "src/**")).toBe(false);
   });
 });

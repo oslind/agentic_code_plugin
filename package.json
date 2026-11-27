@@ -194,6 +194,18 @@
           "default": "json_schema",
           "description": "How to ask the server for JSON. If the server rejects a mode (for example Ollama's \"failed to load model vocabulary required for format\"), the extension falls back to json_object and then none by itself. Replies are always checked against the schema and retried, so none still works."
         },
+        "agentic.verification.model": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "A separate model that verifies the sub-agents' work before a request counts as done, and checks research answers, on the same server as `agentic.model.name`. A model of another family catches mistakes the working model is blind to. Empty: the working model verifies its own work. On a small GPU the server swaps models once per request. Read from your user settings only."
+        },
+        "agentic.verification.contextWindow": {
+          "type": "number",
+          "default": 0,
+          "scope": "machine",
+          "description": "Context window of the verification model in tokens. 0: the same as agentic.model.contextWindow. Read from your user settings only."
+        },
         "agentic.checks": {
           "type": "array",
           "default": [],
@@ -351,10 +363,8 @@
           "items": {
             "type": "string"
           },
-          "default": [
-            "node_modules"
-          ],
-          "description": "Dependency folders linked, not copied, into the scratch copy (kept in the extension's own storage, outside the project) where checks run against pending changes, so they need no reinstall. Only node_modules, bower_components, .venv, venv, vendor, .tox, .gradle and target can be linked, and only from your user settings; a folder with secret files at its top level is not linked. Everything else is copied, without files that may hold secrets (.env, keys, credentials).",
+          "default": [],
+          "description": "Dependency folders linked, not copied, into the scratch copy (kept in the extension's own storage, outside the project) where checks run against pending changes. Empty by default: everything is copied. A linked folder is your real folder, so a command that installs or changes packages (npm install, pip install) changes it in your project, even before you accept anything. Only node_modules, bower_components, .venv, venv, vendor, .tox, .gradle and target can be linked, and only from your user settings; secret files inside are left out. Everything else is copied, without files that may hold secrets (.env, keys, credentials).",
           "scope": "machine"
         },
         "agentic.scratch.exclude": {
@@ -370,7 +380,7 @@
           "type": "number",
           "default": 50000,
           "minimum": 1,
-          "description": "Most files copied into one scratch copy. A larger project is refused with a message instead of filling the disk; linked dependency folders do not count. User settings only.",
+          "description": "Most files copied into one scratch copy. A larger project is refused with a message instead of filling the disk; copied dependency folders count, linked ones (agentic.scratch.linkDirs) do not. User settings only.",
           "scope": "machine"
         },
         "agentic.scratch.maxMegabytes": {
@@ -534,6 +544,8 @@
     "lint": "eslint src test e2e",
     "test": "vitest run",
     "e2e": "tsc -p tsconfig.e2e.json && vitest run --config vitest.e2e.config.mts",
+    "bench": "tsc -p tsconfig.e2e.json && AGENTIC_BENCH=1 vitest run --config vitest.e2e.config.mts e2e/benchmark.e2e.ts",
+    "bench:rescore": "tsc -p tsconfig.e2e.json && vitest run --config vitest.e2e.config.mts e2e/rescore.e2e.ts",
     "e2e:replay": "tsc -p tsconfig.e2e.json && AGENTIC_E2E_REPLAY=1 vitest run --config vitest.e2e.config.mts",
     "check": "npm run typecheck && npm run lint && npm test",
     "package": "vsce package --out agentic-code-plugin.vsix"

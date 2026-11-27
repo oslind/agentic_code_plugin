@@ -3,8 +3,8 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import pkg from "../package.json";
-import { safeLinkDirs, ScratchCopy } from "../src/changes/scratch";
-import { checkEnv, runCheck } from "../src/checks/runner";
+import { safeLinkDirs, ScratchCopy, setScratchLimits } from "../src/changes/scratch";
+import { checkEnv, checkStatus, runCheck } from "../src/checks/runner";
 import { OpenAICompatibleProvider } from "../src/providers/openaiCompatible";
 import { OverlayFiles } from "../src/changes/overlay";
 import { checkToolCall, isCheckAutoApproved, setExtraSecretPatterns, isAutoApproved, isChangeAutoAccepted, isProtectedPath, isSecretPath, isSensitivePath } from "../src/tools/policy";
@@ -279,7 +279,8 @@ describe("the scratch copy", () => {
   });
   it("only links plain top-level folders", () => {
     expect(safeLinkDirs(["node_modules", "../..", "/etc", "a/b", ".aws", ".git", "", 3, "vendor"])).toEqual(["node_modules", "vendor"]);
-    expect(safeLinkDirs("node_modules")).toEqual(["node_modules"]);
+    expect(safeLinkDirs("node_modules")).toEqual([]);
+    expect(safeLinkDirs(undefined)).toEqual([]);
   });
 });
 
@@ -302,8 +303,10 @@ describe("check commands", () => {
   });
   it.skipIf(process.platform === "win32")("reports a missing program plainly", async () => {
     const res = await runCheck({ name: "t", command: "definitely-not-a-real-program-xyz --x" }, await tempDir());
-    expect(res.passed).toBe(false);
+    // Reported as not run, never as a failure the sub-agents could fix (run 13, python-project).
+    expect(res).toMatchObject({ skipped: true, notFound: true });
     expect(res.output).toContain("Command not found");
+    expect(checkStatus(res)).toBe("could not run (command not found)");
   });
 });
 
@@ -393,6 +396,51 @@ describe("project-supplied scratch links and checks", () => {
   const unix = process.platform !== "win32";
   it("only links known dependency folders, never a project folder such as src", () => {
     expect(safeLinkDirs(["src", "node_modules", "config", ".venv", "../.."])).toEqual(["node_modules", ".venv"]);
+  });
+
+  it.skipIf(!unix)("copies dependency folders by default, so a command that changes packages in the copy cannot change the project's", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "node_modules", "pkg"), { recursive: true });
+    await fs.writeFile(path.join(root, "node_modules", "pkg", "index.js"), "real");
+    const dir = await new ScratchCopy(root, ["t"], safeLinkDirs(undefined)).sync(new Map());
+    expect((await fs.lstat(path.join(dir, "node_modules"))).isSymbolicLink()).toBe(false);
+    await fs.writeFile(path.join(dir, "node_modules", "pkg", "index.js"), "changed by a command");
+    expect(await fs.readFile(path.join(root, "node_modules", "pkg", "index.js"), "utf8")).toBe("real");
+  });
+
+  it.skipIf(!unix)("copies what a link inside the project points to, so a command cannot write through it (audit of PR #54)", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "common"));
+    await fs.writeFile(path.join(root, "common", "index.js"), "real");
+    await fs.symlink(path.join(root, "common", "index.js"), path.join(root, "abs-link.js"));
+    await fs.symlink("common", path.join(root, "shared"));
+    await fs.symlink("..", path.join(root, "common", "loop"));
+    const dir = await new ScratchCopy(root, ["t"], []).sync(new Map());
+    for (const rel of ["abs-link.js", "shared", "shared/index.js"]) expect((await fs.lstat(path.join(dir, rel))).isSymbolicLink()).toBe(false);
+    await fs.writeFile(path.join(dir, "abs-link.js"), "changed");
+    await fs.writeFile(path.join(dir, "shared", "index.js"), "changed");
+    expect(await fs.readFile(path.join(root, "common", "index.js"), "utf8")).toBe("real");
+  });
+
+  it.skipIf(!unix)("never copies an excluded or skipped folder under a link's name (audit of PR #54)", async () => {
+    const root = await tempDir();
+    await fs.mkdir(path.join(root, "private-data", "deep"), { recursive: true });
+    await fs.writeFile(path.join(root, "private-data", "deep", "confidential.json"), "{}");
+    await fs.mkdir(path.join(root, ".agentic"));
+    await fs.writeFile(path.join(root, ".agentic", "state.json"), "{}");
+    await fs.writeFile(path.join(root, "a.js"), "a");
+    await fs.symlink("private-data", path.join(root, "data-link"));
+    await fs.symlink("private-data/deep", path.join(root, "deep-link"));
+    await fs.symlink(".agentic", path.join(root, "state-link"));
+    setScratchLimits({ exclude: ["private-data"] });
+    try {
+      const dir = await new ScratchCopy(root, ["t"], []).sync(new Map());
+      const has = (rel: string) => fs.lstat(path.join(dir, rel)).then(() => true, () => false);
+      expect(await has("a.js")).toBe(true);
+      for (const rel of ["private-data", "data-link", "deep-link", "state-link"]) expect(await has(rel)).toBe(false);
+    } finally {
+      setScratchLimits({ exclude: [] });
+    }
   });
 
   it.skipIf(!unix)("copies a folder named in linkDirs instead of linking it, so its secrets stay out", async () => {

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { setExtraSecretPatterns } from "./tools/policy";
 import { removeStaleScratch, setScratchBase, setScratchLimits } from "./changes/scratch";
 import { setCommandIsolation } from "./checks/runner";
-import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, readScratchLimits, readCommandIsolation, PERMISSION_KEYS, readCoordinatorHistoryTokens, readAutoCompact, readCompactSubAgents, readModelConfig, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, readSkillSettings, setSecretApiKey } from "./config";
+import { API_KEY_SECRET, createProvider, ignoredProjectSettings, readProtectedFiles, readScratchLimits, readCommandIsolation, PERMISSION_KEYS, readCoordinatorHistoryTokens, readAutoCompact, readCompactSubAgents, readModelConfig, readVerificationModel, readOversightLimits, readPermissions, readRetiredOversightSettings, readRunConfig, readSkillSettings, setSecretApiKey } from "./config";
 import { legacyApiKeyFrom, OVERSIGHT_LEVELS } from "./userSettings";
 import { fileTree } from "./context/budget";
 import { parallelWaves } from "./coordinator/plan";
@@ -174,7 +174,7 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(readme)).then(undefined, () => undefined);
     await vscode.window.showTextDocument(vscode.Uri.file(readme), { preview: true });
   };
-  const runs = registerRunCommands(context, store, tree, output, views, terminals, skillsFor);
+  const runs = registerRunCommands(context, store, tree, output, views, terminals, skillsFor, () => chat);
 
   const conversations = new ConversationStore(context.globalStorageUri.fsPath, () =>
     vscode.workspace.getConfiguration("agentic.chat").get<number>("historySize", 10),
@@ -185,13 +185,22 @@ export function activate(context: vscode.ExtensionContext): void {
       new RetryingProvider(createProvider(root ? vscode.Uri.file(root) : undefined, output), 3, 1000, (n, ms, err) =>
         output.warn(`Model request failed (${err.message.slice(0, 200)}). Trying again in ${Math.round(ms / 1000)} s (attempt ${n + 1}).`),
       ),
+    // The separate verification model, when the user set one; otherwise the working model verifies.
+    verifierProvider: (root) => {
+      const verifier = readVerificationModel();
+      if (!verifier) return undefined;
+      return new RetryingProvider(createProvider(root ? vscode.Uri.file(root) : undefined, output, verifier), 3, 1000, (n, ms, err) =>
+        output.warn(`Verification model request failed (${err.message.slice(0, 200)}). Trying again in ${Math.round(ms / 1000)} s (attempt ${n + 1}).`),
+      );
+    },
     coordinatorHistoryTokens: () => readCoordinatorHistoryTokens(),
     autoCompact: () => readAutoCompact(),
     compactSubAgents: () => readCompactSubAgents(),
     modelLabel: (root) => {
       const c = readModelConfig(root ? vscode.Uri.file(root) : undefined);
       // The version and build time show which build is installed, which helps when trying a new VSIX.
-      return `${c.model} at ${c.baseUrl} · v${context.extension.packageJSON.version as string}${build}`;
+      const verifier = readVerificationModel();
+      return `${c.model}${verifier ? ` (verified by ${verifier.model})` : ""} at ${c.baseUrl} · v${context.extension.packageJSON.version as string}${build}`;
     },
     pickWorkspace: async () => (await pickWorkspaceFolder())?.uri.fsPath,
     // Only paths inside the conversation's folder can be attached, and only the paths are sent.

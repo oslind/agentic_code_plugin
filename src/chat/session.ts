@@ -40,6 +40,7 @@ export class ChatSession {
   readonly changeNotes = new Map<string, string>();
   /** Commands the user allowed for the rest of a run, keyed by run id. */
   readonly allowedCommands = new Map<string, Set<string>>();
+  readonly deniedCommands = new Map<string, Set<string>>();
   /** What every model call is doing right now, so a long "thinking" shows that it is still working. */
   readonly live = new LiveTracker();
   /** What Settings shows about skills, for the folder it was read for. Read again whenever Settings opens. */
@@ -79,6 +80,15 @@ export class ChatSession {
    */
   coordinatorProvider(workspaceRoot: string, runId?: string): ModelProvider {
     const provider = this.live.wrap(this.host.provider(workspaceRoot), "coordinator");
+    return runId ? this.budget.wrap(provider, runId) : provider;
+  }
+
+  /**
+   * The model that verifies: the separate verification model when the user set one, or else the working model.
+   * Counted and shown like every other coordinator call.
+   */
+  verifierProvider(workspaceRoot: string, runId?: string): ModelProvider {
+    const provider = this.live.wrap(this.host.verifierProvider?.(workspaceRoot) ?? this.host.provider(workspaceRoot), "coordinator");
     return runId ? this.budget.wrap(provider, runId) : provider;
   }
 
@@ -125,6 +135,13 @@ export class ChatSession {
     const messages = this.inboxes.get(key) ?? [];
     this.inboxes.delete(key);
     return messages;
+  }
+
+  /** Commands the user declined in a run, so an answer never reports (or guesses) their output. */
+  deniedFor(runId: string): Set<string> {
+    let set = this.deniedCommands.get(runId);
+    if (!set) this.deniedCommands.set(runId, (set = new Set()));
+    return set;
   }
 
   allowedFor(runId: string): Set<string> {

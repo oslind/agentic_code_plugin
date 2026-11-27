@@ -1,10 +1,23 @@
+import { isHeldTestChange } from "../changes/testGuard";
 import { matchesAny, normalizeWorkspacePath } from "./paths";
 import { ToolCall } from "./protocol";
 import { commandLeavesProject } from "./commandGuard";
+import { addsPackage, isKept } from "../context/userRules";
+
+/** What a sub-agent is told after trying to change a file the user said not to change. */
+export const KEPT_FILE = " It will be refused every time. If the task cannot be done without changing it, call finish and say so plainly: what would have to change in that file, and that the user ruled it out.";
+
+const NO_PACKAGES = (command: string) => `The user said not to add dependencies, and \`${command}\` adds a package. That rule comes from the user and no task can lift it. Use what the project already has, or call finish and say what could not be done without a new package.`;
 
 export interface PolicyContext {
   /** Globs the task may write, from its plan entry. */
   fileScope: string[];
+  /** Files the user's own message says not to change (userRules.ts). A write to one is refused, whatever the task says. */
+  keep?: string[];
+  /** The only files the user's own message allows to be changed. Empty or unset: no such limit. */
+  only?: string[];
+  /** The user's own message rules out new dependencies: a command that adds a package is refused. */
+  noNewPackages?: boolean;
   /** Names of checks configured by the user. Other commands (run_command) always go to the user or the "Run commands" switch. */
   allowedChecks: string[];
   /** Commands of the allowed checks by name, so a known check can be requested again without asking. */
@@ -102,7 +115,7 @@ const SECRET_EXCEPTIONS = ["**/.env.example", "**/.env.sample", "**/.env.templat
  * the extension's own state, and files that make VS Code change settings or
  * run commands on its own.
  */
-const PROTECTED_EXTRA = [".agentic", ".agentic/**", ".vscode/settings.json", ".vscode/tasks.json", "**/*.code-workspace"];
+const PROTECTED_EXTRA = [".agentic", ".agentic/**", "**/.vscode/settings.json", "**/.vscode/tasks.json", "**/*.code-workspace"];
 
 /**
  * Writable only with the user's approval (or the "sensitive files" switch):
@@ -122,6 +135,40 @@ const SENSITIVE = [
   "**/.yarnrc",
   "**/.pnpmfile.cjs",
   "**/.pnpmfile.js",
+  // JavaScript test, lint and build configs: code that `npm test`, `npm run lint` or a build loads and runs (Gemini audit MED-2)
+  "**/vitest.config.*",
+  "**/vitest.workspace.*",
+  "**/vite.config.*",
+  "**/jest.config.*",
+  "**/playwright.config.*",
+  "**/cypress.config.*",
+  "**/karma.conf.*",
+  "**/.mocharc.*",
+  "**/ava.config.*",
+  "**/eslint.config.*",
+  "**/.eslintrc.js",
+  "**/.eslintrc.cjs",
+  "**/.eslintrc.mjs",
+  "**/prettier.config.*",
+  "**/.prettierrc.js",
+  "**/.prettierrc.cjs",
+  "**/.prettierrc.mjs",
+  "**/webpack.config.*",
+  "**/rollup.config.*",
+  "**/babel.config.*",
+  "**/.babelrc.js",
+  "**/.babelrc.cjs",
+  "**/postcss.config.*",
+  "**/tailwind.config.*",
+  "**/svelte.config.*",
+  "**/next.config.*",
+  "**/nuxt.config.*",
+  "**/astro.config.*",
+  "**/esbuild.config.*",
+  "**/tsup.config.*",
+  "**/turbo.json",
+  "**/nx.json",
+  "**/lerna.json",
   // Make, CMake, just, Task and other task runners
   "**/Makefile",
   "**/GNUmakefile",
@@ -196,22 +243,24 @@ const SENSITIVE = [
   "**/docker-compose*.yaml",
   "**/compose.yml",
   "**/compose.yaml",
-  ".pre-commit-config.yaml",
-  // CI outside .github
+  // CI, dev containers, hooks and editor folders. Matched at any depth (Gemini audit MED-2): a monorepo package or a
+  // folder opened on its own later has its own.
+  "**/.pre-commit-config.yaml",
   "**/Jenkinsfile",
   "**/azure-pipelines.yml",
   "**/azure-pipelines.yaml",
-  ".circleci/**",
-  ".buildkite/**",
-  "bitbucket-pipelines.yml",
-  ".travis.yml",
-  ".github/**",
-  ".gitlab-ci.yml",
-  ".devcontainer/**",
-  ".husky/**",
-  ".githooks/**",
-  ".vscode/**",
-  ".gitmodules",
+  "**/.circleci/**",
+  "**/.buildkite/**",
+  "**/bitbucket-pipelines.yml",
+  "**/.travis.yml",
+  "**/.github/**",
+  "**/.gitlab-ci.yml",
+  "**/.devcontainer/**",
+  "**/.devcontainer.json",
+  "**/.husky/**",
+  "**/.githooks/**",
+  "**/.vscode/**",
+  "**/.gitmodules",
 ];
 
 /**
@@ -250,6 +299,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "request_check": {
       const outside = commandLeavesProject(call.command);
       if (outside) return { verdict: "deny", reason: `The command \`${call.command}\` is not allowed. ${outside} Commands run in the project folder.` };
+      if (ctx.noNewPackages && addsPackage(call.command)) return { verdict: "deny", reason: NO_PACKAGES(call.command) };
       // A new command always needs the user's go-ahead; workers cannot run commands on their own.
       return !ctx.followUp && ctx.allowedChecks.includes(call.name) && ctx.knownCommands?.get(call.name) === call.command
         ? { verdict: "allow" }
@@ -258,6 +308,7 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
     case "run_command": {
       const outside = commandLeavesProject(call.command);
       if (outside) return { verdict: "deny", reason: `The command \`${call.command}\` is not allowed. ${outside} Commands run in the project folder.` };
+      if (ctx.noNewPackages && addsPackage(call.command)) return { verdict: "deny", reason: NO_PACKAGES(call.command) };
       // Every command is shown first; only the user's "Run commands" switch, or the user's own approval, lets it run.
       return { verdict: "ask", reason: `Run \`${call.command}\`${call.reason ? `: ${call.reason}` : ""}` };
     }
@@ -279,6 +330,17 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       }
       return { verdict: "allow" };
     }
+    case "read_files": {
+      // Check 2026-11-09: blank entries (" ") made whole calls fail; they are skipped instead.
+      const paths = call.paths.filter((x) => x.trim());
+      if (!paths.length) return { verdict: "deny", reason: "read_files needs at least one file path" };
+      for (const raw of paths) {
+        const p = normalizeWorkspacePath(raw);
+        if (!p) return { verdict: "deny", reason: `'${raw}' is outside the workspace` };
+        if (isSecretPath(p)) return { verdict: "deny", reason: `'${p}' may contain secrets and cannot be read; leave it out` };
+      }
+      return { verdict: "allow" };
+    }
     case "read_file": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
@@ -288,14 +350,31 @@ export function checkToolCall(call: ToolCall, ctx: PolicyContext): PolicyDecisio
       return { verdict: "allow", path: p };
     }
     case "write_file":
-    case "replace_in_file": {
+    case "replace_in_file":
+    case "insert_lines": {
       const p = normalizeWorkspacePath(call.path);
       if (!p) return { verdict: "deny", reason: `'${call.path}' is outside the workspace` };
       if (isProtectedPath(p)) return { verdict: "deny", reason: `'${p}' is protected` };
+      if (ctx.keep?.length && isKept(p, ctx.keep)) {
+        return { verdict: "deny", reason: `The user said not to change '${p}'. That rule comes from the user and no task can lift it.${KEPT_FILE}` };
+      }
+      if (ctx.only?.length && !isKept(p, ctx.only)) {
+        return { verdict: "deny", reason: `The user said to change only ${ctx.only.join(", ")}, and '${p}' is not one of them. That rule comes from the user and no task can lift it.${KEPT_FILE}` };
+      }
       if (!matchesAny(p, ctx.fileScope)) {
         return {
           verdict: "deny",
           reason: `'${p}' is outside this task's file scope (${ctx.fileScope.join(", ")}). Only change files in scope.`,
+        };
+      }
+      // Gemini audit HIGH-1: a draft of package.json, a Makefile or conftest.py is used by the very next check or
+      // command in the scratch copy, so it could run anything before the user ever saw it. Such a draft is asked
+      // about first, unless the "sensitive files" switch is on (the approver checks the switch).
+      if (isSensitivePath(p)) {
+        return {
+          verdict: "ask",
+          path: p,
+          reason: `Draft a change to ${p}${ctx.followUp ? " in a reopened conversation" : ""}. This file decides what commands such as tests and builds run, so the draft is used by this run's commands and checks only if you allow it. Your file is still written only when you accept the draft under Changes`,
         };
       }
       if (ctx.followUp) {
@@ -327,15 +406,20 @@ export function isProtectedPath(path: string): boolean {
   return !p || isSecretPath(p) || matchesNoCase(p, PROTECTED_EXTRA);
 }
 
-/** Whether a pending change may be written without the user, given the switches. */
-export function isChangeAutoAccepted(path: string, auto: AutoApprove): boolean {
+/**
+ * Whether a pending change may be written without the user, given the switches. A change to an existing test
+ * file, snapshot, fixture or test-runner config never is, whatever is switched on: the user sees it first
+ * (security audits of PR #55). New test files follow the switches.
+ */
+export function isChangeAutoAccepted(path: string, auto: AutoApprove, change?: { original: string | null; proposed: string }): boolean {
+  if (change && isHeldTestChange(path, change.original)) return false;
   return isSensitivePath(path) ? auto.sensitiveFiles : auto.editFiles;
 }
 
 /** Whether the user's auto-approve switches already allow a call the policy flagged. */
 export function isAutoApproved(call: ToolCall, auto: AutoApprove): boolean {
   if (call.tool === "request_check" || call.tool === "run_command") return auto.commands;
-  if (call.tool === "write_file" || call.tool === "replace_in_file") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
+  if (call.tool === "write_file" || call.tool === "replace_in_file" || call.tool === "insert_lines") return isSensitivePath(call.path) ? auto.sensitiveFiles : auto.editFiles;
   return false;
 }
 

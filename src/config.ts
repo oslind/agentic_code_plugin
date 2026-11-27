@@ -3,6 +3,7 @@ import { OpenAICompatibleConfig, OpenAICompatibleProvider } from "./providers/op
 import { StructuredOutputMode } from "./providers/types";
 import { CheckConfig } from "./checks/runner";
 import { safeLinkDirs } from "./changes/scratch";
+import { isPlainCheckName } from "./worker/roles";
 import { AutoApprove } from "./tools/policy";
 import {
   autoRetriesFrom,
@@ -28,6 +29,7 @@ import {
   USER_ONLY_DELEGATION_KEYS,
   USER_ONLY_MODEL_KEYS,
   workspaceOverrides,
+  verificationModelFrom,
 } from "./userSettings";
 
 export { PERMISSION_KEYS } from "./userSettings";
@@ -67,13 +69,19 @@ export function readModelConfig(scope?: vscode.Uri): OpenAICompatibleConfig {
   };
 }
 
+/** The separate verification model from the user's settings, or undefined when none is set. */
+export function readVerificationModel(): { model: string; contextWindow?: number } | undefined {
+  return verificationModelFrom(vscode.workspace.getConfiguration("agentic.verification"));
+}
+
 /**
  * A provider for the current settings. Logs when the server forces a weaker
  * structured output mode, and warns when the server has gone silent.
  */
-export function createProvider(scope: vscode.Uri | undefined, log: { warn(message: string): void; info?(message: string): void }): OpenAICompatibleProvider {
+export function createProvider(scope: vscode.Uri | undefined, log: { warn(message: string): void; info?(message: string): void }, override?: { model: string; contextWindow?: number }): OpenAICompatibleProvider {
+  const config = readModelConfig(scope);
   return new OpenAICompatibleProvider(
-    readModelConfig(scope),
+    override ? { ...config, model: override.model, contextWindow: override.contextWindow ?? config.contextWindow, source: "agentic.verification.model from your user settings" } : config,
     fetch,
     (from, to, error) => log.warn(`The model server rejected structured output "${from}" (${error}). Using "${to}" instead; replies are still checked against the schema.`),
     (e) => {
@@ -124,7 +132,7 @@ export interface RunConfig {
 export function readRunConfig(scope?: vscode.Uri): RunConfig {
   const c = vscode.workspace.getConfiguration("agentic", scope);
   const valid = (list: unknown): CheckConfig[] =>
-    (Array.isArray(list) ? (list as CheckConfig[]) : []).filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command);
+    (Array.isArray(list) ? (list as CheckConfig[]) : []).filter((x) => typeof x?.name === "string" && typeof x?.command === "string" && x.name && x.command && isPlainCheckName(x.name));
   const checks = valid(c.get<unknown>("checks", []));
   return {
     checks,
@@ -133,7 +141,7 @@ export function readRunConfig(scope?: vscode.Uri): RunConfig {
     maxTurns: c.get<number>("worker.maxTurns", 40),
     maxFixRounds: c.get<number>("worker.maxFixRounds", 2),
     // User settings only: a project must not choose what gets linked into the scratch copy.
-    linkDirs: safeLinkDirs(c.inspect<unknown>("scratch.linkDirs")?.globalValue ?? ["node_modules"]),
+    linkDirs: safeLinkDirs(c.inspect<unknown>("scratch.linkDirs")?.globalValue ?? []),
   };
 }
 
@@ -189,6 +197,7 @@ export function ignoredProjectSettings(scope?: vscode.Uri): string[] {
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.scratch", scope), USER_ONLY_SCRATCH_KEYS).map((k) => `agentic.scratch.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.commands", scope), USER_ONLY_COMMAND_KEYS).map((k) => `agentic.commands.${k}`),
     ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.skills", scope), USER_ONLY_SKILL_KEYS).map((k) => `agentic.skills.${k}`),
+    ...workspaceOverrides(vscode.workspace.getConfiguration("agentic.verification", scope), ["model", "contextWindow"]).map((k) => `agentic.verification.${k}`),
   ];
 }
 

@@ -44,6 +44,9 @@ function localIpv6(h: string): boolean {
     return !p || localIpv4(p);
   }
   if (x.startsWith("::ffff:")) return true;
+  // IPv4-compatible (::7f00:1), NAT64 (64:ff9b::) and 6to4 (2002:) addresses carry an IPv4 address that can be a
+  // local one: all treated as local, which only makes the warning stronger (Gemini audit LOW-5).
+  if (x.startsWith("::") || x.startsWith("64:ff9b:") || x.startsWith("2002:")) return true;
   return /^f[cd]/.test(x) || /^fe[89ab]/.test(x) || x.startsWith("ff");
 }
 
@@ -63,7 +66,9 @@ export function checkLink(x: unknown): LinkCheck | undefined {
   const v4 = ipv4Parts(host);
   const v6 = host.includes(":");
   const lower = host.toLowerCase().replace(/\.$/, "");
-  if (lower === "localhost" || lower.endsWith(".localhost") || (v4 && localIpv4(v4)) || (v6 && localIpv6(host))) {
+  // Public names that always point back at an address in the name or at this machine (127.0.0.1.nip.io, localtest.me).
+  const loopbackDns = /(^|\.)(nip\.io|sslip\.io|xip\.io|localtest\.me|lvh\.me|vcap\.me)$/.test(lower);
+  if (loopbackDns || lower === "localhost" || lower.endsWith(".localhost") || (v4 && localIpv4(v4)) || (v6 && localIpv6(host))) {
     warnings.push("This is an address on your own computer or local network, not a public website. A link like this can reach services running on your machine or router.");
   } else if (/\.(local|lan|internal|intranet|corp|home|home\.arpa)$/.test(lower) || (!v4 && !v6 && !lower.includes("."))) {
     warnings.push("This looks like a name on a local or company network, not a public website.");

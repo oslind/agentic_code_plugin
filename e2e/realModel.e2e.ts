@@ -21,8 +21,8 @@ const only = (env.AGENTIC_E2E_ONLY ?? "")
 const scenarios = SCENARIOS.filter((s) => !only.length || only.includes(s.name));
 const minutes = (name: string, fallback: number) => (Number(env[name]) || fallback) * 60000;
 const stallMs = minutes("AGENTIC_E2E_STALL_MIN", 3);
-const silenceMs = minutes("AGENTIC_E2E_SILENCE_MIN", 5);
-const timeoutMs = minutes("AGENTIC_E2E_TIMEOUT_MIN", replay ? 2 : 30);
+const silenceMs = minutes("AGENTIC_E2E_SILENCE_MIN", 10);
+const timeoutMs = minutes("AGENTIC_E2E_TIMEOUT_MIN", replay ? 2 : 60);
 
 const E2E_DIR = __dirname;
 const RECORDINGS = path.join(E2E_DIR, "recordings");
@@ -38,15 +38,18 @@ interface Summary {
   time: string;
   mode: "live" | "replay";
   model: string;
-  scenarios: { name: string; passed: boolean; minutes: number; modelCalls: number; failures: string[] }[];
+  scenarios: { name: string; passed: boolean; minutes: number; modelCalls: number; failures: string[]; notes?: string[]; gates?: string[] }[];
 }
 
 /** One line per run in docs/local-llm/offload-log.md, as Oskar logs every local model job. */
 async function appendOffloadLog(summary: Summary, unload: string): Promise<void> {
   const file = path.join(E2E_DIR, "..", "docs", "local-llm", "offload-log.md");
-  const passed = summary.scenarios.filter((s) => s.passed).length;
+  // A note-only scenario with notes is neither a pass nor a failure: it is counted on its own.
+  const noted = summary.scenarios.filter((s) => s.passed && s.notes?.length).length;
+  const counted = summary.scenarios.length - noted;
+  const passed = summary.scenarios.filter((s) => s.passed).length - noted;
   const total = summary.scenarios.reduce((n, s) => n + s.minutes, 0);
-  const line = `| ${summary.time.slice(0, 16).replace("T", " ")} | ${summary.model} | e2e: ${summary.scenarios.map((s) => s.name).join(", ")} | ${passed}/${summary.scenarios.length} passed, ${total.toFixed(1)} min, ${unload} |\n`;
+  const line = `| ${summary.time.slice(0, 16).replace("T", " ")} | ${summary.model} | e2e: ${summary.scenarios.map((s) => s.name).join(", ")} | ${passed}/${counted} passed${noted ? `, ${noted} noted` : ""}, ${total.toFixed(1)} min, ${unload} |\n`;
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.appendFile(file, line);
 }
@@ -66,7 +69,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
       time: new Date().toISOString(),
       mode: replay ? "replay" : "live",
       model: live?.model ?? "replay",
-      scenarios: results.map((r) => ({ name: r.name, passed: r.passed, minutes: Math.round(r.durationMs / 6000) / 10, modelCalls: r.modelCalls, failures: r.failures })),
+      scenarios: results.map((r) => ({ name: r.name, passed: r.passed, minutes: Math.round(r.durationMs / 6000) / 10, modelCalls: r.modelCalls, failures: r.failures, notes: r.notes, gates: r.gates })),
     };
     // Compared with the previous run of the same kind, so a regression stands out.
     const latestFile = path.join(RESULTS, `latest-${summary.mode}.json`);
@@ -77,14 +80,14 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
     const lines = summary.scenarios.map((s) => {
       const before = previous?.scenarios.find((p) => p.name === s.name);
       const change = !before ? "" : before.passed && !s.passed ? "  REGRESSED" : !before.passed && s.passed ? "  fixed" : "";
-      return `${s.passed ? "PASS" : "FAIL"}  ${s.name.padEnd(20)} ${String(s.minutes).padStart(5)} min  ${String(s.modelCalls).padStart(4)} calls${change}`;
+      return `${!s.passed ? "FAIL" : s.notes?.length ? "NOTE" : "PASS"}  ${s.name.padEnd(20)} ${String(s.minutes).padStart(5)} min  ${String(s.modelCalls).padStart(4)} calls  ${String(s.gates?.length ?? 0).padStart(2)} gates (${s.gates?.filter((g) => / -> (denied|rejected)/.test(g)).length ?? 0} refused)${change}`;
     });
     await fs.mkdir(runDir, { recursive: true });
     await fs.writeFile(path.join(runDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
     await fs.writeFile(latestFile, JSON.stringify(summary, null, 2) + "\n");
     console.log(`\n[e2e] ${summary.mode} run with ${summary.model}\n${lines.join("\n")}\n[e2e] transcripts: ${runDir}\n`);
     if (live) {
-      const unload = env.AGENTIC_E2E_KEEP_LOADED === "1" ? "model left loaded" : await unloadOllama(live.baseUrl, live.model);
+      const unload = env.AGENTIC_E2E_KEEP_LOADED === "1" ? "model left loaded" : [await unloadOllama(live.baseUrl, live.model), ...(env.AGENTIC_E2E_VERIFIER?.trim() ? [await unloadOllama(live.baseUrl, env.AGENTIC_E2E_VERIFIER.trim())] : [])].join(", ");
       log(unload);
       if (env.AGENTIC_E2E_NO_LOG !== "1") await appendOffloadLog(summary, unload);
     }
@@ -96,7 +99,7 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
       const recordingFile = path.join(RECORDINGS, `${scenario.name}.jsonl`);
       let provider;
       if (live) {
-        provider = liveProvider(live, log);
+        provider = liveProvider({ ...live, ...scenario.model }, log);
         const ctx = await ollamaContextLength(live.baseUrl, live.model);
         if (ctx && ctx < live.contextWindow) log(`warning: Ollama runs ${live.model} with a ${ctx}-token context, below AGENTIC_E2E_CONTEXT=${live.contextWindow}. Long prompts are cut off; see docs/e2e.md.`);
       } else {
@@ -105,12 +108,16 @@ describe.skipIf(!live && !replay)(`end-to-end with ${live ? live.model : "record
         provider = new ReplayProvider(recorded);
       }
       log(`${scenario.name}: starting`);
-      const result = await runScenario(scenario, provider, { stallMs, silenceMs, timeoutMs, maxParallel: Number(env.AGENTIC_E2E_PARALLEL) || 1, outDir, log: (m) => log(`${scenario.name}: ${m}`) });
+      // AGENTIC_E2E_VERIFIER: a second model on the same server gives the verdicts, like agentic.verification.model.
+      const verifierName = live ? env.AGENTIC_E2E_VERIFIER?.trim() : undefined;
+      const verifier = live && verifierName ? liveProvider({ ...live, model: verifierName }, log) : undefined;
+      const result = await runScenario(scenario, provider, { stallMs, silenceMs, timeoutMs, maxParallel: Number(env.AGENTIC_E2E_PARALLEL) || 1, outDir, verifier, log: (m) => log(`${scenario.name}: ${m}`) });
       results.push(result);
       await saveRecording(path.join(outDir, "model-calls.jsonl"), result.calls);
       if (provider instanceof ReplayProvider && provider.drift.length) log(`${scenario.name}: ${provider.drift.length} prompt(s) changed since the recording (replies still played in order)`);
       // A passing live run can become the recording that replays use.
       if (live && result.passed && env.AGENTIC_E2E_RECORD === "1") await saveRecording(recordingFile, result.calls);
+      if (result.notes.length) log(`${scenario.name}: noted, not counted as a failure: ${result.notes.join("; ").slice(0, 500)}`);
       log(`${scenario.name}: ${result.passed ? "passed" : "FAILED"} in ${Math.round(result.durationMs / 1000)} s, ${result.modelCalls} model calls`);
       expect(result.failures, `${scenario.name} failed; transcript in ${outDir}`).toEqual([]);
     });

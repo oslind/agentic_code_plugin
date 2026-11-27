@@ -3,7 +3,7 @@ import { promises as fs } from "fs";
 import * as vscode from "vscode";
 import { resumeState } from "../state/resume";
 import { CheckConfig } from "../checks/runner";
-import { createProvider, readAutoRetries, readCompactSubAgents, readPermissions, readRunConfig } from "../config";
+import { createProvider, readAutoRetries, readCompactSubAgents, readOversightLimits, readPermissions, readRunConfig } from "../config";
 import { acceptChange, rejectChange, resolveConflict } from "../changes/review";
 import { Orchestrator, RunOutcome } from "../coordinator/orchestrator";
 import { RetryingProvider } from "../providers/retrying";
@@ -14,7 +14,15 @@ import { ChangeViews } from "./changeViews";
 import { ToolCall } from "../tools/protocol";
 import { TaskTreeProvider } from "./taskTree";
 import { ProjectTerminals } from "./projectTerminal";
+import { COMMAND_RISK_PLAIN } from "../tools/commandGuard";
 import { RunHooks } from "../chat/chatController";
+import { CallBudget } from "../chat/callBudget";
+
+/** The chat's side of runs it started: those are retried through the chat, never bare. */
+export interface ChatRuns {
+  owns(runId: string): boolean;
+  retryTasks(runId: string, taskIds?: string[]): Promise<void>;
+}
 
 export interface RunControl {
   /** Runs a plan for the chat, with the checks and callbacks the chat chose. Errors are thrown, not shown. */
@@ -70,7 +78,7 @@ function commandApprover(trusted: ReadonlySet<string>): (task: Task, check: Chec
     if (isCheckAutoApproved(readPermissions().commands, trusted, check.command) || allowed.has(check.command)) return true;
     const choice = await vscode.window.showWarningMessage(
       `"${task.title}" wants to run \`${check.command}\``,
-      { modal: true, detail: `Check "${check.name}". It starts in the project folder, but like any command it runs as you and can read files elsewhere or use the network, so only allow it if you trust it.` },
+      { modal: true, detail: `Check "${check.name}". ${COMMAND_RISK_PLAIN}` },
       "Allow once",
       "Allow for this run",
     );
@@ -107,8 +115,13 @@ export function registerRunCommands(
   terminals: ProjectTerminals,
   /** The skills for a project folder, for runs started outside the chat. */
   skillsFor?: (workspaceRoot: string) => Promise<SkillCatalog>,
+  /** The chat, once it exists. A run it started is run again only through it. */
+  chatRuns?: () => ChatRuns | undefined,
 ): RunControl {
   const active = new Map<string, { abort: AbortController; orchestrator: Orchestrator }>();
+  // Runs started here, outside the chat, still have the user's model-call limit (Gemini audit HIGH-3).
+  const budget = new CallBudget(() => readOversightLimits().maxModelCallsPerRun ?? 0);
+  const ownedByChat = (runId: string) => chatRuns?.()?.owns(runId) === true;
 
   /**
    * Runs a plan with sub-agents. Resolves undefined if the user chose not to
@@ -117,6 +130,9 @@ export function registerRunCommands(
   async function execute(run: Run, fromChat: boolean, hooks?: RunHooks): Promise<RunOutcome | undefined> {
     if (active.has(run.id)) throw new Error("This run is already in progress.");
     if (run.kind === "research") throw new Error("This is a research run. It only read files, so there is nothing to run or apply.");
+    // A chat run without the chat's hooks would skip the coordinator's review, its budget and the guards that hold
+    // unreviewed drafts (Gemini audit HIGH-3); the commands below send it to the chat instead.
+    if (!hooks && ownedByChat(run.id)) throw new Error("This run belongs to a chat conversation. Retry it from the chat.");
     const folder = await confinedFolder(run);
     const config = readRunConfig(folder.uri);
     // The chat has already asked the user which checks to use.
@@ -133,7 +149,8 @@ export function registerRunCommands(
     const orchestrator = new Orchestrator({
       store,
       runId: run.id,
-      provider: new RetryingProvider(createProvider(folder.uri, output)),
+      // Counted against the run's model-call budget; the chat wraps it per sub-agent with its own budget.
+      provider: hooks ? new RetryingProvider(createProvider(folder.uri, output)) : budget.wrap(new RetryingProvider(createProvider(folder.uri, output)), run.id),
       workspaceRoot: folder.uri.fsPath,
       checks: config.checks,
       maxParallel: config.maxParallel,
@@ -151,7 +168,7 @@ export function registerRunCommands(
       onChanges: hooks?.onChanges ?? (async (_task, changes) => {
         // Outside the chat: accept what the switches allow, and leave the rest for "Review pending changes".
         for (const c of changes) {
-          if (isChangeAutoAccepted(c.path, readPermissions())) await acceptChange(store, run.id, c.path, folder.uri.fsPath, { auto: true });
+          if (isChangeAutoAccepted(c.path, readPermissions(), c)) await acceptChange(store, run.id, c.path, folder.uri.fsPath, { auto: true });
         }
       }),
       askUser: hooks?.askUser,
@@ -183,6 +200,7 @@ export function registerRunCommands(
       return outcome;
     } finally {
       active.delete(run.id);
+      if (!hooks) budget.clear(run.id);
       tree.refresh();
     }
   }
@@ -192,6 +210,7 @@ export function registerRunCommands(
       const run = await pickRun(store, node);
       if (!run) return;
       try {
+        if (ownedByChat(run.id)) return await chatRuns!()!.retryTasks(run.id, []);
         await execute(run, false);
       } catch (err) {
         output.error((err as Error).message);
@@ -219,6 +238,7 @@ export function registerRunCommands(
     vscode.commands.registerCommand("agentic.retryTask", async (node: RunNode) => {
       if (node?.kind !== "task") return;
       try {
+        if (ownedByChat(node.run.id)) return await chatRuns!()!.retryTasks(node.run.id, [node.task.id]);
         await store.retryTask(node.run.id, node.task.id);
         tree.refresh();
         if (!active.has(node.run.id)) await vscode.commands.executeCommand("agentic.runPlan", { kind: "run", run: node.run });
@@ -234,6 +254,7 @@ export function registerRunCommands(
         vscode.window.showInformationMessage("No failed tasks to retry.");
         return;
       }
+      if (ownedByChat(run.id)) return await chatRuns!()!.retryTasks(run.id);
       for (const t of failed) await store.retryTask(run.id, t.id);
       tree.refresh();
       if (!active.has(run.id)) await vscode.commands.executeCommand("agentic.runPlan", { kind: "run", run });

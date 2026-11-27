@@ -1,3 +1,4 @@
+import { untrustedSection } from "../context/untrusted";
 import { Run, Task } from "../state/types";
 import { ChatEntry } from "./types";
 
@@ -32,6 +33,20 @@ export function learnedSoFar(entries: ChatEntry[], maxChars = 3000): string | un
   return lines.length ? lines.join("\n") : undefined;
 }
 
+
+/**
+ * What research found for one request, before its plan was made: the answers combined from research reports, and
+ * the researchers' own reports, oldest first. Untrusted, like learnedSoFar. Reports that come after the plan are
+ * from sub-agents that changed files: verification gets those with their tasks.
+ */
+export function researchFindings(scope: ChatEntry[], maxChars = 2000): string | undefined {
+  const plan = scope.findIndex((e) => e.kind === "plan");
+  const before = plan < 0 ? scope : scope.slice(0, plan);
+  const lines = before
+    .filter((e) => (e.kind === "report" && e.author !== "coordinator" && e.author !== "user") || (e.author === "coordinator" && e.tag === "from research"))
+    .map((e) => `- ${e.text.replace(/\s+/g, " ").slice(0, 800)}`);
+  return lines.join("\n").slice(0, maxChars) || undefined;
+}
 
 const isPrompt = (e: ChatEntry) => e.author === "user" && e.kind !== "direct";
 
@@ -112,10 +127,12 @@ export function earlierWork(task: Task, entries: ChatEntry[], runId: string, max
     .map((e) => (e.author === "user" ? `- The user said: ${e.text}` : `- ${e.tag ? `${e.tag}: ` : ""}${e.thought || e.text}`).replace(/\s+/g, " ").slice(0, 300));
   let shown = steps.join("\n");
   if (shown.length > maxChars) shown = `[… earlier steps left out]\n${shown.slice(-maxChars)}`;
-  return [
+  const body = [
     task.summary ? `Your report when you finished:\n${task.summary}` : task.error ? `Your task ended with: ${task.error}` : "",
     shown ? `Your steps:\n${shown}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
+  // Fenced (Gemini audit MED-3): the report and steps were written by a model that read project files.
+  return body ? untrustedSection("What you did earlier, as the chat shows it:", "your earlier report and steps", body) : "";
 }

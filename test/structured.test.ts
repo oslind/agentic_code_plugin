@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { callStructured, extractJson, StructuredOutputError } from "../src/llm/structured";
+import { reviewSubAgentResult } from "../src/coordinator/review";
+import { callStructured, extractJson, StructuredOutputError, VERDICT_MAX_TOKENS, THINKING_BUDGET_CHARS } from "../src/llm/structured";
 import { ChatRequest, ModelProvider } from "../src/providers/types";
 
 function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] } {
@@ -19,6 +20,12 @@ function scripted(replies: string[]): ModelProvider & { requests: ChatRequest[] 
 }
 
 describe("extractJson", () => {
+  it("takes the first complete value when stray braces or text follow it", () => {
+    // e2e run 6 without structured output: a valid plan with one "}" too many, four times.
+    expect(extractJson('{"tasks":[{"id":"a","note":"a } in a string"}]}}')).toEqual({ tasks: [{ id: "a", note: "a } in a string" }] });
+    expect(extractJson('Here it is: {"a":"x \\" }"} and that is all.')).toEqual({ a: 'x " }' });
+  });
+
   it("parses plain JSON", () => {
     expect(extractJson('{"a":1}')).toEqual({ a: 1 });
   });
@@ -47,6 +54,25 @@ describe("callStructured", () => {
     const out = await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x" });
     expect(out).toEqual({ files: ["a.ts"] });
     expect(p.requests[0]?.jsonSchema?.schema).toMatchObject({ type: "object" });
+  });
+
+  it("passes a per-call token cap, and the coordinator's verdicts use one", async () => {
+    const p = scripted(['{"files":["a.ts"]}']);
+    await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x", maxTokens: VERDICT_MAX_TOKENS });
+    expect(p.requests[0]?.maxTokens).toBe(VERDICT_MAX_TOKENS);
+    const r = scripted(['{"verdict":"accept","feedback":"ok"}']);
+    await reviewSubAgentResult(r, { userMessages: ["add median"], request: "add median", agent: { title: "Add median", instructions: "Add median", fileScope: ["src/stats.js"], research: false }, summary: "done", drafts: "", round: 0 });
+    expect(r.requests[0]?.maxTokens).toBe(VERDICT_MAX_TOKENS);
+  });
+
+  it("asks for no thinking on the retry after a reply cut off at the length limit", async () => {
+    const requests: ChatRequest[] = [];
+    const replies = [{ content: "", truncated: true }, { content: '{"files":["a.ts"]}' }];
+    const p: ModelProvider = { model: "t", contextWindow: 8192, async chat(req) { requests.push(req); return replies.shift()!; } };
+    await callStructured({ provider: p, messages: [{ role: "user", content: "go" }], schema, schemaName: "x" });
+    expect(requests.map((r) => r.noThinking)).toEqual([undefined, true]);
+    // The first call may think up to the budget; the retry without thinking has none (run 14).
+    expect(requests.map((r) => r.thinkingBudget)).toEqual([THINKING_BUDGET_CHARS, undefined]);
   });
 
   it("feeds the validation error back and retries", async () => {
