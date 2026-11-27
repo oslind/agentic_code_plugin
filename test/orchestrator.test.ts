@@ -221,6 +221,17 @@ describe("Orchestrator without git", () => {
     expect(third.done).not.toContain("a");
   });
 
+  it("keeps a draft whose check fails only as before when the user asked for a fix another task makes (run 31)", async () => {
+    await writeFile(path.join(repo, "a.txt"), "old\n");
+    const checks: CheckConfig[] = [{ name: "test", command: node("console.log('FAIL average of three');process.exit(1)") }];
+    const run = await store.createRun("fix and test", repo, undefined, undefined, "Fix average() in b.txt, and add a test to a.txt.");
+    await store.addTasks(run.id, [task("a", ["a.txt"]), task("b", ["b.txt"], ["a"])]);
+    const outcome = await make(run.id, scripted({ a: [write("a.txt", "x"), finish, finish], b: [write("b.txt", "y"), finish, finish] }), { checks, maxFixRounds: 1 }).o.run();
+    expect(outcome.done).toContain("a");
+    expect((await changesOf(run.id)).find((c) => c.path === "a.txt")?.proposed).toBe("x");
+    expect((await store.readLog(run.id)).some((e) => e.type === "checks_preexisting" && e.taskId === "a" && e.data?.afterFixRounds === 1)).toBe(true);
+  });
+
   it("keeps a draft whose only failure is a test that pins the old value, after one fix round (run 17)", async () => {
     await writeFile(path.join(repo, "a.txt"), "old\n");
     const pin = "const t=require('fs').readFileSync('a.txt','utf8');if(t==='x'){console.log('FAIL night is 3 lower\\nExpected values to be strictly equal:\\n17 !== 18');process.exit(1)}";

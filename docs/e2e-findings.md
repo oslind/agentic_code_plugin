@@ -470,6 +470,13 @@ Runs 21 to 24 on nearly the same code gave 47, 50 of 50, and 47 of 51: the diffe
 - One wrong detail in a passing run: impossible-constraint pass 3 swapped the numbers in its answer (said the test expects 30 and gets 20; it expects 20 and gets 30). The diagnosis and conclusion were right. Pass 1 said the reports conflict on this.
 - This commit does not have the guards listed in the next section; they are still not run live.
 
+## Run 31: 12 scenarios on dd017ad, stopped after pass 2 by Oskar, 21 of 24 (2026-11-27)
+
+Pass 1 11/12 (152.6 min), pass 2 10/12 (148.6 min). The expected-output check worked: new-module-used p1 printed "212.0 °C" and was held as not verified (honest fail; the fix-ups never fixed the target line). Two false "verified" in pass 2, both fixed in ed56cdb and the commit after it:
+
+- question-then-answer p2: the plan scoped "4 degrees instead of 3" to src/index.js, drafted as `targetTemp(4)` (4 passed as the mode); every program printed what it printed before, and "done" was accepted on the quote. The verifier is now told by rule when every program run printed the same with and without the drafts.
+- fix-and-add-test p2: the test task's check failed only on "average of three" (the bug the other task fixed in stats.js). The user asked for a fix, so it counted as the test task's work; after its fix rounds the task failed, was retried from the project state, and its correct test draft was lost; the retry wrote nothing and said the test was "already present". Verification then let the rejected review go on a part whose "found" was that sentence. Fixed: overruling a rejected review needs each part shown by text really in the drafts or an output (confirmedBy); and a task whose check fails only the way it did without its writes, in a run where another task changes other files, keeps its draft after its fix rounds and leaves the failure to verification.
+
 ## Run 30: all 53 on 32cb984, 49 passed, 461.1 min (2026-11-27)
 
 00:06 to 07:48 CET. One false "verified" (new-module-used). Gates: 183 allowed, 1 denied (command-denied), 6 held test changes, all accepted, nothing changed on disk before review. First live run of the diagnosis before fix-ups: 8 diagnoses; 4 named the real cause and the next round passed (package-json-script duplicate key, new-module-used-twice missing require, new-module-used missing export, validate-input's 'no mode' line), 2 found no cause (the scenarios passed), 1 harmful (old-test-pins-value).

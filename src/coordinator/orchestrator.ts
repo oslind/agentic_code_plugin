@@ -387,6 +387,17 @@ export class Orchestrator {
           await this.log("checks_pinned", `Checks failed (${failed.map((c) => c.name).join(", ")}) on a comparison of values in a test this sub-agent may not change; the draft is kept and left to verification on all drafts together`, task.id, { checks: failed.map((c) => c.name) });
           break;
         }
+        // Run 31, fix-and-add-test: the test task's check failed only on "average of three", the bug another task of the
+        // run was fixing in src/stats.js. The user asked for a fix, so the old failure counted as this task's work; it
+        // could not change stats.js, failed after its fix rounds, and its correct test draft was thrown away with the
+        // retry. A failure that is the same without this sub-agent's writes is not caused by them, and when another task of
+        // the run changes other files the fix can be theirs: after the fix rounds the draft is kept and the failure is
+        // left to verification on all drafts together, which sends fix-ups.
+        const othersFix = old.length === failed.length && (await this.o.store.load(this.o.runId)).tasks.some((t) => t.id !== task.id && t.fileScope.some((f) => !task.fileScope.includes(f)));
+        if (round >= this.o.maxFixRounds && othersFix) {
+          await this.log("checks_preexisting", `Checks still fail (${failed.map((c) => c.name).join(", ")}) after ${round} fix round(s), only the way they failed without this sub-agent's changes; the draft is kept and left to verification`, task.id, { checks: failed.map((c) => c.name), afterFixRounds: round });
+          break;
+        }
         if (round >= this.o.maxFixRounds) {
           throw new OrchestratorError(`Checks failed: ${failed.map((c) => c.name).join(", ")}`);
         }
