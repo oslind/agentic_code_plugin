@@ -10,7 +10,7 @@ import { TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
 import { CheckConfig, CheckResult, checkStatus, runAllChecks } from "../checks/runner";
 import { detectChecks } from "../checks/detect";
-import { Cause, diagnose, diagnosisNote } from "../coordinator/diagnose";
+import { Cause, causeLine, diagnose, diagnosisNote, namedPaths, RelatedFile } from "../coordinator/diagnose";
 import { isCheckAutoApproved } from "../tools/policy";
 import { COMMAND_RISK } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
@@ -620,11 +620,18 @@ export class Verifier {
     const newest = new Map<string, PendingChange>();
     for (const ch of run.changes ?? []) if (ch.status !== "rejected" && ch.status !== "reverted") newest.set(ch.path, ch);
     const files = [...newest.values()].map((c) => ({ path: c.path, original: c.original, proposed: c.proposed }));
+    // Project files the failure names that no draft changed (a test that still expects the old value, say).
+    const related: RelatedFile[] = [];
+    const project = await WorkspaceSandbox.create(workspaceRoot).catch(() => undefined);
+    for (const p of namedPaths(v.broken).filter((p) => !newest.has(p)).slice(0, 3)) {
+      const text = await project?.readFile(p, 64 * 1024).catch(() => undefined);
+      if (text !== undefined) related.push({ path: p, text });
+    }
     this.s.busy = "Coordinator is finding out what the drafts broke…";
     this.s.changed();
     let causes: Cause[];
     try {
-      causes = await diagnose(this.s.coordinatorProvider(workspaceRoot, runId), { userWords: userRequest, broken: v.broken, files }, { signal });
+      causes = await diagnose(this.s.coordinatorProvider(workspaceRoot, runId), { userWords: userRequest, broken: v.broken, files, related }, { signal });
     } catch (err) {
       if (signal.aborted) throw err;
       this.host.log("warn", `The diagnosis before the fix-up failed: ${(err as Error).message}`);
@@ -636,7 +643,7 @@ export class Verifier {
       author: "coordinator",
       runId,
       tag: "diagnosis",
-      text: `I compared the failing output with and without the drafts and read what changed. The cause:\n${causes.map((c) => `- ${c.path}: \`${c.quote.trim().slice(0, 160)}\` ${c.removed ? "was removed" : "was added or changed"}. ${c.why.trim()} Fix: ${c.fix.trim()}`).join("\n")}`,
+      text: `I compared the failing output with and without the drafts and read what changed. The cause:\n${causes.map((c) => `- ${causeLine(c, 160)}`).join("\n")}`,
     });
     return diagnosisNote(causes, v.broken);
   }

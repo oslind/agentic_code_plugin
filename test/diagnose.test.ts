@@ -8,7 +8,7 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ChatSession } from "../src/chat/session";
 import { Verifier, withEntryPoints } from "../src/chat/verifier";
-import { buildDiagnosisMessages, checkedCauses, diagnose, diagnosisNote, DraftFile } from "../src/coordinator/diagnose";
+import { buildDiagnosisMessages, Cause, checkedCauses, diagnose, diagnosisNote, DraftFile, namedPaths } from "../src/coordinator/diagnose";
 import { fixUpRequest } from "../src/coordinator/verify";
 import { ChatMessage, ModelProvider } from "../src/providers/types";
 import { TaskStore } from "../src/state/taskStore";
@@ -19,11 +19,11 @@ const RENAME: DraftFile = {
   proposed: "function warm(t) {\n  return t < targetTemp;\n}\nmodule.exports = { warm };\n",
 };
 const BROKEN = [{ line: "npm test", output: "ReferenceError: targetTemp is not defined\n    at warm (src/thermostat.js:2:14)", before: "" }];
-const cause = (c: Partial<{ path: string; quote: string; removed: boolean }>) => ({ path: RENAME.path, quote: "", removed: false, why: "w", fix: "f", ...c });
+const cause = (c: Partial<Cause>): Cause => ({ path: RENAME.path, quote: "", kind: "added", why: "w", fix: "f", ...c });
 
 describe("checking the investigator's quotes against the drafts", () => {
   it("keeps a removed line the original had and the draft lacks", () => {
-    expect(checkedCauses([cause({ quote: "- const { targetTemp } = require('./config');", removed: true })], [RENAME])).toHaveLength(1);
+    expect(checkedCauses([cause({ quote: "- const { targetTemp } = require('./config');", kind: "removed" })], [RENAME])).toHaveLength(1);
   });
 
   it("keeps an added line that is in the draft, with spacing that differs and a ./ path", () => {
@@ -34,13 +34,25 @@ describe("checking the investigator's quotes against the drafts", () => {
     const out = checkedCauses(
       [
         cause({ quote: "const targetTemp = 20;" }),
-        cause({ quote: "return t < targetTemp;", removed: true }),
+        cause({ quote: "return t < targetTemp;", kind: "removed" }),
         cause({ path: "src/other.js", quote: "function warm(t) {" }),
         cause({ quote: "}" }),
       ],
       [RENAME],
     );
     expect(out).toEqual([]);
+  });
+
+  it("keeps an unchanged line of a file the failure names, and of a draft only where the draft left it (run 30)", () => {
+    const test = { path: "test.js", text: "check(targetTemp('night'), 18);\n" };
+    expect(checkedCauses([cause({ path: "test.js", quote: "check(targetTemp('night'), 18);", kind: "unchanged" })], [RENAME], [test])).toHaveLength(1);
+    expect(checkedCauses([cause({ path: "test.js", quote: "check(targetTemp('night'), 17);", kind: "unchanged" })], [RENAME], [test])).toEqual([]);
+    expect(checkedCauses([cause({ quote: "module.exports = { warm };", kind: "unchanged" })], [RENAME])).toEqual([]);
+    expect(checkedCauses([cause({ quote: "return t < targetTemp;", kind: "unchanged" })], [RENAME])).toHaveLength(1);
+  });
+
+  it("finds the project files a failing command names, not absolute or dependency paths", () => {
+    expect(namedPaths([{ line: "node test.js", output: "FAIL night\n    at Object.<anonymous> (/tmp/x/src/thermostat.js:4:9)\n    at node_modules/foo/index.js:1" }])).toEqual(["test.js"]);
   });
 
   it("finds a file named by its end", () => {
@@ -55,6 +67,12 @@ describe("what the investigator is given", () => {
     expect(user!.content).toMatch(/Rename heat to warm everywhere/);
     expect(user!.content).toMatch(/<untrusted_data[^>]*>[\s\S]*ReferenceError: targetTemp[\s\S]*Without the changes:\n\(passed, no output\)/);
     expect(user!.content).toMatch(/diff of src\/thermostat\.js[\s\S]*- const \{ targetTemp \} = require\('\.\/config'\);/);
+  });
+
+  it("shows an unchanged file the failure names after the diffs, and says the requested change is never undone", () => {
+    const [system, user] = buildDiagnosisMessages({ userWords: "Make night 4 lower", broken: BROKEN, files: [RENAME], related: [{ path: "test.js", text: "check(night, 18);" }] }, 16384);
+    expect(system!.content).toMatch(/never to undo what the user asked/);
+    expect(user!.content).toMatch(/did not touch[\s\S]*test\.js \(not changed\)[\s\S]*check\(night, 18\);/);
   });
 
   it("shows a new file as all added lines", () => {
@@ -79,8 +97,8 @@ describe("one diagnosis call", () => {
       provider(
         {
           causes: [
-            { path: "src/thermostat.js", quote: "const { targetTemp } = require('./config');", removed: true, why: "warm uses targetTemp, which is no longer imported.", fix: "Put back const { targetTemp } = require('./config'); at the top." },
-            { path: "src/thermostat.js", quote: "const targetTemp = 21;", removed: false, why: "made up", fix: "x" },
+            { path: "src/thermostat.js", quote: "const { targetTemp } = require('./config');", kind: "removed", why: "warm uses targetTemp, which is no longer imported.", fix: "Put back const { targetTemp } = require('./config'); at the top." },
+            { path: "src/thermostat.js", quote: "const targetTemp = 21;", kind: "added", why: "made up", fix: "x" },
           ],
         },
         seen,
@@ -130,7 +148,7 @@ describe("the verifier diagnoses before a fix-up", () => {
     await tasks.save(run);
     const appended: { tag?: string; text: string }[] = [];
     const seen: ChatMessage[][] = [];
-    const reply = { causes: [{ path: RENAME.path, quote: "const { targetTemp } = require('./config');", removed: true, why: "targetTemp is no longer imported.", fix: "Put the require back." }] };
+    const reply = { causes: [{ path: RENAME.path, quote: "const { targetTemp } = require('./config');", kind: "removed", why: "targetTemp is no longer imported.", fix: "Put the require back." }] };
     const session = {
       host: { openFolder: async () => root, scratchLinkDirs: () => [], permissions: () => ({ editFiles: false, sensitiveFiles: false, commands: false }), terminal: () => undefined, log: () => undefined },
       tasks,
