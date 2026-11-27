@@ -11,6 +11,8 @@ export interface Citation {
   line: number;
   /** The code as the report quoted it. */
   quote: string;
+  /** Everything the report wrote after `path:line:`, when that is more than the quote (a quote in backticks). */
+  said?: string;
 }
 
 export interface CitationCheck {
@@ -50,7 +52,8 @@ export function citationsIn(report: string): Citation[] {
     const quote = quoteOf(m[3]!);
     // A few characters ("}", "else") are in every file and prove nothing.
     if (squeeze(quote).length < 6) continue;
-    out.push({ path: m[1]!.replace(/\\/g, "/").replace(/^\.\//, ""), line: Number(m[2]), quote });
+    const said = m[3]!.trim().replace(/^["'“”]+|["'“”]+$/g, "").trim();
+    out.push({ path: m[1]!.replace(/\\/g, "/").replace(/^\.\//, ""), line: Number(m[2]), quote, ...(said.replace(/`/g, "").trim() !== quote ? { said } : {}) });
   }
   return out;
 }
@@ -77,7 +80,7 @@ export async function checkCitations(report: string, read: (path: string) => Pro
       files.set(c.path, sourceOf(text));
     }
     const file = files.get(c.path);
-    (file !== undefined && quoted(file, c.quote) ? result.found : result.missing).push(c);
+    (file !== undefined && quoted(file, c.quote) && !misquoted(file, c.said, c.quote) ? result.found : result.missing).push(c);
   }
   return result;
 }
@@ -102,6 +105,28 @@ function quoted(file: Source, quote: string): boolean {
   const trimmed = q.replace(/[.,:;!?]+$/, "");
   if (trimmed.length >= 6 && file.all.includes(trimmed)) return true;
   return file.lines.some((l) => l.length >= 6 && q.startsWith(l));
+}
+
+const plain = (t: string) => squeeze(t.replace(/`/g, "")).replace(/[.,:;!?]+$/, "");
+
+/**
+ * Whether the whole text after `path:line:` starts like a line of the file and then says something else. Run 30,
+ * research-sed: `README.md:3: A small heating controller. Run the tests with \`node test.js\`.` was found by its
+ * backticked part, though the file says "controler": the report had quoted the line with the typo corrected. Words
+ * after a whole line ("… (returns the sum)") and part of a line are still fine.
+ */
+function misquoted(file: Source, said: string | undefined, quote: string): boolean {
+  if (!said) return false;
+  const s = plain(said);
+  // The quoted code comes first and words about it follow: "`A small heating controler.` (the typo)".
+  if (s.length < 12 || s.startsWith(plain(quote))) return false;
+  return file.lines.some((raw) => {
+    const l = raw.replace(/`/g, "").replace(/[.,:;!?]+$/, "");
+    if (l.length < 12 || s.startsWith(l) || l.includes(s)) return false;
+    let n = 0;
+    while (n < s.length && s[n] === l[n]) n++;
+    return n >= 12;
+  });
 }
 
 const show = (c: Citation) => `${c.path}:${c.line}: ${c.quote.replace(/\s+/g, " ").slice(0, 100)}`;

@@ -152,3 +152,13 @@ describe("run 29: a command that cannot work as written is not blamed on the dra
     expect(misusedCommand("FAIL freezing point: fahrenheitToCelsius is not a function")).toBe(false);
   });
 });
+
+describe("every program run on the drafts is kept for the expected-output check (run 30)", () => {
+  it("keeps a run whose output the drafts did not change, with its output before", async () => {
+    const { verifier, root, runId } = await setup("module.exports = { v: 1 };\n");
+    await fs.writeFile(path.join(root, "index.js"), "const a = require('./a');\nconsole.log('v is ' + a.v);\n");
+    const r = await verifier.compareWithProject("c", root, runId, withEntryPoints([], ["node index.js"]), [], new AbortController().signal);
+    expect(r.programOutputs).toBeUndefined();
+    expect(r.programRuns).toEqual([{ line: "node index.js", before: "v is 1", now: "v is 1" }]);
+  });
+});

@@ -98,6 +98,8 @@ export interface VerifyContext {
    * without the drafts (`before` is undefined when there was nothing to compare with). Their output is untrusted.
    */
   programOutputs?: { line: string; before?: string; now: string }[];
+  /** Every command that ran without failing on all drafts together, with its output then and without the drafts. */
+  programRuns?: { line: string; before?: string; now: string }[];
   /** The project's file tree. Untrusted (file names). Run 8: verification named test files that do not exist. */
   fileTree?: string;
   /**
@@ -591,6 +593,22 @@ export function buildAnswerCheckMessages(question: string, answer: string, conte
 }
 
 /** One model call: does the combined research answer cover the question? "No" is never taken as yes, even with nothing named. */
+/**
+ * What the answer itself says it does not know: the lines under its own "Still unknown:" (the synthesis prompt asks
+ * for that heading). Run 30, research-call-chain: the answer said the value of DEFAULT_TARGET was not in the reports,
+ * the check called it answered anyway, and no researcher was sent to read the line that had it.
+ */
+export function stillUnknown(answer: string): string[] {
+  const m = /(?:^|\n)[ \t>*_-]*still unknown[*_]*\s*:[*_]*([^\n]*)((?:\n[ \t]*(?:[-*•]|\d+[.)])[^\n]*)*)/gi;
+  let last: RegExpExecArray | undefined;
+  for (let r = m.exec(answer); r; r = m.exec(answer)) last = r;
+  if (!last) return [];
+  const items = [last[1]!, ...last[2]!.split("\n")]
+    .map((l) => l.replace(/^[\s>*•-]+|^\s*\d+[.)]\s*/g, "").replace(/\*\*|__/g, "").replace(/\s+/g, " ").trim())
+    .filter((l) => l.length >= 5 && !/^(?:none|nothing|n\/a|no(?:thing)? (?:open|unknown|gaps?))\b[.!]?/i.test(l));
+  return items.slice(0, 3).map((l) => l.slice(0, 200));
+}
+
 export async function checkAnswer(provider: ModelProvider, question: string, answer: string, opts: { signal?: AbortSignal } = {}): Promise<AnswerCheck> {
   const d = await callStructured({
     maxTokens: VERDICT_MAX_TOKENS,

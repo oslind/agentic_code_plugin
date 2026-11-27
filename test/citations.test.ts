@@ -22,7 +22,7 @@ describe("sources of research findings are looked up by code", () => {
       { path: "src/stats.js", line: 4, quote: "return sum / 2;" },
       { path: "src/thermostat.js", line: 1, quote: "const DEFAULT_TARGET = 21;" },
       { path: "src/thermostat.js", line: 3, quote: "if (mode === 'night') return DEFAULT_TARGET - 3;" },
-      { path: "src/stats.js", line: 2, quote: "let sum = 0;" },
+      { path: "src/stats.js", line: 2, quote: "let sum = 0;", said: "the sum starts at zero: `let sum = 0;`" },
     ]);
   });
 
@@ -76,5 +76,25 @@ describe("run 28: citations with a short path or written-out line breaks", () =>
     // Without the list, or when two files end that way, a short path is not guessed.
     expect((await checkCitations("thermostat.js:2: function targetTemp(mode) {", read)).missing).toHaveLength(1);
     expect((await checkCitations("x.js:1: const DEFAULT_TARGET = 21;", read, async () => ["a/x.js", "b/x.js"])).missing).toHaveLength(1);
+  });
+});
+
+describe("a quote that corrects the file's own words (run 30, research-sed)", () => {
+  const readme = "# Thermostat\n\nA small heating controler. Run the tests with `node test.js`.\n";
+  const read = async () => readme;
+
+  it("is not found by its backticked part when the rest of the line differs", async () => {
+    const r = await checkCitations("No spelling mistakes.\nREADME.md:3: A small heating controller. Run the tests with `node test.js`.", read);
+    expect(r.found).toEqual([]);
+    expect(r.missing.map((c) => c.line)).toEqual([3]);
+  });
+
+  it("still finds the line quoted as it is, with words after it, or in part", async () => {
+    const r = await checkCitations(
+      ["README.md:3: A small heating controler. Run the tests with `node test.js`.", "README.md:3: `A small heating controler.` (the typo is controler)", "README.md:3: A small heating controler."].join("\n"),
+      read,
+    );
+    expect(r.missing).toEqual([]);
+    expect(r.found).toHaveLength(3);
   });
 });

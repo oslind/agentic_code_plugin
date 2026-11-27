@@ -10,7 +10,8 @@ import { TaskStore } from "../state/taskStore";
 import { PendingChange, Task } from "../state/types";
 import { CheckConfig, CheckResult, checkStatus, runAllChecks } from "../checks/runner";
 import { detectChecks } from "../checks/detect";
-import { Cause, causeLine, diagnose, diagnosisNote, namedPaths, RelatedFile } from "../coordinator/diagnose";
+import { Expectation, expectedOutput, ProgramRun, quotesSomething, unmetExpectations } from "../coordinator/expectedOutput";
+import { BrokenCommand, Cause, causeLine, diagnose, diagnosisNote, namedPaths, RelatedFile } from "../coordinator/diagnose";
 import { isCheckAutoApproved } from "../tools/policy";
 import { COMMAND_RISK } from "../tools/commandGuard";
 import { ConversationStore } from "./conversationStore";
@@ -20,7 +21,7 @@ import { commandEventData } from "../worker/worker";
 import { draftsForReview, leftoverRename, renameLeftovers, renamesEverywhere } from "../coordinator/review";
 import { filesMentioning } from "../context/outline";
 import { conventionsText } from "../skills/catalog";
-import { aboutOldFailures, AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, taskFacts, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
+import { aboutOldFailures, AnswerCheck, checkAnswer, factsOnlyVerification, fixUpNotes, fixUpRequest, MANUAL_REVIEW, stillUnknown, taskFacts, Verification, VerifyContext, verifyRoundLimit, verifyRun, VerifyTask } from "../coordinator/verify";
 import { ChatHost, RunHooks } from "./host";
 import { ChatSession } from "./session";
 import { clip } from "./helpers";
@@ -125,7 +126,10 @@ export class Verifier {
   /** Does the combined answer cover the question? Undefined when the check itself failed; the answer is then sent as it is. */
   async checkResearchAnswer(workspaceRoot: string, question: string, answer: string, signal: AbortSignal): Promise<AnswerCheck | undefined> {
     try {
-      const res = await checkAnswer(this.s.verifierProvider(workspaceRoot), question, answer, { signal });
+      let res = await checkAnswer(this.s.verifierProvider(workspaceRoot), question, answer, { signal });
+      // An answer that names what it does not know is not complete, whatever the check says: researchers go after it.
+      const unknown = res.answered ? stillUnknown(answer) : [];
+      if (unknown.length) res = { answered: false, missing: unknown, thought: res.thought };
       this.host.log("info", `Checked the research answer: ${res.answered ? "it answers the question" : res.missing.length ? `still open: ${res.missing.join(" | ")}` : "not confirmed, nothing named (manual review required)"}.`);
       return res;
     } catch (err) {
@@ -288,10 +292,16 @@ export class Verifier {
     // By rule, not from the model: the final reply then has the real output in front of it.
     v = { ...v, evidence: `${v.evidence}${printedEvidence(ctx.programOutputs)}` };
     // What the drafts broke, with the output with and without them: the diagnosis before a fix-up works from this.
-    const broken = [
+    const broken: BrokenCommand[] = [
       ...(ctx.failedCommands ?? []).map((f) => ({ line: f.line, output: f.output, before: f.before })),
       ...results.filter((r) => !r.passed && !r.skipped && r.failedBefore === "new").map((r) => ({ line: checks.find((k) => k.name === r.name)?.command ?? r.name, output: r.output })),
     ];
+    // What the user's words say the program prints, checked by code against what it printed with the drafts.
+    for (const { expectation: e, run } of unmetExpectations(await this.expectations(workspaceRoot, runId, said, ctx.programRuns, signal), ctx.programRuns ?? [])) {
+      const note = `Checked by rule: \`${e.command}\` should print ${JSON.stringify(e.shows)} (from your request), but with the drafts it printed: ${run.now.replace(/\s+/g, " ").trim().slice(0, 200)}`;
+      v = { ...v, verified: false, missing: [...v.missing, `Make \`${e.command}\` print ${JSON.stringify(e.shows)} as the user asked; with the drafts it printed: ${run.now.replace(/\s+/g, " ").trim().slice(0, 160)}`], adjusted: v.adjusted ? `${v.adjusted} ${note}` : note };
+      broken.push({ line: e.command, output: `It should print ${JSON.stringify(e.shows)} (from the user's request), and it printed:\n${run.now}`, before: run.before });
+    }
     if (!v.verified && broken.length) v = { ...v, broken };
     signal.throwIfAborted();
     this.host.log("info", `Verification ${round + 1}: ${v.verified ? "verified" : "not verified"}.${v.adjusted ? ` ${v.adjusted}` : ""}`);
@@ -480,6 +490,8 @@ export class Verifier {
 
   /** Commands the user allowed for the with/without comparison, per run. */
   private readonly comparedApproved = new Map<string, Set<string>>();
+  /** What the programs must print, read once per run from the user's words (expectedOutput). */
+  private readonly expected = new Map<string, Expectation[]>();
 
   async compareWithProject(
     conversationId: string,
@@ -488,7 +500,7 @@ export class Verifier {
     failed: FailedCommand[],
     checks: CheckConfig[],
     signal: AbortSignal,
-  ): Promise<Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures" | "programOutputs">> {
+  ): Promise<Pick<VerifyContext, "failedCommands" | "preexistingFailures" | "uncomparedFailures" | "programOutputs" | "programRuns">> {
     const own = failed.filter((f) => !checks.some((k) => k.command === f.line)).slice(0, 4);
     if (!own.length) return {};
     const root = await this.host.openFolder(workspaceRoot);
@@ -499,6 +511,7 @@ export class Verifier {
     const preexisting: FailedCommand[] = [];
     const uncompared: FailedCommand[] = [];
     const programOutputs: NonNullable<VerifyContext["programOutputs"]> = [];
+    const programRuns: NonNullable<VerifyContext["programRuns"]> = [];
     // One approval per command covers both runs: without the drafts, and again with all of them.
     const asked = new Map<string, Promise<boolean>>();
     // An approval holds for the later verification rounds of the same run too: the same command, for the same
@@ -560,6 +573,7 @@ export class Verifier {
           const printed = outputTail(n.output);
           const before = b && !b.skipped && b.passed ? outputTail(b.output) : undefined;
           if (printed && printed !== before) programOutputs.push({ line: f.line, before, now: printed });
+          programRuns.push({ line: f.line, before, now: printed });
           return;
         }
         const output = n && !n.skipped ? n.output : f.output;
@@ -590,7 +604,7 @@ export class Verifier {
       await current.remove().catch(() => undefined);
     }
     if (preexisting.length) this.host.log("info", `Failed already without the drafts, so not this request's to fix: ${preexisting.map((f) => f.line).join(", ")}.`);
-    return { failedCommands: caused, preexistingFailures: preexisting, uncomparedFailures: uncompared, ...(programOutputs.length ? { programOutputs } : {}) };
+    return { failedCommands: caused, preexistingFailures: preexisting, uncomparedFailures: uncompared, ...(programOutputs.length ? { programOutputs } : {}), ...(programRuns.length ? { programRuns } : {}) };
   }
 
   /** Same rule as a sub-agent's checks: approved checks run when "Run commands" is on or allowed for this run, otherwise the user is asked. */
@@ -607,6 +621,22 @@ export class Verifier {
     if (decision?.kind !== "allow") return false;
     if (decision.remember) this.s.allowedFor(runId).add(check.command);
     return true;
+  }
+
+  /** What the programs must print, from the user's words, once per run (cached when a program ran). */
+  private async expectations(workspaceRoot: string, runId: string, said: string, runs: ProgramRun[] | undefined, signal: AbortSignal): Promise<Expectation[]> {
+    const known = this.expected.get(runId);
+    if (known || !runs?.length || !quotesSomething(said) || this.s.budget.exhausted(runId)) return known ?? [];
+    try {
+      const found = await expectedOutput(this.s.verifierProvider(workspaceRoot, runId), said, runs, { signal });
+      this.host.log("info", `What the program must print, from the user's words: ${found.length ? found.map((e) => `${e.command} shows ${JSON.stringify(e.shows)}`).join("; ") : "nothing said"}.`);
+      this.expected.set(runId, found);
+      return found;
+    } catch (err) {
+      if (signal.aborted) throw err;
+      this.host.log("warn", `Could not read what the program must print: ${(err as Error).message}`);
+      return [];
+    }
   }
 
   /**
