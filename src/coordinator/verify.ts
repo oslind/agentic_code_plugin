@@ -245,6 +245,12 @@ export function buildVerifyMessages(ctx: VerifyContext, contextWindow: number): 
   });
   // Run 18, new-module-used: index.js printed "(212.0 °C °C)", the program did not crash, and the work was verified with
   // a reply that said it prints "100.0 °C". What a program printed with the drafts is shown, to compare with the request.
+  // Run 31, question-then-answer: "4 degrees instead of 3" was drafted as `targetTemp(4)` in index.js (4 passed as
+  // the mode), every program and test printed what it printed before, and "done" was accepted on the quote alone.
+  const same = (ctx.programRuns ?? []).filter((r) => r.before !== undefined && r.before.trim() === r.now.trim());
+  if (same.length && same.length === (ctx.programRuns ?? []).length) {
+    evidence.push(`Checked by rule: with the drafts, ${same.slice(0, 3).map((r) => `\`${commandLine(r)}\``).join(", ")} printed exactly what ${same.length === 1 ? "it" : "they"} printed without them. If the user asked for a change in what the program does or prints, these runs do not show it: a part is met only if a line of the drafts shows the change working where the value is decided.`);
+  }
   (ctx.programOutputs ?? []).slice(0, 2).forEach((p, i) => {
     evidence.push(
       `Checked by rule: program ${i + 1} runs without crashing on all drafts together, and what it prints ${p.before === undefined ? "is below" : "changed with the drafts"}. Not crashing does not make it right: compare what it prints now with what the user asked for. Output that is not what the user asked for (a wrong value, a doubled unit, a line that is missing) is missing work.\n${dataBlock(`program ${i + 1} and what it printed`, `$ ${commandLine(p)}\n${p.before === undefined ? "" : `Without the drafts:\n${fit(p.before, 250) ?? "(nothing)"}\n`}With the drafts:\n${fit(p.now, 250) ?? "(nothing)"}`)}`,
@@ -402,9 +408,27 @@ function firstFailure(output: string): string {
   return line ? `: ${line.slice(0, 160)}` : "";
 }
 
+/**
+ * Whether a part's "found" is shown by a piece of real text: a line of it (without +/- and quote marks, or a part in
+ * backticks) of 8 characters or more that is in the drafts or an output, compared without white space.
+ */
+export function confirmedBy(sources: string[]): (found: string) => boolean {
+  const have = sources.join("\n").replace(/\s+/g, "");
+  return (found) => {
+    const pieces = [
+      ...[...found.matchAll(/`([^`]+)`/g)].map((m) => m[1]!),
+      ...found.replace(/\\r?\\n|\\n/g, "\n").split(/\n|\.{3}|…/).map((l) => l.trim().replace(/^[+-]\s?/, "").replace(/^["'`]+|["'`]+$/g, "")),
+    ];
+    return pieces.some((p) => {
+      const q = p.replace(/\s+/g, "");
+      return q.length >= 8 && (have.includes(q) || have.includes(q.replace(/[.,;:]+$/, "")));
+    });
+  };
+}
+
 export function guardVerification(
   d: Omit<VerifyDecision, "parts"> & { parts?: VerifyDecision["parts"] },
-  ctx: Pick<VerifyContext, "checks" | "tasks"> & { drafts?: string; userMessages?: string[]; request?: string; failedCommands?: { line: string; output: string }[]; preexistingFailures?: { line: string; output: string }[] },
+  ctx: Pick<VerifyContext, "checks" | "tasks" | "programRuns"> & { drafts?: string; userMessages?: string[]; request?: string; failedCommands?: { line: string; output: string }[]; preexistingFailures?: { line: string; output: string }[] },
 ): Omit<Verification, "thinking"> {
   // A check that failed only the way it failed before the run is not this request's to fix (run 16, old-test-pins-value).
   const failed = ctx.checks.filter((c) => !c.passed && !c.skipped && c.failedBefore !== "before");
@@ -461,7 +485,12 @@ export function guardVerification(
   // did not accept is told to the user and no longer sends sub-agents back.
   // "not_done" that named only failures from before the request is "done" by rule (see below).
   const saysDone = d.verdict === "done" || (missing.length === 0 && removals.length > 0 && removals.every((m) => aboutOldFailures([m], oldLines).length > 0));
-  const shown = saysDone && parts.length > 0 && unmetKept.length === 0 && parts.every((p) => p.met || (noNewFailure && /\bfail/i.test(p.found)));
+  // Run 31, fix-and-add-test: the test task's drafts were not accepted, and the part "add a test to test.js" was met
+  // with "found" written as prose ("The test … was already present in test.js and passes"), so the rule above let
+  // the rejected review go. Overruling a review needs every met part shown by a line that is really in the drafts
+  // or in an output.
+  const real = confirmedBy([ctx.drafts ?? "", ...ctx.checks.map((c) => c.output), ...(ctx.failedCommands ?? []).map((c) => c.output), ...(ctx.preexistingFailures ?? []).map((c) => c.output), ...(ctx.programRuns ?? []).map((r) => r.now)]);
+  const shown = saysDone && parts.length > 0 && unmetKept.length === 0 && parts.every((p) => (p.met && real(p.found)) || (noNewFailure && /\bfail/i.test(p.found)));
   const reviewNote = rejected.length && shown && forced.length === 0 ? ` A review did not accept the drafts of ${rejected.map((t) => `"${one(t.title, 80)}"`).join(", ")}, but every part of your request is shown in the drafts, so nothing was sent back.` : "";
   if (!reviewNote) forced.push(...rejected.map((t) => `Finish "${t.title}": its review did not accept its drafts${t.notAccepted ? `: ${t.notAccepted.replace(/\s+/g, " ").slice(0, 200)}` : "."}`));
   const evidence = checkEvidence(ctx.checks);

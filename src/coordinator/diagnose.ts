@@ -66,7 +66,8 @@ export const diagnosisSchema = z.object({
 });
 
 const SYSTEM = `You investigate why a command fails after code changes. You get the command's output with the changes and without them, and the diff of every changed file. Find the changed line that causes the new failure.
-- Read the error in the output with the changes, and find where it comes from: a line that was added or changed (+), a line that was removed (-) that the code still needs, or a line the changes did not touch that still expects the old behaviour (for example a test that checks the old value).
+- The failure is an error, or output that is not what the user asked for (then the output says what it should print, and the cause is the line that prints the wrong thing or leaves the right thing out).
+- Read the error or the wrong output with the changes, and find where it comes from: a line that was added or changed (+), a line that was removed (-) that the code still needs, or a line the changes did not touch that still expects the old behaviour (for example a test that checks the old value).
 - The user asked for the changes. A line that does what the user asked is never the cause, and the fix is never to undo what the user asked: when a test or other code still expects the old behaviour, that line is the cause (unchanged), and its fix is to make it expect what the user asked for.
 - Quote that one line exactly, without a + or - sign, and say which kind it is.
 - Say what the file needs instead, concretely (for example the exact line to put back, or the new expected value).
